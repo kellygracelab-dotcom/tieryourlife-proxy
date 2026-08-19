@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.log
+.firebase/
+.runtimeconfig.json
+*.local
+.env
+.DS_Store
