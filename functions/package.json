@@ -1,6 +1,6 @@
 {
   "name": "tieryourlife-proxy",
-  "description": "Server side of TierYourLife: keeps the Gemini and TMDB credentials off the device",
+  "description": "Server side of TierYourLife: keeps the Gemini and TMDB credentials off the device and meters generation",
   "private": true,
   "main": "lib/index.js",
   "engines": {
@@ -8,7 +8,9 @@
   },
   "scripts": {
     "build": "tsc",
-    "serve": "npm run build && firebase emulators:start --only functions",
+    "test": "tsc -p tsconfig.test.json && node --test \"lib-test/test/**/*.test.js\"",
+    "check": "npm run build && npm test",
+    "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
   },

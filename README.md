@@ -1,20 +1,23 @@
 # TierYourLife Proxy
 
 The server side of [TierYourLife](https://github.com/kellygracelab-dotcom/TierYourLife).
-It exists for one reason: the app used to ship its Gemini and TMDB credentials
-inside the APK, where anyone could read them. Now the app holds no credentials
-at all and talks to these two endpoints instead.
+It started as a relay so the app would stop shipping its Gemini and TMDB
+credentials inside the APK. It now also decides who may spend them: image
+generation costs real money per image, and the only place that can be counted
+on to meter it is the side holding the key.
 
 ## Endpoints
 
 | Endpoint | Method | In | Out |
 |---|---|---|---|
 | `/generate` | POST | `{ "prompt": "..." }` | the image itself, `image/jpeg` |
+| `/credits` | GET | — | `{ "credits": 7 }` |
 | `/tmdb/3/search/movie` | GET | `?query=&language=` | TMDB's JSON, unchanged |
 
 `/generate` does more than relay. Gemini answers with JSON carrying the image as
 a base64 string; the function decodes it and returns raw bytes, so the phone
-never sees base64 and the response is a third smaller.
+never sees base64 and the response is a third smaller. Successful responses
+carry the balance left in `X-Credits-Remaining`.
 
 `/tmdb` is a plain passthrough with the token attached — only the search path is
 allowed, so this cannot be used as an open relay.
@@ -23,9 +26,75 @@ Wikidata is not proxied. It needs no credentials, and the app calls it directly.
 
 ## Access
 
-Both endpoints require a valid **App Check** token (Play Integrity on Android).
-Requests without one get a 401, which is what keeps the endpoints from being
-called by anything other than the released app.
+`/generate` and `/credits` need two things:
+
+- an **App Check** token (Play Integrity on Android) — answers *is this the
+  released app*;
+- a **Firebase ID token** in `Authorization: Bearer …`, from anonymous sign-in —
+  answers *which install*.
+
+App Check alone cannot meter anything: it is satisfied by every copy of the real
+app equally. The uid is never read from the request body; it comes out of a
+token Firebase signed, so a caller cannot name itself, let alone name someone else.
+
+`/tmdb` deliberately requires App Check only. It costs nothing per call, and
+tying catalogue search to sign-in would mean an auth hiccup takes out search as
+well as generation.
+
+## Quota
+
+Every generation is reserved before Gemini is called and settled after:
+
+1. Reserve — take one credit and hold the account for a six minute lease.
+2. Generate.
+3. Settle — on success the credit stays spent; on failure it goes back.
+
+Deducting first is the point. If the credit were taken on success, a dropped
+connection would hand out an image nobody paid for. A run that dies without
+settling keeps the credit spent: past the reservation there is no way to tell
+whether Gemini billed us, and guessing in the caller's favour means a free image
+on every crash.
+
+Three limits, not one:
+
+| Limit | Where | Default |
+|---|---|---|
+| Credits per account | `accounts/{uid}` | 10, granted on the first generation |
+| One generation at a time | the lease on the account | 6 minutes |
+| Service-wide per UTC day | `usage/{YYYY-MM-DD}` | 500 |
+
+The daily ceiling is the one that saves you from a mistake nobody predicted. It
+is not a business rule — set it well above honest use and treat it tripping as
+an alarm. `concurrency: 1` on `/generate` is part of the same defence:
+`maxInstances` caps instances, and a gen2 instance will otherwise run many
+generations at once, so the two together are what actually bound spending.
+
+Refusals are distinct because they need different screens:
+
+| Status | `code` | Meaning |
+|---|---|---|
+| 402 | `NO_CREDITS` | balance empty — the caller can act on this |
+| 429 | `BUSY` | a generation is already running, `Retry-After` set |
+| 503 | `DAILY_CEILING` | service-wide limit, nothing the caller can do |
+
+All three constants live at the top of [`functions/src/quota.ts`](functions/src/quota.ts).
+
+## Firestore
+
+Two collections, both written only by these functions. `firestore.rules` denies
+clients outright and the Admin SDK bypasses rules — a client that could write
+its own balance would never need to buy anything.
+
+```
+accounts/{uid}       credits, inFlightUntil, totalGenerated, createdAt, updatedAt
+usage/{YYYY-MM-DD}   generations
+```
+
+Deploy the rules alongside the functions:
+
+```bash
+firebase deploy --only firestore:rules,functions
+```
 
 ## Secrets
 
@@ -42,6 +111,23 @@ firebase functions:secrets:set TMDB_READ_ACCESS_TOKEN
 Each command prompts for the value and stores it. `functions/.env` and
 `.runtimeconfig.json` are git-ignored so a local override cannot leak either.
 
+## Tests
+
+The rules that decide whether a generation may happen are pure functions in
+`quota.ts` — no Firestore, no clock, no network. `ledger.ts` is the only file
+that turns those decisions into writes, and it holds no rules of its own. So the
+cases that matter are tested without an emulator, with the runner built into Node:
+
+```bash
+npm --prefix functions test
+```
+
+```bash
+npm --prefix functions run check
+```
+
+`check` builds and tests, and is what CI runs on every push and pull request.
+
 ## Running it
 
 ```bash
@@ -52,8 +138,9 @@ npm --prefix functions install
 npm --prefix functions run serve
 ```
 
-The emulator serves the functions on localhost. App Check is not enforced
-against the emulator, so a plain `curl` works there.
+The emulator serves functions, Firestore and Auth together — the ledger needs
+all three. App Check is not enforced against the emulator, so a plain `curl`
+works there, but `/generate` still wants an ID token from the Auth emulator.
 
 ## Deploying
 
@@ -69,6 +156,7 @@ paid for.
 ## Cost
 
 Cloud Run's free tier covers this comfortably; what actually costs money is
-Gemini generation itself, billed per image. `maxInstances` is capped at 10 so a
-runaway loop cannot fan out. Set a billing budget alert before the first deploy,
-and remember it only sends mail — it does not stop anything.
+Gemini generation itself, billed per image. The quota above is the real control.
+Set a billing budget alert as well — and note it belongs on the Google Cloud
+project that owns the Gemini key, which is not this Firebase project. Remember
+it only sends mail: it does not stop anything.

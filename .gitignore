@@ -6,3 +6,4 @@ lib/
 *.local
 .env
 .DS_Store
+lib-test/
