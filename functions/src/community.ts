@@ -109,21 +109,25 @@ export const lists = onRequest(
     }
 
     // Everything after /lists: nothing for the feed, an id for one list, an
-    // id plus a verb for something done to it, and the word "reports" for
-    // the moderation queue. Firestore ids are twenty characters, so none of
-    // these words can be one.
+    // id plus a verb for something done to it, and "reports" or "mine" for the
+    // two listings that are not a list. Firestore ids are twenty characters,
+    // so none of these words can be one.
     const segments = request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "lists");
     const last = segments[segments.length - 1] ?? "";
     const verb = VERBS.includes(last) ? last : null;
     const id = (verb ? segments[segments.length - 2] : last) ?? "";
     const hasId = id.length > 0;
     const listingReports = !verb && id === "reports";
+    const listingMine = !verb && id === "mine";
 
     try {
       switch (request.method) {
         case "GET":
           if (listingReports) {
             return await readReports(response, identity);
+          }
+          if (listingMine) {
+            return await readMine(response, identity);
           }
           return hasId
             ? await readOne(response, id)
@@ -235,6 +239,25 @@ async function readFeed(response: Response, filters: FeedFilters): Promise<void>
   response.status(200).json({
     lists,
     nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
+  });
+}
+
+/**
+ * What this person has in the community, straight from the collection
+ * rather than from their phone. A list published from a device they no
+ * longer have -- or one whose local copy is gone -- is still theirs, and
+ * this is the only place it can be seen or taken down.
+ */
+async function readMine(response: Response, identity: Identity): Promise<void> {
+  const snapshot = await getFirestore()
+    .collection(PUBLISHED)
+    .where("authorUid", "==", identity.uid)
+    .orderBy("updatedAt", "desc")
+    .get();
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    lists: snapshot.docs.map((doc) => toSummary(doc.id, doc.data() as StoredList)),
   });
 }
 
