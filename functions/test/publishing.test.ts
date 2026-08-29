@@ -127,6 +127,29 @@ describe("decidePublish", () => {
     assert.equal(decision.ok === false && decision.reason, "too_large");
   });
 
+  it("accepts a thousand cards, which someone can genuinely have watched", () => {
+    const items = Array.from({ length: MAX_ITEMS_PER_LIST }, (_, i) => ({
+      title: `film ${i}`,
+      imageUrl: `https://image.tmdb.org/t/p/w500/${i}.jpg`,
+    }));
+
+    const decision = publish({ items });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.list.items.length, MAX_ITEMS_PER_LIST);
+  });
+
+  // A count cannot express Firestore's document limit: few cards with very long
+  // addresses outweigh many with short ones.
+  it("refuses a snapshot too heavy to store, however few cards it has", () => {
+    const longUrl = "https://example.com/" + "x".repeat(1900);
+    const items = Array.from({ length: 400 }, (_, i) => ({ title: `film ${i}`, imageUrl: longUrl }));
+
+    const decision = publish({ items });
+
+    assert.equal(decision.ok === false && decision.reason, "too_large");
+  });
+
   it("refuses a tier whose colours are not hex", () => {
     const decision = publish({
       tiers: [{ label: "S", caption: null, colorLight: "red", colorDark: "#F1948C" }],

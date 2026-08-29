@@ -4,8 +4,16 @@
  */
 
 export const MAX_LISTS_PER_AUTHOR = 20;
-export const MAX_ITEMS_PER_LIST = 200;
-export const MAX_TIERS_PER_LIST = 12;
+/**
+ * Someone can genuinely have watched a thousand films, so the count is
+ * generous. The real ceiling is Firestore's one-megabyte document, which a
+ * count alone cannot express -- a list of two hundred cards with very long
+ * addresses can outweigh a thousand with short ones -- so the assembled
+ * snapshot is weighed as well, well under the limit.
+ */
+export const MAX_ITEMS_PER_LIST = 1000;
+export const MAX_TIERS_PER_LIST = 20;
+export const MAX_SNAPSHOT_BYTES = 700_000;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
 export const FEED_PAGE_SIZE = 20;
@@ -159,20 +167,23 @@ export function decidePublish({
     items.push({ title: itemTitle, imageUrl: keepableImageUrl(item.imageUrl) });
   }
 
-  return {
-    ok: true,
-    list: {
-      title,
-      titleLower: title.toLowerCase(),
-      category,
-      tiers,
-      items,
-      coverImageUrl: keepableImageUrl(source.coverImageUrl),
-      previewImages: items
-        .map((item) => item.imageUrl)
-        .filter((url): url is string => url !== null)
-        .slice(0, MAX_PREVIEW_IMAGES),
-      tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
-    },
+  const list: PublishedList = {
+    title,
+    titleLower: title.toLowerCase(),
+    category,
+    tiers,
+    items,
+    coverImageUrl: keepableImageUrl(source.coverImageUrl),
+    previewImages: items
+      .map((item) => item.imageUrl)
+      .filter((url): url is string => url !== null)
+      .slice(0, MAX_PREVIEW_IMAGES),
+    tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
   };
+
+  if (JSON.stringify(list).length > MAX_SNAPSHOT_BYTES) {
+    return { ok: false, reason: "too_large", detail: "The list is too heavy to store" };
+  }
+
+  return { ok: true, list };
 }
