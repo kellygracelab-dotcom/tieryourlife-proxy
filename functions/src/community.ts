@@ -1,3 +1,4 @@
+import { defineString } from "firebase-functions/params";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
@@ -6,6 +7,7 @@ import { requireUser, type Identity } from "./auth";
 import {
   CATEGORIES,
   FEED_PAGE_SIZE,
+  REPORT_PAGE_SIZE,
   MAX_TITLE_LENGTH,
   decidePublish,
   type Category,
@@ -14,6 +16,20 @@ import {
 
 const PUBLISHED = "publishedLists";
 const REPORTS = "reports";
+const VERBS = ["report", "takedown", "dismiss"];
+
+/**
+ * Whoever reads the reports. One person, named by configuration rather than
+ * by a role in the database: there is no second moderator to add, and a
+ * flag on a document is a flag that can be written.
+ */
+const moderatorUid = defineString("MODERATOR_UID");
+
+export function isModerator(uid: string, configured: string = moderatorUid.value()): boolean {
+  // An unset moderator makes nobody one. The other way round would hand the
+  // takedown button to everybody the first time the parameter went missing.
+  return configured.length > 0 && configured === uid;
+}
 const MAX_NOTE_LENGTH = 500;
 
 /** Five, because five is what a person reads before choosing at random. */
@@ -92,16 +108,23 @@ export const lists = onRequest(
       return;
     }
 
-    // Everything after /lists: nothing for the feed, an id for one list, and
-    // an id plus "report" for a complaint about it.
+    // Everything after /lists: nothing for the feed, an id for one list, an
+    // id plus a verb for something done to it, and the word "reports" for
+    // the moderation queue. Firestore ids are twenty characters, so none of
+    // these words can be one.
     const segments = request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "lists");
-    const reporting = segments[segments.length - 1] === "report";
-    const id = (reporting ? segments[segments.length - 2] : segments[segments.length - 1]) ?? "";
+    const last = segments[segments.length - 1] ?? "";
+    const verb = VERBS.includes(last) ? last : null;
+    const id = (verb ? segments[segments.length - 2] : last) ?? "";
     const hasId = id.length > 0;
+    const listingReports = !verb && id === "reports";
 
     try {
       switch (request.method) {
         case "GET":
+          if (listingReports) {
+            return await readReports(response, identity);
+          }
           return hasId
             ? await readOne(response, id)
             : await readFeed(response, {
@@ -111,10 +134,14 @@ export const lists = onRequest(
                 after: singleParam(request.query.after),
               });
         case "POST":
-          if (reporting) {
-            return hasId
-              ? await report(response, identity, id, request.body)
-              : void response.status(400).json({ error: "Which list?" });
+          if (verb) {
+            if (!hasId) {
+              return void response.status(400).json({ error: "Which list?" });
+            }
+            if (verb === "report") {
+              return await report(response, identity, id, request.body);
+            }
+            return await settleReports(response, identity, id, verb === "takedown");
           }
           return await publish(response, identity, request.body, hasId ? id : null);
         case "PATCH":
@@ -209,6 +236,67 @@ async function readFeed(response: Response, filters: FeedFilters): Promise<void>
     lists,
     nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
   });
+}
+
+/**
+ * The queue, newest first. Reports are per reporter, so several people
+ * complaining about one list arrive as several rows; grouping them here
+ * would hide how many there were, which is the useful part.
+ */
+async function readReports(response: Response, identity: Identity): Promise<void> {
+  if (!isModerator(identity.uid)) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+
+  const snapshot = await getFirestore()
+    .collection(REPORTS)
+    .orderBy("createdAt", "desc")
+    .limit(REPORT_PAGE_SIZE)
+    .get();
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    reports: snapshot.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        listId: data.listId,
+        listTitle: data.listTitle,
+        authorName: data.authorName,
+        reason: data.reason,
+        note: data.note ?? null,
+        createdAt: data.createdAt?.toMillis?.() ?? 0,
+      };
+    }),
+  });
+}
+
+/**
+ * Ends a complaint one way or the other. Taking the list down removes it
+ * for everyone; dismissing leaves it and only clears the queue. Both drop
+ * the reports, because a complaint that has been answered is not pending.
+ */
+async function settleReports(
+  response: Response,
+  identity: Identity,
+  listId: string,
+  takeDown: boolean,
+): Promise<void> {
+  if (!isModerator(identity.uid)) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+
+  const db = getFirestore();
+  const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
+  const batch = db.batch();
+  filed.docs.forEach((doc) => batch.delete(doc.ref));
+  if (takeDown) {
+    batch.delete(db.collection(PUBLISHED).doc(listId));
+  }
+  await batch.commit();
+
+  response.status(204).send();
 }
 
 async function readOne(response: Response, id: string): Promise<void> {
