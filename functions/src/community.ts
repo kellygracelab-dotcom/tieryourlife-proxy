@@ -108,6 +108,7 @@ export const lists = onRequest(
                 category: categoryFilter(request.query.category),
                 author: singleParam(request.query.author),
                 query: searchTerm(request.query.q),
+                after: singleParam(request.query.after),
               });
         case "POST":
           if (reporting) {
@@ -155,6 +156,16 @@ interface FeedFilters {
   category: Category | null;
   author: string | null;
   query: string | null;
+  /** Id of the last list on the page before, or null for the first page. */
+  after: string | null;
+}
+
+/**
+ * A short page is the last one. A full page might be, and costs one empty
+ * fetch to find out -- cheaper than counting the collection every time.
+ */
+export function nextCursor(pageIds: string[], pageSize: number = FEED_PAGE_SIZE): string | null {
+  return pageIds.length === pageSize ? pageIds[pageIds.length - 1] : null;
 }
 
 async function readFeed(response: Response, filters: FeedFilters): Promise<void> {
@@ -169,18 +180,34 @@ async function readFeed(response: Response, filters: FeedFilters): Promise<void>
 
   // A range has to be ordered by the field it ranges over, so a search orders
   // by title and everything else by recency.
-  const ordered = filters.query
+  let ordered = filters.query
     ? query
         .where("titleLower", ">=", filters.query)
         .where("titleLower", "<=", `${filters.query}`)
         .orderBy("titleLower")
     : query.orderBy("updatedAt", "desc");
 
+  // The cursor is the last id of the page before. Reading that document
+  // back costs one read and lets Firestore resume from it under either
+  // ordering, ties included, which a bare field value cannot do.
+  if (filters.after) {
+    const previous = await collection.doc(filters.after).get();
+    if (!previous.exists) {
+      // Taken down between pages. Saying so beats silently starting again
+      // from the top and repeating everything the reader has seen.
+      response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
+      return;
+    }
+    ordered = ordered.startAfter(previous);
+  }
+
   const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
+  const lists = snapshot.docs.map((doc) => toSummary(doc.id, doc.data() as StoredList));
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    lists: snapshot.docs.map((doc) => toSummary(doc.id, doc.data() as StoredList)),
+    lists,
+    nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
   });
 }
 
