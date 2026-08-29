@@ -1,0 +1,129 @@
+/**
+ * Rules for what may be published and in what shape. Pure, like `quota.ts`:
+ * the adapter in `community.ts` turns these decisions into Firestore writes.
+ */
+
+export const MAX_LISTS_PER_AUTHOR = 20;
+export const MAX_ITEMS_PER_LIST = 200;
+export const MAX_TIERS_PER_LIST = 12;
+export const MAX_TITLE_LENGTH = 80;
+export const MAX_CAPTION_LENGTH = 60;
+export const FEED_PAGE_SIZE = 20;
+
+export interface PublishedTier {
+  label: string;
+  caption: string | null;
+  colorLight: string;
+  colorDark: string;
+}
+
+export interface PublishedItem {
+  title: string;
+  /** Only ever an https URL someone else already hosts. */
+  imageUrl: string | null;
+}
+
+export interface PublishedList {
+  title: string;
+  tiers: PublishedTier[];
+  items: PublishedItem[];
+}
+
+export type PublishRejection =
+  | { reason: "not_signed_in" }
+  | { reason: "too_many_lists" }
+  | { reason: "invalid"; detail: string };
+
+export type PublishDecision = { ok: true; list: PublishedList } | { ok: false } & PublishRejection;
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * Local images never leave the device, so anything that is not an https URL is
+ * dropped rather than rejected: a list of holiday photos should still publish,
+ * just without the photos.
+ */
+function keepableImageUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed.toLowerCase().startsWith("https://")) return null;
+  return trimmed.length > 2000 ? null : trimmed;
+}
+
+function cleanText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return null;
+  return collapsed.slice(0, maxLength);
+}
+
+export interface PublishInput {
+  body: unknown;
+  isAnonymous: boolean;
+  listsAlreadyPublished: number;
+}
+
+export function decidePublish({
+  body,
+  isAnonymous,
+  listsAlreadyPublished,
+}: PublishInput): PublishDecision {
+  // Reading and copying stay open to everyone; putting your name on something
+  // does not.
+  if (isAnonymous) {
+    return { ok: false, reason: "not_signed_in" };
+  }
+  if (listsAlreadyPublished >= MAX_LISTS_PER_AUTHOR) {
+    return { ok: false, reason: "too_many_lists" };
+  }
+
+  const source = body as Record<string, unknown> | null;
+  if (!source || typeof source !== "object") {
+    return { ok: false, reason: "invalid", detail: "Body must be an object" };
+  }
+
+  const title = cleanText(source.title, MAX_TITLE_LENGTH);
+  if (!title) {
+    return { ok: false, reason: "invalid", detail: "A list needs a title" };
+  }
+
+  const rawTiers = Array.isArray(source.tiers) ? source.tiers : null;
+  if (!rawTiers || rawTiers.length === 0) {
+    return { ok: false, reason: "invalid", detail: "A list needs at least one tier" };
+  }
+  if (rawTiers.length > MAX_TIERS_PER_LIST) {
+    return { ok: false, reason: "invalid", detail: "Too many tiers" };
+  }
+
+  const tiers: PublishedTier[] = [];
+  for (const raw of rawTiers) {
+    const tier = raw as Record<string, unknown>;
+    const label = cleanText(tier.label, MAX_TITLE_LENGTH);
+    const colorLight = typeof tier.colorLight === "string" ? tier.colorLight : "";
+    const colorDark = typeof tier.colorDark === "string" ? tier.colorDark : "";
+    if (!label || !HEX_COLOR.test(colorLight) || !HEX_COLOR.test(colorDark)) {
+      return { ok: false, reason: "invalid", detail: "A tier needs a label and two hex colours" };
+    }
+    tiers.push({ label, caption: cleanText(tier.caption, MAX_CAPTION_LENGTH), colorLight, colorDark });
+  }
+
+  const rawItems = Array.isArray(source.items) ? source.items : null;
+  if (!rawItems || rawItems.length === 0) {
+    return { ok: false, reason: "invalid", detail: "A list needs at least one item" };
+  }
+  if (rawItems.length > MAX_ITEMS_PER_LIST) {
+    return { ok: false, reason: "invalid", detail: "Too many items" };
+  }
+
+  const items: PublishedItem[] = [];
+  for (const raw of rawItems) {
+    const item = raw as Record<string, unknown>;
+    const itemTitle = cleanText(item.title, MAX_TITLE_LENGTH);
+    if (!itemTitle) {
+      return { ok: false, reason: "invalid", detail: "An item needs a title" };
+    }
+    items.push({ title: itemTitle, imageUrl: keepableImageUrl(item.imageUrl) });
+  }
+
+  return { ok: true, list: { title, tiers, items } };
+}

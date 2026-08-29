@@ -22,13 +22,13 @@ export const credits = onRequest(
     if (!(await requireAppCheck(request, response))) {
       return;
     }
-    const uid = await requireUser(request, response);
-    if (!uid) {
+    const identity = await requireUser(request, response);
+    if (!identity) {
       return;
     }
 
     try {
-      const remaining = await readCredits(uid);
+      const remaining = await readCredits(identity.uid);
       response.setHeader("Cache-Control", "no-store");
       response.status(200).json({ credits: remaining });
     } catch (error) {

@@ -68,10 +68,11 @@ export const generate = onRequest(
     if (!(await requireAppCheck(request, response))) {
       return;
     }
-    const uid = await requireUser(request, response);
-    if (!uid) {
+    const identity = await requireUser(request, response);
+    if (!identity) {
       return;
     }
+    const uid = identity.uid;
 
     // Validated before the ledger is touched, so a malformed request never
     // costs the caller a credit.
