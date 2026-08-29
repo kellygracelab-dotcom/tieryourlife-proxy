@@ -60,6 +60,7 @@ export interface PublishedList {
 export type PublishRejection =
   | { reason: "not_signed_in" }
   | { reason: "too_many_lists" }
+  | { reason: "too_large"; detail: string }
   | { reason: "invalid"; detail: string };
 
 export type PublishDecision = { ok: true; list: PublishedList } | { ok: false } & PublishRejection;
@@ -125,7 +126,7 @@ export function decidePublish({
     return { ok: false, reason: "invalid", detail: "A list needs at least one tier" };
   }
   if (rawTiers.length > MAX_TIERS_PER_LIST) {
-    return { ok: false, reason: "invalid", detail: "Too many tiers" };
+    return { ok: false, reason: "too_large", detail: "Too many tiers" };
   }
 
   const tiers: PublishedTier[] = [];
@@ -145,7 +146,7 @@ export function decidePublish({
     return { ok: false, reason: "invalid", detail: "A list needs at least one item" };
   }
   if (rawItems.length > MAX_ITEMS_PER_LIST) {
-    return { ok: false, reason: "invalid", detail: "Too many items" };
+    return { ok: false, reason: "too_large", detail: "Too many items" };
   }
 
   const items: PublishedItem[] = [];

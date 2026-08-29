@@ -124,7 +124,7 @@ describe("decidePublish", () => {
 
     const decision = publish({ items });
 
-    assert.equal(decision.ok === false && decision.reason, "invalid");
+    assert.equal(decision.ok === false && decision.reason, "too_large");
   });
 
   it("refuses a tier whose colours are not hex", () => {
