@@ -5,13 +5,15 @@
 
 export const MAX_LISTS_PER_AUTHOR = 20;
 /**
- * Someone can genuinely have watched a thousand films, so the count is
- * generous. The real ceiling is Firestore's one-megabyte document, which a
- * count alone cannot express -- a list of two hundred cards with very long
- * addresses can outweigh a thousand with short ones -- so the assembled
- * snapshot is weighed as well, well under the limit.
+ * Someone can genuinely have watched thousands of films, so the count is
+ * generous. Two thousand is where a board still opens without the phone
+ * stumbling over it, measured on a device rather than guessed. The real
+ * ceiling is Firestore's one-megabyte document, which a count alone cannot
+ * express -- a list of two hundred cards with very long addresses can outweigh
+ * a thousand with short ones -- so the assembled snapshot is weighed as well,
+ * well under the limit.
  */
-export const MAX_ITEMS_PER_LIST = 1000;
+export const MAX_ITEMS_PER_LIST = 2000;
 export const MAX_TIERS_PER_LIST = 20;
 export const MAX_SNAPSHOT_BYTES = 700_000;
 export const MAX_TITLE_LENGTH = 80;
