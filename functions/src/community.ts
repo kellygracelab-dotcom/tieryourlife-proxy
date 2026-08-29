@@ -38,6 +38,11 @@ function refuse(response: Response, decision: Exclude<PublishDecision, { ok: tru
     case "too_many_lists":
       response.status(409).json({ error: "Too many published lists", code: "TOO_MANY_LISTS" });
       return;
+    // Its own status so the app can name the limit instead of saying
+    // "something went wrong" to someone with three hundred cards.
+    case "too_large":
+      response.status(413).json({ error: decision.detail, code: "TOO_LARGE" });
+      return;
     case "invalid":
       response.status(400).json({ error: decision.detail, code: "INVALID" });
       return;
