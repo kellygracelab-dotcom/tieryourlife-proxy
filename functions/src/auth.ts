@@ -7,6 +7,8 @@ export interface Identity {
   /** True while the caller has never attached a real account. */
   isAnonymous: boolean;
   name: string | null;
+  /** The author's face, as they last set it. Only ever an https URL. */
+  picture: string | null;
 }
 
 /**
@@ -29,7 +31,11 @@ export async function requireUser(request: Request, response: Response): Promise
     const decoded = await getAuth().verifyIdToken(token);
     const provider = decoded.firebase?.sign_in_provider;
     const name = typeof decoded.name === "string" ? decoded.name : null;
-    return { uid: decoded.uid, isAnonymous: provider === "anonymous", name };
+    const picture =
+      typeof decoded.picture === "string" && decoded.picture.startsWith("https://")
+        ? decoded.picture
+        : null;
+    return { uid: decoded.uid, isAnonymous: provider === "anonymous", name, picture };
   } catch {
     response.status(401).json({ error: "Invalid ID token", code: "UNAUTHENTICATED" });
     return null;

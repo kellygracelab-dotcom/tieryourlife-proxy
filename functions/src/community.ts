@@ -3,14 +3,23 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
-import { CATEGORIES, FEED_PAGE_SIZE, decidePublish, type Category, type PublishDecision } from "./publishing";
+import {
+  CATEGORIES,
+  FEED_PAGE_SIZE,
+  MAX_TITLE_LENGTH,
+  decidePublish,
+  type Category,
+  type PublishDecision,
+} from "./publishing";
 
 const PUBLISHED = "publishedLists";
 
 interface StoredList {
   authorUid: string;
   authorName: string;
+  authorPhotoUrl: string | null;
   title: string;
+  titleLower: string;
   category: Category;
   tiers: unknown[];
   items: unknown[];
@@ -39,7 +48,9 @@ function toSummary(id: string, data: StoredList) {
   return {
     id,
     title: data.title,
+    authorUid: data.authorUid,
     authorName: data.authorName,
+    authorPhotoUrl: data.authorPhotoUrl ?? null,
     category: data.category ?? "other",
     itemCount: data.itemCount,
     coverImageUrl: data.coverImageUrl ?? null,
@@ -74,7 +85,11 @@ export const lists = onRequest(
         case "GET":
           return hasId
             ? await readOne(response, id)
-            : await readFeed(response, categoryFilter(request.query.category));
+            : await readFeed(response, {
+                category: categoryFilter(request.query.category),
+                author: singleParam(request.query.author),
+                query: searchTerm(request.query.q),
+              });
         case "POST":
           return await publish(response, identity, request.body, hasId ? id : null);
         case "DELETE":
@@ -96,10 +111,46 @@ function categoryFilter(raw: unknown): Category | null {
   return CATEGORIES.find((known) => known === raw) ?? null;
 }
 
-async function readFeed(response: Response, category: Category | null): Promise<void> {
+function singleParam(raw: unknown): string | null {
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+/**
+ * Firestore has no full-text search, so this is a prefix match on the
+ * lower-cased title. Enough to find a list you half-remember the name of, and
+ * honest about being no more than that.
+ */
+function searchTerm(raw: unknown): string | null {
+  const trimmed = singleParam(raw);
+  return trimmed ? trimmed.toLowerCase().slice(0, MAX_TITLE_LENGTH) : null;
+}
+
+interface FeedFilters {
+  category: Category | null;
+  author: string | null;
+  query: string | null;
+}
+
+async function readFeed(response: Response, filters: FeedFilters): Promise<void> {
   const collection = getFirestore().collection(PUBLISHED);
-  const query = category ? collection.where("category", "==", category) : collection;
-  const snapshot = await query.orderBy("updatedAt", "desc").limit(FEED_PAGE_SIZE).get();
+  let query: FirebaseFirestore.Query = collection;
+  if (filters.category) {
+    query = query.where("category", "==", filters.category);
+  }
+  if (filters.author) {
+    query = query.where("authorUid", "==", filters.author);
+  }
+
+  // A range has to be ordered by the field it ranges over, so a search orders
+  // by title and everything else by recency.
+  const ordered = filters.query
+    ? query
+        .where("titleLower", ">=", filters.query)
+        .where("titleLower", "<=", `${filters.query}`)
+        .orderBy("titleLower")
+    : query.orderBy("updatedAt", "desc");
+
+  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
@@ -149,7 +200,9 @@ async function publish(
   const document = {
     authorUid: identity.uid,
     authorName: identity.name ?? "Anonymous",
+    authorPhotoUrl: identity.picture,
     title: decision.list.title,
+    titleLower: decision.list.titleLower,
     category: decision.list.category,
     tiers: decision.list.tiers,
     items: decision.list.items,

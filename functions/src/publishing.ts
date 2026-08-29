@@ -44,6 +44,8 @@ export interface PublishedItem {
 
 export interface PublishedList {
   title: string;
+  /** Lower-cased title, so the feed can be searched by prefix. */
+  titleLower: string;
   category: Category;
   tiers: PublishedTier[];
   items: PublishedItem[];
@@ -160,6 +162,7 @@ export function decidePublish({
     ok: true,
     list: {
       title,
+      titleLower: title.toLowerCase(),
       category,
       tiers,
       items,

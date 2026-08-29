@@ -73,6 +73,14 @@ describe("decidePublish", () => {
     assert.equal(title.length, MAX_TITLE_LENGTH);
   });
 
+  // The feed searches by prefix on this, so it has to be there and lower-cased.
+  it("carries a lower-cased title for searching", () => {
+    const decision = publish({ title: "Every A24 Film" });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.list.titleLower, "every a24 film");
+  });
+
   it("refuses a category that is not one of the eight", () => {
     const madeUp = publish({ category: "waifus" });
     const missing = publish({ category: undefined });
