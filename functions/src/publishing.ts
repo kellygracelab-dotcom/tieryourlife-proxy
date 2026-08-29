@@ -9,6 +9,25 @@ export const MAX_TIERS_PER_LIST = 12;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
 export const FEED_PAGE_SIZE = 20;
+export const MAX_PREVIEW_IMAGES = 6;
+export const MAX_TIER_COLORS = 5;
+
+/**
+ * Eight of them, fixed. A free-text category would splinter the feed into
+ * synonyms nobody can browse.
+ */
+export const CATEGORIES = [
+  "anime",
+  "film_tv",
+  "games",
+  "music",
+  "food",
+  "sport",
+  "people",
+  "other",
+] as const;
+
+export type Category = (typeof CATEGORIES)[number];
 
 export interface PublishedTier {
   label: string;
@@ -25,8 +44,15 @@ export interface PublishedItem {
 
 export interface PublishedList {
   title: string;
+  category: Category;
   tiers: PublishedTier[];
   items: PublishedItem[];
+  /** Author's own cover, only ever an https URL. */
+  coverImageUrl: string | null;
+  /** Enough card art for the feed to draw a mosaic without opening the list. */
+  previewImages: string[];
+  /** The author's palette, for a card that has neither a cover nor card art. */
+  tierColors: string[];
 }
 
 export type PublishRejection =
@@ -87,6 +113,11 @@ export function decidePublish({
     return { ok: false, reason: "invalid", detail: "A list needs a title" };
   }
 
+  const category = CATEGORIES.find((known) => known === source.category);
+  if (!category) {
+    return { ok: false, reason: "invalid", detail: "A list needs a category" };
+  }
+
   const rawTiers = Array.isArray(source.tiers) ? source.tiers : null;
   if (!rawTiers || rawTiers.length === 0) {
     return { ok: false, reason: "invalid", detail: "A list needs at least one tier" };
@@ -125,5 +156,19 @@ export function decidePublish({
     items.push({ title: itemTitle, imageUrl: keepableImageUrl(item.imageUrl) });
   }
 
-  return { ok: true, list: { title, tiers, items } };
+  return {
+    ok: true,
+    list: {
+      title,
+      category,
+      tiers,
+      items,
+      coverImageUrl: keepableImageUrl(source.coverImageUrl),
+      previewImages: items
+        .map((item) => item.imageUrl)
+        .filter((url): url is string => url !== null)
+        .slice(0, MAX_PREVIEW_IMAGES),
+      tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
+    },
+  };
 }

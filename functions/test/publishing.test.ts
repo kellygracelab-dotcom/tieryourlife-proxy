@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   MAX_ITEMS_PER_LIST,
   MAX_LISTS_PER_AUTHOR,
+  MAX_PREVIEW_IMAGES,
   MAX_TITLE_LENGTH,
   decidePublish,
 } from "../src/publishing";
@@ -10,6 +11,7 @@ import {
 function body(overrides: Record<string, unknown> = {}) {
   return {
     title: "Sci-fi films",
+    category: "film_tv",
     tiers: [{ label: "S", caption: "Masterpiece", colorLight: "#B03A32", colorDark: "#F1948C" }],
     items: [{ title: "Arrival", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg" }],
     ...overrides,
@@ -69,6 +71,37 @@ describe("decidePublish", () => {
     const title = decision.ok ? decision.list.title : "";
     assert.equal(title.startsWith("Every A24 film"), true);
     assert.equal(title.length, MAX_TITLE_LENGTH);
+  });
+
+  it("refuses a category that is not one of the eight", () => {
+    const madeUp = publish({ category: "waifus" });
+    const missing = publish({ category: undefined });
+
+    assert.equal(madeUp.ok === false && madeUp.reason, "invalid");
+    assert.equal(missing.ok === false && missing.reason, "invalid");
+  });
+
+  it("keeps an https cover and drops a local one", () => {
+    const remote = publish({ coverImageUrl: "https://image.tmdb.org/t/p/w500/cover.jpg" });
+    const local = publish({ coverImageUrl: "content://media/external/images/1" });
+
+    assert.equal(remote.ok && remote.list.coverImageUrl, "https://image.tmdb.org/t/p/w500/cover.jpg");
+    assert.equal(local.ok && local.list.coverImageUrl, null);
+  });
+
+  // The feed draws a mosaic from these, so it must not have to open the list.
+  it("collects card art for the feed, capped and free of local images", () => {
+    const items = Array.from({ length: MAX_PREVIEW_IMAGES + 3 }, (_, i) => ({
+      title: `item ${i}`,
+      imageUrl: i === 0 ? "file:///data/photo.jpg" : `https://example.com/${i}.jpg`,
+    }));
+
+    const decision = publish({ items });
+
+    assert.equal(decision.ok, true);
+    const previews = decision.ok ? decision.list.previewImages : [];
+    assert.equal(previews.length, MAX_PREVIEW_IMAGES);
+    assert.equal(previews.every((url) => url.startsWith("https://")), true);
   });
 
   it("refuses a list with no items", () => {

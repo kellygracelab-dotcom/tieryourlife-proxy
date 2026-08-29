@@ -3,7 +3,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
-import { FEED_PAGE_SIZE, decidePublish, type PublishDecision } from "./publishing";
+import { CATEGORIES, FEED_PAGE_SIZE, decidePublish, type Category, type PublishDecision } from "./publishing";
 
 const PUBLISHED = "publishedLists";
 
@@ -11,9 +11,13 @@ interface StoredList {
   authorUid: string;
   authorName: string;
   title: string;
+  category: Category;
   tiers: unknown[];
   items: unknown[];
   itemCount: number;
+  coverImageUrl: string | null;
+  previewImages: string[];
+  tierColors: string[];
   updatedAt?: FirebaseFirestore.Timestamp;
 }
 
@@ -36,7 +40,11 @@ function toSummary(id: string, data: StoredList) {
     id,
     title: data.title,
     authorName: data.authorName,
+    category: data.category ?? "other",
     itemCount: data.itemCount,
+    coverImageUrl: data.coverImageUrl ?? null,
+    previewImages: data.previewImages ?? [],
+    tierColors: data.tierColors ?? [],
     updatedAt: data.updatedAt?.toMillis() ?? 0,
   };
 }
@@ -64,7 +72,9 @@ export const lists = onRequest(
     try {
       switch (request.method) {
         case "GET":
-          return hasId ? await readOne(response, id) : await readFeed(response);
+          return hasId
+            ? await readOne(response, id)
+            : await readFeed(response, categoryFilter(request.query.category));
         case "POST":
           return await publish(response, identity, request.body, hasId ? id : null);
         case "DELETE":
@@ -81,12 +91,15 @@ export const lists = onRequest(
   },
 );
 
-async function readFeed(response: Response): Promise<void> {
-  const snapshot = await getFirestore()
-    .collection(PUBLISHED)
-    .orderBy("updatedAt", "desc")
-    .limit(FEED_PAGE_SIZE)
-    .get();
+/** Anything that is not one of the eight means "no filter", not an error. */
+function categoryFilter(raw: unknown): Category | null {
+  return CATEGORIES.find((known) => known === raw) ?? null;
+}
+
+async function readFeed(response: Response, category: Category | null): Promise<void> {
+  const collection = getFirestore().collection(PUBLISHED);
+  const query = category ? collection.where("category", "==", category) : collection;
+  const snapshot = await query.orderBy("updatedAt", "desc").limit(FEED_PAGE_SIZE).get();
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
@@ -137,9 +150,13 @@ async function publish(
     authorUid: identity.uid,
     authorName: identity.name ?? "Anonymous",
     title: decision.list.title,
+    category: decision.list.category,
     tiers: decision.list.tiers,
     items: decision.list.items,
     itemCount: decision.list.items.length,
+    coverImageUrl: decision.list.coverImageUrl,
+    previewImages: decision.list.previewImages,
+    tierColors: decision.list.tierColors,
     updatedAt: FieldValue.serverTimestamp(),
   };
 
