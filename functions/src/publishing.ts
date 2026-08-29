@@ -3,7 +3,12 @@
  * the adapter in `community.ts` turns these decisions into Firestore writes.
  */
 
-export const MAX_LISTS_PER_AUTHOR = 20;
+/**
+ * Twenty was low enough that an enthusiastic person would meet it, and it also
+ * happened to equal a page of the feed, so one author could never fill more
+ * than one page -- which made the feed's paging untestable with one account.
+ */
+export const MAX_LISTS_PER_AUTHOR = 50;
 /**
  * Someone can genuinely have watched thousands of films, so the count is
  * generous. Two thousand is where a board still opens without the phone
