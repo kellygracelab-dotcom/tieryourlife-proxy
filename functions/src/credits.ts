@@ -2,7 +2,6 @@ import { onRequest } from "firebase-functions/v2/https";
 import { requireAppCheck } from "./appCheck";
 import { requireUser } from "./auth";
 import { readCredits } from "./ledger";
-import { isModerator } from "./community";
 
 /**
  * What the studio shows before anything is typed. Read-only: it never creates
@@ -31,9 +30,7 @@ export const credits = onRequest(
     try {
       const remaining = await readCredits(identity.uid);
       response.setHeader("Cache-Control", "no-store");
-      // The settings screen asks for credits anyway, so whether this person
-      // reads the reports rides along rather than costing its own request.
-      response.status(200).json({ credits: remaining, moderator: isModerator(identity.uid) });
+      response.status(200).json({ credits: remaining });
     } catch (error) {
       console.error("Could not read credits", error);
       response.status(503).json({ error: "Ledger unavailable", code: "LEDGER_UNAVAILABLE" });
