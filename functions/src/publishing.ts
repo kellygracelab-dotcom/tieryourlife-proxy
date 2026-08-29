@@ -19,6 +19,7 @@ export const MAX_SNAPSHOT_BYTES = 700_000;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
 export const FEED_PAGE_SIZE = 20;
+export const REPORT_PAGE_SIZE = 50;
 export const MAX_PREVIEW_IMAGES = 6;
 export const MAX_TIER_COLORS = 5;
 
