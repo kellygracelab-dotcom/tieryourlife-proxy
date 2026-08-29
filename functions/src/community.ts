@@ -92,12 +92,14 @@ export const lists = onRequest(
               });
         case "POST":
           return await publish(response, identity, request.body, hasId ? id : null);
+        case "PATCH":
+          return await refreshAuthor(response, identity);
         case "DELETE":
           return hasId
             ? await unpublish(response, identity, id)
             : void response.status(400).json({ error: "Which list?" });
         default:
-          return void response.status(405).json({ error: "Use GET, POST or DELETE" });
+          return void response.status(405).json({ error: "Use GET, POST, PATCH or DELETE" });
       }
     } catch (error) {
       console.error("Community request failed", error);
@@ -230,6 +232,35 @@ async function publish(
 
   const created = await collection.add({ ...document, publishedAt: FieldValue.serverTimestamp() });
   response.status(201).json({ id: created.id });
+}
+
+/**
+ * A name and a face belong to a person, not to a snapshot. Changing either
+ * would otherwise leave every list they had already published showing whoever
+ * they used to be.
+ */
+async function refreshAuthor(response: Response, identity: Identity): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+    return;
+  }
+
+  const db = getFirestore();
+  const mine = await db.collection(PUBLISHED).where("authorUid", "==", identity.uid).get();
+  if (mine.empty) {
+    response.status(200).json({ updated: 0 });
+    return;
+  }
+
+  const batch = db.batch();
+  for (const doc of mine.docs) {
+    batch.update(doc.ref, {
+      authorName: identity.name ?? "Anonymous",
+      authorPhotoUrl: identity.picture,
+    });
+  }
+  await batch.commit();
+  response.status(200).json({ updated: mine.size });
 }
 
 async function unpublish(response: Response, identity: Identity, id: string): Promise<void> {
