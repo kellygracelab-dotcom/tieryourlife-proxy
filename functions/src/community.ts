@@ -13,6 +13,17 @@ import {
 } from "./publishing";
 
 const PUBLISHED = "publishedLists";
+const REPORTS = "reports";
+const MAX_NOTE_LENGTH = 500;
+
+/** Five, because five is what a person reads before choosing at random. */
+export const REPORT_REASONS = [
+  "sexual",
+  "violence",
+  "hate",
+  "spam",
+  "other",
+] as const;
 
 interface StoredList {
   authorUid: string;
@@ -81,9 +92,12 @@ export const lists = onRequest(
       return;
     }
 
-    // Everything after /lists — empty for the feed, an id for one list.
-    const id = request.path.replace(/^\/+|\/+$/g, "").split("/").pop() ?? "";
-    const hasId = id.length > 0 && id !== "lists";
+    // Everything after /lists: nothing for the feed, an id for one list, and
+    // an id plus "report" for a complaint about it.
+    const segments = request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "lists");
+    const reporting = segments[segments.length - 1] === "report";
+    const id = (reporting ? segments[segments.length - 2] : segments[segments.length - 1]) ?? "";
+    const hasId = id.length > 0;
 
     try {
       switch (request.method) {
@@ -96,6 +110,11 @@ export const lists = onRequest(
                 query: searchTerm(request.query.q),
               });
         case "POST":
+          if (reporting) {
+            return hasId
+              ? await report(response, identity, id, request.body)
+              : void response.status(400).json({ error: "Which list?" });
+          }
           return await publish(response, identity, request.body, hasId ? id : null);
         case "PATCH":
           return await refreshAuthor(response, identity);
@@ -266,6 +285,49 @@ async function refreshAuthor(response: Response, identity: Identity): Promise<vo
   }
   await batch.commit();
   response.status(200).json({ updated: mine.size });
+}
+
+/**
+ * A complaint, kept for a person to read. Nothing is taken down automatically:
+ * there is one pair of eyes behind this and the app says so rather than
+ * implying a moderation team.
+ */
+async function report(
+  response: Response,
+  identity: Identity,
+  listId: string,
+  body: unknown,
+): Promise<void> {
+  const source = (body ?? {}) as Record<string, unknown>;
+  const reason = REPORT_REASONS.find((known) => known === source.reason);
+  if (!reason) {
+    response.status(400).json({ error: "Pick a reason", code: "INVALID" });
+    return;
+  }
+
+  const db = getFirestore();
+  const list = await db.collection(PUBLISHED).doc(listId).get();
+  if (!list.exists) {
+    // Already gone is the outcome they wanted; saying so beats an error.
+    response.status(204).send();
+    return;
+  }
+  const stored = list.data() as StoredList;
+
+  // One report per person per list: a second is the same complaint, not a
+  // stronger one.
+  await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
+    listId,
+    listTitle: stored.title,
+    authorUid: stored.authorUid,
+    authorName: stored.authorName,
+    reporterUid: identity.uid,
+    reason,
+    note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  response.status(204).send();
 }
 
 async function unpublish(response: Response, identity: Identity, id: string): Promise<void> {
