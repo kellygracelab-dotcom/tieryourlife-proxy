@@ -27,6 +27,8 @@ export const MAX_BOARDS_PER_ACCOUNT = 200;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
 export const MAX_URL_LENGTH = 2000;
+/** Long enough for any digest a device might use to stand for a board. */
+export const MAX_FINGERPRINT_LENGTH = 128;
 /** How many boards an index page names before the caller asks for more. */
 export const BOARD_PAGE_SIZE = 100;
 
@@ -63,6 +65,13 @@ export interface StoredItem {
 }
 
 export interface StoredBoard {
+  /**
+   * The device's own short stand-in for these contents. Opaque here -- never
+   * parsed, never compared, only handed back. It exists so a phone whose
+   * database returned from a system backup can tell "the same board twice"
+   * from "two afternoons", which a revision number cannot say.
+   */
+  fingerprint: string | null;
   title: string;
   displayMode: string;
   category: string | null;
@@ -228,6 +237,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
   }
 
   const board: StoredBoard = {
+    fingerprint: cleanText(source.fingerprint, MAX_FINGERPRINT_LENGTH),
     title,
     displayMode: DISPLAY_MODES.find((known) => known === source.displayMode) ?? "WRAP",
     category: cleanText(source.category, MAX_TITLE_LENGTH),

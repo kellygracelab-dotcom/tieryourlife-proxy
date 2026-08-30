@@ -71,6 +71,7 @@ function toFullBoard(id: string, data: BoardDocument) {
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     deviceName: data.deviceName ?? null,
     deleted: data.deleted === true,
+    fingerprint: data.fingerprint ?? null,
     title: data.title ?? "",
     displayMode: data.displayMode ?? "WRAP",
     category: data.category ?? null,
@@ -96,6 +97,7 @@ function toIndexEntry(id: string, data: BoardDocument) {
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     deviceName: data.deviceName ?? null,
     deleted: data.deleted === true,
+    fingerprint: data.fingerprint ?? null,
     title: data.title ?? "",
     itemCount: data.items?.filter((item) => item.deletedAt === null).length ?? 0,
   };

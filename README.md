@@ -54,6 +54,11 @@ that merges two arrangements of the same cards — the order *is* the content, a
 an automatic merge invents an afternoon neither person had. So the app keeps
 both, and the second one carries the name of the phone that wrote it.
 
+**A board carries the device's own fingerprint.** Opaque here — stored and
+handed back, never parsed. It is what lets a phone whose database came home
+from a system backup tell *the same board twice* from *two afternoons*, which a
+revision number on its own cannot say.
+
 **Deleting leaves a marker.** The document stays, emptied, with `deleted: true`.
 Without it the account forgets the board, the other phone still has it, and the
 next sync puts it back — a delete that will not stick.

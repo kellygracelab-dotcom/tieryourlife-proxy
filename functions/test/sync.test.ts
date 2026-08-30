@@ -223,6 +223,22 @@ describe("decideStore", () => {
     assert.equal(decision.ok === false && decision.reason, "too_many_boards");
   });
 
+  // Opaque: a device's own digest, handed back untouched so a database that
+  // came home from a system backup can tell one board from two.
+  it("keeps the device's fingerprint as it was given", () => {
+    const decision = store({ fingerprint: "a1b2c3" });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.board.fingerprint, "a1b2c3");
+  });
+
+  it("keeps a board that brings no fingerprint at all", () => {
+    const decision = store({ fingerprint: undefined });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.board.fingerprint, null);
+  });
+
   it("falls back to a wrapping board and a manual card rather than refusing", () => {
     const decision = store({
       displayMode: "SOMETHING_ELSE",
