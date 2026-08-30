@@ -83,8 +83,23 @@ async function forgetLedgerRows(uids: Set<string>): Promise<void> {
   const rows = [...uids];
   // Firestore takes 500 writes per batch, half of Auth's delete limit.
   for (let from = 0; from < rows.length; from += 500) {
+    const slice = rows.slice(from, from + 500);
+    const refs = slice.map((uid) => db.collection("accounts").doc(uid));
+    const snapshots = await db.getAll(...refs);
+
+    // Say what is going. Today every balance here is the free grant and losing
+    // it costs nobody anything -- the identity that replaced this one drew its
+    // own. The day credits can be bought that stops being true, and a line in
+    // the log is the difference between knowing that and guessing.
+    snapshots.forEach((snapshot) => {
+      const credits = (snapshot.data()?.credits as number | undefined) ?? 0;
+      if (credits > 0) {
+        console.log(`Guest sweep: discarding ${credits} credits with ${snapshot.id}`);
+      }
+    });
+
     const batch = db.batch();
-    rows.slice(from, from + 500).forEach((uid) => batch.delete(db.collection("accounts").doc(uid)));
+    refs.forEach((ref) => batch.delete(ref));
     await batch.commit();
   }
 }
