@@ -225,6 +225,28 @@ describe("decideStore", () => {
 
   // Opaque: a device's own digest, handed back untouched so a database that
   // came home from a system backup can tell one board from two.
+  // A picture of this person's own. The path around the file means nothing on
+  // a second phone, so only the name travels.
+  it("keeps a card's own picture by name", () => {
+    const decision = store({
+      items: [{ uid: "item-1", tierUid: TIER_UID, position: 0, title: "Me at the beach", pictureId: "abc-123" }],
+    });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.board.items[0].pictureId, "abc-123");
+  });
+
+  // The id is concatenated into a storage path, so anything that could climb
+  // out of one is not an id.
+  it("refuses a picture name that could walk out of its folder", () => {
+    const decision = store({
+      items: [{ uid: "item-1", tierUid: TIER_UID, position: 0, title: "Arrival", pictureId: "../../secrets" }],
+    });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.board.items[0].pictureId, null);
+  });
+
   it("keeps the device's fingerprint as it was given", () => {
     const decision = store({ fingerprint: "a1b2c3" });
 

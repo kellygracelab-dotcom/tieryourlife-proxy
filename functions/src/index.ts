@@ -8,3 +8,4 @@ export { lists } from "./community";
 export { boards } from "./boards";
 export { tmdb } from "./tmdb";
 export { sweepGuests } from "./sweep";
+export { sweepPictures } from "./sweepPictures";

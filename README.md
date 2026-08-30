@@ -59,6 +59,21 @@ handed back, never parsed. It is what lets a phone whose database came home
 from a system backup tell *the same board twice* from *two afternoons*, which a
 revision number on its own cannot say.
 
+**Pictures go straight to Storage, not through here.** A card's own picture —
+taken or generated — is megabytes, and pushing megabytes through a Cloud
+Function means paying for the function's time to move bytes it does nothing
+with. `storage.rules` opens exactly one door: `users/{uid}/pictures/{id}`, that
+person only, images under 4 MB. Nothing there can reach Firestore. A board
+carries the picture's id, which is the file's own name; the path around it
+means nothing on a second phone, so it does not travel.
+
+`sweepPictures` runs daily and deletes pictures no board points at, including
+boards in the trash — a board restored to blank tiles is not restored. Nothing
+is touched in its first day: the file usually lands seconds before the board
+that names it. The client could tidy up after itself and does not, because
+somebody who uninstalls the app leaves their rubbish behind and we are the ones
+paying to keep it.
+
 **Deleting leaves a marker.** The document stays, emptied, with `deleted: true`.
 Without it the account forgets the board, the other phone still has it, and the
 next sync puts it back — a delete that will not stick.
@@ -129,6 +144,12 @@ accounts/{uid}                credits, inFlightUntil, totalGenerated, createdAt,
 accounts/{uid}/boards/{uid}   one person's board, kept for their next phone
 usage/{YYYY-MM-DD}            generations
 publishedLists/{id}           a board someone put in the feed
+```
+
+And one bucket, the only thing a client writes to directly:
+
+```
+users/{uid}/pictures/{id}     a card's own picture, that person's eyes only
 ```
 
 Deploy the rules alongside the functions:

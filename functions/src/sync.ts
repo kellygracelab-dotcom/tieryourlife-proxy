@@ -54,6 +54,13 @@ export interface StoredTier {
 
 export interface StoredItem {
   uid: string;
+  /**
+   * A picture of this person's own -- taken or generated -- kept in their
+   * account rather than on anybody else's server. The id is the file's own
+   * name, which is already unique and already means the same thing on a second
+   * phone; the path around it does not, so only this travels.
+   */
+  pictureId: string | null;
   /** The tier it sits in, by the tier's own uid rather than a row number. */
   tierUid: string;
   position: number;
@@ -109,6 +116,18 @@ function keepableImageUrl(value: unknown): string | null {
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
   return trimmed.length > MAX_URL_LENGTH ? null : trimmed;
+}
+
+/**
+ * Only ever compared and used to address a file, so the check is that it could
+ * be a file name at all. Anything with a slash or a dot leading somewhere is
+ * refused outright: this string is concatenated into a storage path.
+ */
+function pictureId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 100) return null;
+  return /^[A-Za-z0-9_-]+$/.test(trimmed) ? trimmed : null;
 }
 
 function timestamp(value: unknown): number | null {
@@ -227,6 +246,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
     itemUids.add(itemUid);
     items.push({
       uid: itemUid,
+      pictureId: pictureId(item.pictureId),
       tierUid,
       position: Math.max(0, Math.trunc(Number(item.position) || 0)),
       title: itemTitle,
