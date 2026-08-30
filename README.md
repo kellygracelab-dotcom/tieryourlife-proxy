@@ -13,6 +13,10 @@ on to meter it is the side holding the key.
 | `/generate` | POST | `{ "prompt": "..." }` | the image itself, `image/jpeg` |
 | `/credits` | GET | — | `{ "credits": 7 }` |
 | `/tmdb/3/search/movie` | GET | `?query=&language=` | TMDB's JSON, unchanged |
+| `/boards` | GET | `?after=` | `{ "boards": [...], "next": null }` |
+| `/boards/{uid}` | GET | — | the board, whole |
+| `/boards/{uid}` | PUT | the board plus `basedOn` | `{ "uid": "...", "revision": 4 }` |
+| `/boards/{uid}` | DELETE | — | nothing, `204` |
 
 `/generate` does more than relay. Gemini answers with JSON carrying the image as
 a base64 string; the function decodes it and returns raw bytes, so the phone
@@ -23,6 +27,36 @@ carry the balance left in `X-Credits-Remaining`.
 allowed, so this cannot be used as an open relay.
 
 Wikidata is not proxied. It needs no credentials, and the app calls it directly.
+
+## Keeping boards
+
+A board lives in Room on the phone, and until this existed that was the only
+place it lived: reinstalling, or a new phone, took someone's boards with it.
+`/boards` is the copy an account keeps, so they come back.
+
+It is not the published snapshot. A published list is a picture arranged for
+strangers; this is the board itself — the pool, the trash, the order of
+everything, and the identifiers that let a second phone recognise a board it has
+already seen instead of duplicating it.
+
+Three things it does deliberately:
+
+**Guests are refused.** An anonymous identity lives inside the install, so a
+backup kept under one is destroyed by the very event it protects against. There
+is no point charging for storage nobody can ever reach again. `GET /boards`
+answers a guest with an empty list rather than a 403, because asking is what the
+app does on every start.
+
+**A write says what it was based on.** The device sends `basedOn`, the revision
+it was working from. If the account has moved on since, the write is refused
+with `409` and the stored board comes back in the body. There is no arithmetic
+that merges two arrangements of the same cards — the order *is* the content, and
+an automatic merge invents an afternoon neither person had. So the app keeps
+both, and the second one carries the name of the phone that wrote it.
+
+**Deleting leaves a marker.** The document stays, emptied, with `deleted: true`.
+Without it the account forgets the board, the other phone still has it, and the
+next sync puts it back — a delete that will not stick.
 
 ## Access
 
@@ -81,13 +115,15 @@ All three constants live at the top of [`functions/src/quota.ts`](functions/src/
 
 ## Firestore
 
-Two collections, both written only by these functions. `firestore.rules` denies
+All of it written only by these functions. `firestore.rules` denies
 clients outright and the Admin SDK bypasses rules — a client that could write
 its own balance would never need to buy anything.
 
 ```
-accounts/{uid}       credits, inFlightUntil, totalGenerated, createdAt, updatedAt
-usage/{YYYY-MM-DD}   generations
+accounts/{uid}                credits, inFlightUntil, totalGenerated, createdAt, updatedAt
+accounts/{uid}/boards/{uid}   one person's board, kept for their next phone
+usage/{YYYY-MM-DD}            generations
+publishedLists/{id}           a board someone put in the feed
 ```
 
 Deploy the rules alongside the functions:

@@ -5,5 +5,6 @@ initializeApp();
 export { generate } from "./generate";
 export { credits } from "./credits";
 export { lists } from "./community";
+export { boards } from "./boards";
 export { tmdb } from "./tmdb";
 export { sweepGuests } from "./sweep";
