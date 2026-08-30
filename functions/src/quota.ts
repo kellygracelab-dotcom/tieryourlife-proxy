@@ -101,3 +101,40 @@ export function decideSettlement(succeeded: boolean): Settlement {
 export function dayKey(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
+
+/**
+ * What one account ends up with after taking over a guest's balance.
+ *
+ * The case: somebody used the app without an account, then signed into a
+ * Google account that already existed. Firebase cannot link the two -- the
+ * Google account is already an identity -- so it signs them in and the guest
+ * uid is left behind with whatever was on it. That balance is theirs; it was
+ * simply held under a name they can never use again.
+ *
+ * Not a sum, and that is the whole point. Every credit today is the free
+ * grant, and adding the two together would make signing out and back in a way
+ * of printing them. Bought credits are different -- nobody prints those -- so
+ * they add, and the single free grant is counted once at its higher remainder.
+ */
+export interface CarryInput {
+  destination: AccountSnapshot;
+  destinationPurchased: number;
+  guestCredits: number;
+  guestPurchased: number;
+}
+
+export function decideCarry({
+  destination,
+  destinationPurchased,
+  guestCredits,
+  guestPurchased,
+}: CarryInput): { credits: number; purchased: number; moved: boolean } {
+  const held = startingCredits(destination);
+  const freeHere = Math.max(0, held - destinationPurchased);
+  const freeThere = Math.max(0, guestCredits - guestPurchased);
+
+  const purchased = destinationPurchased + guestPurchased;
+  const credits = purchased + Math.max(freeHere, freeThere);
+
+  return { credits, purchased, moved: credits > held };
+}

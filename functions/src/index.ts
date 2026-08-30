@@ -4,6 +4,7 @@ initializeApp();
 
 export { generate } from "./generate";
 export { credits } from "./credits";
+export { adoptGuestCredits } from "./adopt";
 export { lists } from "./community";
 export { boards } from "./boards";
 export { tmdb } from "./tmdb";

@@ -6,6 +6,7 @@ import {
   IN_FLIGHT_LEASE_MS,
   type AccountSnapshot,
   dayKey,
+  decideCarry,
   decideReservation,
   decideSettlement,
   startingCredits,
@@ -151,5 +152,89 @@ describe("dayKey", () => {
   it("buckets by UTC day, not by the server's local time", () => {
     assert.equal(dayKey(Date.parse("2026-08-28T23:59:59.000Z")), "2026-08-28");
     assert.equal(dayKey(Date.parse("2026-08-29T00:00:00.000Z")), "2026-08-29");
+  });
+});
+
+describe("decideCarry", () => {
+  const empty = { exists: false, credits: 0, inFlightUntilMs: null };
+  const account = (credits: number) => ({ exists: true, credits, inFlightUntilMs: null });
+
+  // The case this exists for: somebody used the app as a guest, then signed
+  // into a Google account that already existed. The guest uid keeps the
+  // balance and can never be reached again.
+  it("hands a fresh account the guest's balance when it is the larger one", () => {
+    const decision = decideCarry({
+      destination: empty,
+      destinationPurchased: 0,
+      guestCredits: 4,
+      guestPurchased: 0,
+    });
+
+    assert.equal(decision.credits, FREE_GENERATION_GRANT);
+    assert.equal(decision.moved, false);
+  });
+
+  it("keeps the guest's balance when the account has already spent more", () => {
+    const decision = decideCarry({
+      destination: account(2),
+      destinationPurchased: 0,
+      guestCredits: 7,
+      guestPurchased: 0,
+    });
+
+    assert.equal(decision.credits, 7);
+    assert.equal(decision.moved, true);
+  });
+
+  // Not a sum, and this is the reason: adding the two would make signing out
+  // and back in a way of printing the free grant.
+  it("does not add two free grants together", () => {
+    const decision = decideCarry({
+      destination: account(FREE_GENERATION_GRANT),
+      destinationPurchased: 0,
+      guestCredits: FREE_GENERATION_GRANT,
+      guestPurchased: 0,
+    });
+
+    assert.equal(decision.credits, FREE_GENERATION_GRANT);
+    assert.equal(decision.moved, false);
+  });
+
+  // Bought credits are nobody's to print, so they add. The single free grant
+  // is still counted once, at whichever side has more of it left.
+  it("adds bought credits and counts the free grant once", () => {
+    const decision = decideCarry({
+      destination: account(25),
+      destinationPurchased: 20,
+      guestCredits: 8,
+      guestPurchased: 0,
+    });
+
+    assert.equal(decision.purchased, 20);
+    assert.equal(decision.credits, 28);
+  });
+
+  it("carries bought credits off a guest that paid for them", () => {
+    const decision = decideCarry({
+      destination: account(3),
+      destinationPurchased: 0,
+      guestCredits: 50,
+      guestPurchased: 50,
+    });
+
+    assert.equal(decision.purchased, 50);
+    assert.equal(decision.credits, 53);
+  });
+
+  it("leaves an account alone when the guest has nothing", () => {
+    const decision = decideCarry({
+      destination: account(6),
+      destinationPurchased: 0,
+      guestCredits: 0,
+      guestPurchased: 0,
+    });
+
+    assert.equal(decision.credits, 6);
+    assert.equal(decision.moved, false);
   });
 });
