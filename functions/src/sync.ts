@@ -38,7 +38,7 @@ export const MAX_DEVICE_NAME_LENGTH = 40;
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 const DISPLAY_MODES = ["WRAP", "RANKED"] as const;
-const ITEM_SOURCES = ["MANUAL", "CATALOGUE", "GENERATED"] as const;
+const ITEM_SOURCES = ["MANUAL", "TMDB", "GENERATED"] as const;
 
 export interface StoredTier {
   uid: string;

@@ -40,7 +40,7 @@ function body(overrides: Record<string, unknown> = {}) {
         position: 0,
         title: "Arrival",
         imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg",
-        source: "CATALOGUE",
+        source: "TMDB",
       },
     ],
     ...overrides,
