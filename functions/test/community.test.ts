@@ -18,16 +18,38 @@ describe("nextCursor", () => {
 });
 
 describe("isModerator", () => {
+  const who = (uid: string, email: string | null = null) => ({ uid, email });
+
   it("knows the one uid it was given", () => {
-    assert.equal(isModerator("abc", "abc"), true);
+    assert.equal(isModerator(who("abc"), "abc", ""), true);
   });
 
   it("turns everyone else away", () => {
-    assert.equal(isModerator("xyz", "abc"), false);
+    assert.equal(isModerator(who("xyz"), "abc", ""), false);
   });
 
   it("makes nobody a moderator when it was never configured", () => {
-    assert.equal(isModerator("abc", ""), false);
-    assert.equal(isModerator("", ""), false);
+    assert.equal(isModerator(who("abc"), "", ""), false);
+    assert.equal(isModerator(who(""), "", ""), false);
+  });
+
+  // The second key. A lost account takes its uid with it; the address can be
+  // signed in with again.
+  it("knows the address as well as the uid", () => {
+    assert.equal(isModerator(who("other", "me@example.com"), "abc", "me@example.com"), true);
+  });
+
+  it("compares addresses without caring about case or stray spaces", () => {
+    assert.equal(isModerator(who("other", "me@example.com"), "", "  Me@Example.com  "), true);
+  });
+
+  // Identity only ever carries an address the provider verified, so a null
+  // here is a caller who has none -- never one who merely claims one.
+  it("turns away a caller with no verified address", () => {
+    assert.equal(isModerator(who("other", null), "abc", "me@example.com"), false);
+  });
+
+  it("makes nobody a moderator when only an empty address is configured", () => {
+    assert.equal(isModerator(who("other", "me@example.com"), "", ""), false);
   });
 });

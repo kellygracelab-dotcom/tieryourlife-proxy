@@ -5,11 +5,18 @@ import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
 import {
+  copyForPublication,
+  discardPublished,
+  discardUnusedPublished,
+} from "./publishedPictures";
+import {
   CATEGORIES,
   FEED_PAGE_SIZE,
   REPORT_PAGE_SIZE,
   MAX_TITLE_LENGTH,
   decidePublish,
+  picturesWanted,
+  settle,
   type Category,
   type PublishDecision,
 } from "./publishing";
@@ -24,11 +31,30 @@ const VERBS = ["report", "takedown", "dismiss"];
  * flag on a document is a flag that can be written.
  */
 const moderatorUid = defineString("MODERATOR_UID");
+const moderatorEmail = defineString("MODERATOR_EMAIL");
 
-export function isModerator(uid: string, configured: string = moderatorUid.value()): boolean {
+/**
+ * Two keys to one door, and the second is why: an account can be lost, and its
+ * uid dies with it, while the address survives and can be signed in with
+ * again. Naming only the uid means one lost password locks the moderator out
+ * of their own queue until somebody redeploys.
+ *
+ * The address is only ever the one the provider verified -- [Identity] drops
+ * unverified ones -- so this cannot be claimed by asserting it.
+ */
+export function isModerator(
+  identity: Pick<Identity, "uid" | "email">,
+  configuredUid: string = moderatorUid.value(),
+  configuredEmail: string = moderatorEmail.value(),
+): boolean {
   // An unset moderator makes nobody one. The other way round would hand the
   // takedown button to everybody the first time the parameter went missing.
-  return configured.length > 0 && configured === uid;
+  const byUid = configuredUid.length > 0 && configuredUid === identity.uid;
+  const byEmail =
+    configuredEmail.length > 0 &&
+    identity.email !== null &&
+    configuredEmail.trim().toLowerCase() === identity.email;
+  return byUid || byEmail;
 }
 const MAX_NOTE_LENGTH = 500;
 
@@ -267,7 +293,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
  * would hide how many there were, which is the useful part.
  */
 async function readReports(response: Response, identity: Identity): Promise<void> {
-  if (!isModerator(identity.uid)) {
+  if (!isModerator(identity)) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -305,7 +331,7 @@ async function settleReports(
   listId: string,
   takeDown: boolean,
 ): Promise<void> {
-  if (!isModerator(identity.uid)) {
+  if (!isModerator(identity)) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -318,6 +344,9 @@ async function settleReports(
     batch.delete(db.collection(PUBLISHED).doc(listId));
   }
   await batch.commit();
+  if (takeDown) {
+    await discardPublished(listId);
+  }
 
   response.status(204).send();
 }
@@ -361,22 +390,8 @@ async function publish(
     return;
   }
 
-  const document = {
-    authorUid: identity.uid,
-    authorName: identity.name ?? "Anonymous",
-    authorPhotoUrl: identity.picture,
-    title: decision.list.title,
-    titleLower: decision.list.titleLower,
-    category: decision.list.category,
-    tiers: decision.list.tiers,
-    items: decision.list.items,
-    itemCount: decision.list.items.length,
-    coverImageUrl: decision.list.coverImageUrl,
-    previewImages: decision.list.previewImages,
-    tierColors: decision.list.tierColors,
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
+  // Whose list this is, settled before any picture is read: replacing somebody
+  // else's list should cost nothing and reach nothing.
   if (existingId) {
     const existing = await collection.doc(existingId).get();
     if (!existing.exists) {
@@ -387,13 +402,61 @@ async function publish(
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
       return;
     }
+  }
+
+  // A new list is named before it is written. The pictures have to be copied
+  // somewhere, and that somewhere is the list's own folder.
+  const target = existingId ?? collection.doc().id;
+
+  const outcomes = await copyForPublication(
+    identity.uid,
+    target,
+    picturesWanted(decision.draft),
+  );
+  const refused = outcomes.find(
+    (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
+  );
+  if (refused) {
+    response.status(422).json({
+      error: "That picture cannot go in the feed",
+      code: "PICTURE_REFUSED",
+      because: refused.because,
+    });
+    return;
+  }
+
+  const addresses = new Map(
+    outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
+  );
+  const list = settle(decision.draft, addresses);
+
+  const document = {
+    authorUid: identity.uid,
+    authorName: identity.name ?? "Anonymous",
+    authorPhotoUrl: identity.picture,
+    title: list.title,
+    titleLower: list.titleLower,
+    category: list.category,
+    tiers: list.tiers,
+    items: list.items,
+    itemCount: list.items.length,
+    coverImageUrl: list.coverImageUrl,
+    previewImages: list.previewImages,
+    tierColors: list.tierColors,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+
+  if (existingId) {
     await collection.doc(existingId).set(document, { merge: true });
+    // The board was edited for a month; the copies it no longer names are
+    // nobody's, because the snapshot that pointed at them has been replaced.
+    await discardUnusedPublished(existingId, [...addresses.keys()]);
     response.status(200).json({ id: existingId });
     return;
   }
 
-  const created = await collection.add({ ...document, publishedAt: FieldValue.serverTimestamp() });
-  response.status(201).json({ id: created.id });
+  await collection.doc(target).set({ ...document, publishedAt: FieldValue.serverTimestamp() });
+  response.status(201).json({ id: target });
 }
 
 /**
@@ -480,5 +543,6 @@ async function unpublish(response: Response, identity: Identity, id: string): Pr
     return;
   }
   await doc.delete();
+  await discardPublished(id);
   response.status(204).send();
 }

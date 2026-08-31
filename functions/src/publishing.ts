@@ -2,6 +2,7 @@
  * Rules for what may be published and in what shape. Pure, like `quota.ts`:
  * the adapter in `community.ts` turns these decisions into Firestore writes.
  */
+import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
 
 /**
  * Twenty was low enough that an enthusiastic person would meet it, and it also
@@ -54,8 +55,35 @@ export interface PublishedTier {
 
 export interface PublishedItem {
   title: string;
-  /** Only ever an https URL someone else already hosts. */
+  /** Only ever an https URL. Somebody else's, or our own published copy. */
   imageUrl: string | null;
+}
+
+/**
+ * A card before its own photograph has been given a public address.
+ *
+ * Two kinds of picture reach this point and they arrive differently. A poster
+ * comes as an https address somebody else already hosts, and is carried
+ * through untouched. A photograph out of somebody's gallery comes as the name
+ * of a file already sitting in their private folder, and cannot go into the
+ * feed as it is -- nobody but them can read that folder. The adapter looks at
+ * those, copies the ones that pass, and [settle] puts the new addresses in.
+ */
+export interface DraftItem {
+  title: string;
+  imageUrl: string | null;
+  pictureId: string | null;
+}
+
+export interface PublishDraft {
+  title: string;
+  titleLower: string;
+  category: Category;
+  tiers: PublishedTier[];
+  items: DraftItem[];
+  coverImageUrl: string | null;
+  coverPictureId: string | null;
+  tierColors: string[];
 }
 
 export interface PublishedList {
@@ -79,7 +107,7 @@ export type PublishRejection =
   | { reason: "too_large"; detail: string }
   | { reason: "invalid"; detail: string };
 
-export type PublishDecision = { ok: true; list: PublishedList } | { ok: false } & PublishRejection;
+export type PublishDecision = { ok: true; draft: PublishDraft } | { ok: false } & PublishRejection;
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
@@ -165,33 +193,89 @@ export function decidePublish({
     return { ok: false, reason: "too_large", detail: "Too many items" };
   }
 
-  const items: PublishedItem[] = [];
+  const items: DraftItem[] = [];
   for (const raw of rawItems) {
     const item = raw as Record<string, unknown>;
     const itemTitle = cleanText(item.title, MAX_TITLE_LENGTH);
     if (!itemTitle) {
       return { ok: false, reason: "invalid", detail: "An item needs a title" };
     }
-    items.push({ title: itemTitle, imageUrl: keepableImageUrl(item.imageUrl) });
+    items.push({
+      title: itemTitle,
+      imageUrl: keepableImageUrl(item.imageUrl),
+      pictureId: isPictureId(item.pictureId) ? item.pictureId : null,
+    });
   }
 
-  const list: PublishedList = {
+  const coverPictureId = isPictureId(source.coverPictureId) ? source.coverPictureId : null;
+  const wanted = new Set(
+    [...items.map((item) => item.pictureId), coverPictureId].filter(
+      (id): id is string => id !== null,
+    ),
+  );
+  // Counted by distinct picture rather than by card: the same photograph on
+  // four cards is one read, one look and one copy.
+  if (wanted.size > MAX_OWN_PICTURES_PER_LIST) {
+    return { ok: false, reason: "too_large", detail: "Too many of your own photographs" };
+  }
+
+  const draft: PublishDraft = {
     title,
     titleLower: title.toLowerCase(),
     category,
     tiers,
     items,
     coverImageUrl: keepableImageUrl(source.coverImageUrl),
+    coverPictureId,
+    tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
+  };
+
+  // Weighed against the addresses our own copies will have, which are longer
+  // than nothing and shorter than most posters'. Weighing the draft instead
+  // would let a board pass here and outgrow the document later.
+  if (JSON.stringify(settle(draft, new Map())).length > MAX_SNAPSHOT_BYTES) {
+    return { ok: false, reason: "too_large", detail: "The list is too heavy to store" };
+  }
+
+  return { ok: true, draft };
+}
+
+/**
+ * The draft with its own photographs given the addresses they were copied to.
+ *
+ * A picture missing from [addresses] leaves its card without art rather than
+ * failing the publication: the card still says what it is, and a board of
+ * ninety photographs should not be lost to one that would not copy.
+ */
+export function settle(draft: PublishDraft, addresses: Map<string, string>): PublishedList {
+  const resolve = (imageUrl: string | null, pictureId: string | null): string | null =>
+    imageUrl ?? (pictureId === null ? null : addresses.get(pictureId) ?? null);
+
+  const items: PublishedItem[] = draft.items.map((item) => ({
+    title: item.title,
+    imageUrl: resolve(item.imageUrl, item.pictureId),
+  }));
+
+  return {
+    title: draft.title,
+    titleLower: draft.titleLower,
+    category: draft.category,
+    tiers: draft.tiers,
+    items,
+    coverImageUrl: resolve(draft.coverImageUrl, draft.coverPictureId),
     previewImages: items
       .map((item) => item.imageUrl)
       .filter((url): url is string => url !== null)
       .slice(0, MAX_PREVIEW_IMAGES),
-    tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
+    tierColors: draft.tierColors,
   };
+}
 
-  if (JSON.stringify(list).length > MAX_SNAPSHOT_BYTES) {
-    return { ok: false, reason: "too_large", detail: "The list is too heavy to store" };
-  }
-
-  return { ok: true, list };
+/** Every own photograph a draft names, each one once. */
+export function picturesWanted(draft: PublishDraft): string[] {
+  return [...new Set(
+    [...draft.items.map((item) => item.pictureId), draft.coverPictureId].filter(
+      (id): id is string => id !== null,
+    ),
+  )];
 }

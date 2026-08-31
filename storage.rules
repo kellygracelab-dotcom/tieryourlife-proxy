@@ -27,6 +27,15 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
     }
 
+    // The feed's own copies. Published means published: anybody may look,
+    // including somebody who never installed the app. Nothing writes here but
+    // the publish function, using the admin credentials, which rules do not
+    // apply to -- so a client that tried would be refused by the last rule
+    // below whether or not this one existed.
+    match /published/{listId}/{pictureId} {
+      allow read: if true;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

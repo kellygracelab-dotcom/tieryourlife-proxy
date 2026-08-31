@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  settle,
   MAX_ITEMS_PER_LIST,
   MAX_LISTS_PER_AUTHOR,
   MAX_PREVIEW_IMAGES,
   MAX_TITLE_LENGTH,
   decidePublish,
+  picturesWanted,
 } from "../src/publishing";
+import { MAX_OWN_PICTURES_PER_LIST } from "../src/safety";
 
 function body(overrides: Record<string, unknown> = {}) {
   return {
@@ -32,7 +35,7 @@ describe("decidePublish", () => {
     const decision = publish();
 
     assert.equal(decision.ok, true);
-    assert.equal(decision.ok && decision.list.items[0].imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
+    assert.equal(decision.ok && decision.draft.items[0].imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
   });
 
   // Putting a name on something needs a name; reading and copying do not.
@@ -54,21 +57,21 @@ describe("decidePublish", () => {
     const decision = publish({ items: [{ title: "Sunday roast", imageUrl: "file:///data/photo.jpg" }] });
 
     assert.equal(decision.ok, true);
-    assert.equal(decision.ok && decision.list.items[0].imageUrl, null);
-    assert.equal(decision.ok && decision.list.items[0].title, "Sunday roast");
+    assert.equal(decision.ok && decision.draft.items[0].imageUrl, null);
+    assert.equal(decision.ok && decision.draft.items[0].title, "Sunday roast");
   });
 
   it("drops a plain http image, keeping only https", () => {
     const decision = publish({ items: [{ title: "A", imageUrl: "http://example.com/a.jpg" }] });
 
-    assert.equal(decision.ok && decision.list.items[0].imageUrl, null);
+    assert.equal(decision.ok && decision.draft.items[0].imageUrl, null);
   });
 
   it("collapses whitespace and trims an over-long title", () => {
     const decision = publish({ title: "  Every   A24\n\tfilm  " + "x".repeat(MAX_TITLE_LENGTH) });
 
     assert.equal(decision.ok, true);
-    const title = decision.ok ? decision.list.title : "";
+    const title = decision.ok ? decision.draft.title : "";
     assert.equal(title.startsWith("Every A24 film"), true);
     assert.equal(title.length, MAX_TITLE_LENGTH);
   });
@@ -78,7 +81,7 @@ describe("decidePublish", () => {
     const decision = publish({ title: "Every A24 Film" });
 
     assert.equal(decision.ok, true);
-    assert.equal(decision.ok && decision.list.titleLower, "every a24 film");
+    assert.equal(decision.ok && decision.draft.titleLower, "every a24 film");
   });
 
   it("refuses a category that is not one of the eight", () => {
@@ -93,8 +96,8 @@ describe("decidePublish", () => {
     const remote = publish({ coverImageUrl: "https://image.tmdb.org/t/p/w500/cover.jpg" });
     const local = publish({ coverImageUrl: "content://media/external/images/1" });
 
-    assert.equal(remote.ok && remote.list.coverImageUrl, "https://image.tmdb.org/t/p/w500/cover.jpg");
-    assert.equal(local.ok && local.list.coverImageUrl, null);
+    assert.equal(remote.ok && remote.draft.coverImageUrl, "https://image.tmdb.org/t/p/w500/cover.jpg");
+    assert.equal(local.ok && local.draft.coverImageUrl, null);
   });
 
   // The feed draws a mosaic from these, so it must not have to open the list.
@@ -107,7 +110,7 @@ describe("decidePublish", () => {
     const decision = publish({ items });
 
     assert.equal(decision.ok, true);
-    const previews = decision.ok ? decision.list.previewImages : [];
+    const previews = decision.ok ? settle(decision.draft, new Map()).previewImages : [];
     assert.equal(previews.length, MAX_PREVIEW_IMAGES);
     assert.equal(previews.every((url) => url.startsWith("https://")), true);
   });
@@ -136,7 +139,7 @@ describe("decidePublish", () => {
     const decision = publish({ items });
 
     assert.equal(decision.ok, true);
-    assert.equal(decision.ok && decision.list.items.length, MAX_ITEMS_PER_LIST);
+    assert.equal(decision.ok && decision.draft.items.length, MAX_ITEMS_PER_LIST);
   });
 
   // A count cannot express Firestore's document limit: few cards with very long
@@ -170,7 +173,97 @@ describe("decidePublish", () => {
       tiers: [{ label: "S", caption: "   ", colorLight: "#B03A32", colorDark: "#F1948C" }],
     });
 
-    assert.equal(withCaption.ok && withCaption.list.tiers[0].caption, "Masterpiece");
-    assert.equal(withoutCaption.ok && withoutCaption.list.tiers[0].caption, null);
+    assert.equal(withCaption.ok && withCaption.draft.tiers[0].caption, "Masterpiece");
+    assert.equal(withoutCaption.ok && withoutCaption.draft.tiers[0].caption, null);
+  });
+});
+
+/**
+ * Somebody's own photograph arrives as the name of a file in their private
+ * folder, not as an address: nobody but them can read that folder, so it
+ * cannot go into the feed until the publish function has copied it.
+ */
+describe("own photographs", () => {
+  const withPictures = (ids: (string | null)[], cover: string | null = null) =>
+    decidePublish({
+      body: body({
+        coverPictureId: cover,
+        items: ids.map((pictureId, index) => ({ title: `Card ${index}`, pictureId })),
+      }),
+      isAnonymous: false,
+      listsAlreadyPublished: 0,
+    });
+
+  it("carries the picture's name through, waiting for an address", () => {
+    const decision = withPictures(["abc"]);
+    assert.equal(decision.ok && decision.draft.items[0].pictureId, "abc");
+    assert.equal(decision.ok && decision.draft.items[0].imageUrl, null);
+  });
+
+  it("ignores a name that could climb out of its folder", () => {
+    const decision = withPictures(["../../secrets"]);
+    assert.equal(decision.ok && decision.draft.items[0].pictureId, null);
+  });
+
+  it("asks for each picture once, however many cards wear it", () => {
+    const decision = withPictures(["abc", "abc", "def"], "abc");
+    assert.deepEqual(decision.ok ? picturesWanted(decision.draft) : [], ["abc", "def"]);
+  });
+
+  it("refuses a list carrying more of them than one publication may", () => {
+    const many = Array.from({ length: MAX_OWN_PICTURES_PER_LIST + 1 }, (_, i) => `p${i}`);
+    const decision = withPictures(many);
+    assert.equal(decision.ok, false);
+    assert.equal(!decision.ok && decision.reason, "too_large");
+  });
+
+  it("counts the distinct pictures, not the cards", () => {
+    const decision = withPictures(Array.from({ length: 400 }, () => "one"));
+    assert.equal(decision.ok, true);
+  });
+});
+
+describe("settle", () => {
+  const draftOf = (ids: (string | null)[], cover: string | null = null) => {
+    const decision = decidePublish({
+      body: body({
+        coverPictureId: cover,
+        items: ids.map((pictureId, index) => ({ title: `Card ${index}`, pictureId })),
+      }),
+      isAnonymous: false,
+      listsAlreadyPublished: 0,
+    });
+    assert.equal(decision.ok, true);
+    return decision.ok ? decision.draft : null!;
+  };
+
+  it("gives each card the address its picture was copied to", () => {
+    const list = settle(draftOf(["abc"]), new Map([["abc", "https://example.test/abc"]]));
+    assert.equal(list.items[0].imageUrl, "https://example.test/abc");
+  });
+
+  it("gives the cover its address too", () => {
+    const list = settle(draftOf(["abc"], "abc"), new Map([["abc", "https://example.test/abc"]]));
+    assert.equal(list.coverImageUrl, "https://example.test/abc");
+  });
+
+  // A board of ninety photographs should not be lost to the one that would
+  // not copy: the card keeps its title and loses its art.
+  it("leaves a card without art rather than failing the list", () => {
+    const list = settle(draftOf(["abc"]), new Map());
+    assert.equal(list.items[0].imageUrl, null);
+    assert.equal(list.items[0].title, "Card 0");
+  });
+
+  it("shows the copies in the feed's mosaic like any other art", () => {
+    const list = settle(draftOf(["abc"]), new Map([["abc", "https://example.test/abc"]]));
+    assert.deepEqual(list.previewImages, ["https://example.test/abc"]);
+  });
+
+  it("leaves a poster's own address alone", () => {
+    const decision = decidePublish({ body: body(), isAnonymous: false, listsAlreadyPublished: 0 });
+    assert.equal(decision.ok, true);
+    const list = settle(decision.ok ? decision.draft : null!, new Map());
+    assert.equal(list.items[0].imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
   });
 });

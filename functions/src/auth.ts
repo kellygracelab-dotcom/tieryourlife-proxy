@@ -9,6 +9,12 @@ export interface Identity {
   name: string | null;
   /** The author's face, as they last set it. Only ever an https URL. */
   picture: string | null;
+  /**
+   * Only ever set when the provider says it verified it. An address the caller
+   * merely claims is worth nothing here -- it is one of the two things that
+   * make somebody the moderator.
+   */
+  email: string | null;
 }
 
 /**
@@ -35,7 +41,13 @@ export async function requireUser(request: Request, response: Response): Promise
       typeof decoded.picture === "string" && decoded.picture.startsWith("https://")
         ? decoded.picture
         : null;
-    return { uid: decoded.uid, isAnonymous: provider === "anonymous", name, picture };
+    // Lower-cased because addresses are compared, not displayed, and the two
+    // halves of an address disagree about case in theory but never in life.
+    const email =
+      decoded.email_verified === true && typeof decoded.email === "string"
+        ? decoded.email.trim().toLowerCase()
+        : null;
+    return { uid: decoded.uid, isAnonymous: provider === "anonymous", name, picture, email };
   } catch {
     response.status(401).json({ error: "Invalid ID token", code: "UNAUTHENTICATED" });
     return null;
