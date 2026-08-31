@@ -5,6 +5,7 @@ import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
 import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
+import { decideWording, ENOUGH_TO_JUDGE, realModeration, wordsOf } from "./wording";
 import {
   copyForPublication,
   discardPublished,
@@ -442,6 +443,26 @@ async function publish(
     }
     if ((existing.data() as StoredList).authorUid !== identity.uid) {
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+      return;
+    }
+  }
+
+  // Before the pictures, because it costs one call and no bytes: a board
+  // refused on its words should not have had ninety photographs read, looked
+  // at and copied first.
+  const words = wordsOf(decision.draft);
+  if (words.length >= ENOUGH_TO_JUDGE) {
+    const verdict = await realModeration(words);
+    // Null means the classifier could not be asked. Publishing goes ahead:
+    // words reach a feed that has a report button under every card, and an
+    // outage must not stop somebody publishing a board about films.
+    const wording = verdict === null ? { ok: true as const } : decideWording(verdict);
+    if (!wording.ok) {
+      response.status(422).json({
+        error: "That wording cannot go in the feed",
+        code: "WORDING_REFUSED",
+        because: wording.because,
+      });
       return;
     }
   }
