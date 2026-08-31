@@ -183,6 +183,29 @@ describe("decidePublish", () => {
  * folder, not as an address: nobody but them can read that folder, so it
  * cannot go into the feed until the publish function has copied it.
  */
+describe("a card with no name", () => {
+  const only = (item: Record<string, unknown>) =>
+    decidePublish({ body: body({ items: [item] }), isAnonymous: false, listsAlreadyPublished: 0 });
+
+  // Photographs out of somebody's gallery arrive with no name at all, and the
+  // picture is what the card is. Refusing them refused the whole board.
+  it("publishes when it has a picture of its own", () => {
+    const decision = only({ title: "", pictureId: "abc" });
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.draft.items[0].title, "");
+  });
+
+  it("publishes when it has a poster", () => {
+    assert.equal(only({ title: "", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg" }).ok, true);
+  });
+
+  it("is refused when it has neither", () => {
+    const decision = only({ title: "  " });
+    assert.equal(decision.ok, false);
+    assert.equal(!decision.ok && decision.reason, "invalid");
+  });
+});
+
 describe("own photographs", () => {
   const withPictures = (ids: (string | null)[], cover: string | null = null) =>
     decidePublish({

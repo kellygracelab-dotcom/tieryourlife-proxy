@@ -197,14 +197,17 @@ export function decidePublish({
   for (const raw of rawItems) {
     const item = raw as Record<string, unknown>;
     const itemTitle = cleanText(item.title, MAX_TITLE_LENGTH);
-    if (!itemTitle) {
-      return { ok: false, reason: "invalid", detail: "An item needs a title" };
+    const imageUrl = keepableImageUrl(item.imageUrl);
+    const pictureId = isPictureId(item.pictureId) ? item.pictureId : null;
+    // A card is a name or a picture, and needs one of them to be a card at
+    // all. It used to need the name, from back when every card came out of a
+    // catalogue and arrived with one; a photograph somebody chose from their
+    // gallery has no name and does not need one -- the picture is what it is.
+    // A card with neither is nothing, and refusing it is still right.
+    if (!itemTitle && !imageUrl && pictureId === null) {
+      return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
-    items.push({
-      title: itemTitle,
-      imageUrl: keepableImageUrl(item.imageUrl),
-      pictureId: isPictureId(item.pictureId) ? item.pictureId : null,
-    });
+    items.push({ title: itemTitle ?? "", imageUrl, pictureId });
   }
 
   const coverPictureId = isPictureId(source.coverPictureId) ? source.coverPictureId : null;
