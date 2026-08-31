@@ -486,6 +486,12 @@ async function publish(
     previewImages: list.previewImages,
     tierColors: list.tierColors,
     updatedAt: FieldValue.serverTimestamp(),
+    // Replacing the contents replaces the snapshot, so it has not been looked
+    // at -- whatever was true of the one it replaced. Merging without these
+    // left the shield in place: publish something harmless, wait to be kept,
+    // then put anything at all behind a mark that complaints cannot lift.
+    underReview: false,
+    reviewed: false,
   };
 
   if (existingId) {
