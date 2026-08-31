@@ -86,8 +86,24 @@ export async function copyForPublication(
   if (pictureIds.length === 0) return [];
 
   const bucket = getStorage().bucket();
+
+  // A copy already in this list's folder has been here before, and nothing but
+  // this function can put one there -- so it was looked at when it arrived.
+  // Republishing a board whose title changed should not pay to look at ninety
+  // unchanged photographs again.
+  const [existing] = await bucket.getFiles({ prefix: `published/${listId}/` });
+  const alreadyHere = new Set(
+    existing.map((file) => file.name.slice(`published/${listId}/`.length)),
+  );
+  const settled: PictureOutcome[] = pictureIds
+    .filter((id) => alreadyHere.has(id))
+    .map((id) => ({ id, ok: true as const, address: addressOf(bucket.name, publishedPath(listId, id)) }));
+
+  const fresh = pictureIds.filter((id) => !alreadyHere.has(id));
+  if (fresh.length === 0) return settled;
+
   const loaded = await Promise.all(
-    pictureIds.map(async (id) => {
+    fresh.map(async (id) => {
       try {
         const [bytes] = await bucket.file(privatePath(authorUid, id)).download();
         return { id, bytes };
@@ -119,7 +135,7 @@ export async function copyForPublication(
 
   // Nothing is copied while anything is still refused: the caller turns the
   // whole publication down, and a half-copied folder would be litter.
-  if (outcomes.some((one) => !one.ok && one.because !== "missing")) return outcomes;
+  if (outcomes.some((one) => !one.ok && one.because !== "missing")) return [...settled, ...outcomes];
 
   await Promise.all(
     passed.map((one) =>
@@ -131,6 +147,7 @@ export async function copyForPublication(
   );
 
   return [
+    ...settled,
     ...outcomes,
     ...passed.map((one) => ({
       id: one.id,

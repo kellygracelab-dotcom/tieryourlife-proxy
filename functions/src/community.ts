@@ -4,6 +4,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
+import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
 import {
   copyForPublication,
   discardPublished,
@@ -58,14 +59,6 @@ export function isModerator(
 }
 const MAX_NOTE_LENGTH = 500;
 
-/** Five, because five is what a person reads before choosing at random. */
-export const REPORT_REASONS = [
-  "sexual",
-  "violence",
-  "hate",
-  "spam",
-  "other",
-] as const;
 
 interface StoredList {
   authorUid: string;
@@ -81,6 +74,17 @@ interface StoredList {
   previewImages: string[];
   tierColors: string[];
   updatedAt?: FirebaseFirestore.Timestamp;
+  /**
+   * Out of the feed while somebody looks at it. Set by enough complaints,
+   * cleared by the person who reads them. Absent on every list published
+   * before any of this existed, which reads as false and is correct.
+   */
+  underReview?: boolean;
+  /**
+   * Somebody looked at this snapshot and left it up, so complaints about it no
+   * longer take it out of the feed. Per snapshot: republishing makes a new one.
+   */
+  reviewed?: boolean;
 }
 
 function refuse(response: Response, decision: Exclude<PublishDecision, { ok: true }>): void {
@@ -156,7 +160,7 @@ export const lists = onRequest(
             return await readMine(response, identity);
           }
           return hasId
-            ? await readOne(response, id)
+            ? await readOne(response, identity, id)
             : await readFeed(response, {
                 category: categoryFilter(request.query.category),
                 author: singleParam(request.query.author),
@@ -259,7 +263,14 @@ async function readFeed(response: Response, filters: FeedFilters): Promise<void>
   }
 
   const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
-  const lists = snapshot.docs.map((doc) => toSummary(doc.id, doc.data() as StoredList));
+  // Filtered here rather than in the query. A `where` on this would need a
+  // composite index for every combination of category, author and ordering the
+  // feed already supports, and the whole cost of doing it in code is that a
+  // page carrying a hidden list comes back one short -- which nobody scrolling
+  // an endless feed can see.
+  const lists = snapshot.docs
+    .filter((doc) => (doc.data() as StoredList).underReview !== true)
+    .map((doc) => toSummary(doc.id, doc.data() as StoredList));
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
@@ -298,26 +309,41 @@ async function readReports(response: Response, identity: Identity): Promise<void
     return;
   }
 
-  const snapshot = await getFirestore()
+  const db = getFirestore();
+  const snapshot = await db
     .collection(REPORTS)
     .orderBy("createdAt", "desc")
     .limit(REPORT_PAGE_SIZE)
     .get();
 
-  response.setHeader("Cache-Control", "no-store");
-  response.status(200).json({
-    reports: snapshot.docs.map((doc) => {
-      const data = doc.data();
-      return {
-        listId: data.listId,
-        listTitle: data.listTitle,
-        authorName: data.authorName,
-        reason: data.reason,
-        note: data.note ?? null,
-        createdAt: data.createdAt?.toMillis?.() ?? 0,
-      };
-    }),
+  const filed: QueuedReport[] = snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      listId: data.listId,
+      listTitle: data.listTitle,
+      authorName: data.authorName,
+      reason: data.reason,
+      note: data.note ?? null,
+      createdAtMs: data.createdAt?.toMillis?.() ?? 0,
+    };
   });
+
+  // Whether each one is out of the feed, and whether it has already been kept
+  // once. Read here rather than copied onto every report, because a report is
+  // a thing somebody said and does not change when the list's standing does.
+  const listIds = [...new Set(filed.map((one) => one.listId))];
+  const lists = listIds.length > 0 ? await db.getAll(
+    ...listIds.map((id) => db.collection(PUBLISHED).doc(id)),
+  ) : [];
+  const state = new Map(
+    lists.map((doc) => {
+      const data = (doc.data() ?? {}) as StoredList;
+      return [doc.id, { hidden: data.underReview === true, reviewed: data.reviewed === true }];
+    }),
+  );
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ reports: groupReports(filed, state) });
 }
 
 /**
@@ -342,6 +368,14 @@ async function settleReports(
   filed.docs.forEach((doc) => batch.delete(doc.ref));
   if (takeDown) {
     batch.delete(db.collection(PUBLISHED).doc(listId));
+  } else {
+    // Back into the feed, and marked so that the next three complaints cannot
+    // take it out again. Somebody looked; that is what looking is for.
+    batch.set(
+      db.collection(PUBLISHED).doc(listId),
+      { underReview: false, reviewed: true },
+      { merge: true },
+    );
   }
   await batch.commit();
   if (takeDown) {
@@ -351,13 +385,21 @@ async function settleReports(
   response.status(204).send();
 }
 
-async function readOne(response: Response, id: string): Promise<void> {
+async function readOne(response: Response, identity: Identity, id: string): Promise<void> {
   const doc = await getFirestore().collection(PUBLISHED).doc(id).get();
   if (!doc.exists) {
     response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
     return;
   }
   const data = doc.data() as StoredList;
+  // Hiding it from the feed and leaving it open to anyone holding the address
+  // would hide it from nobody. The moderator is the exception, because the
+  // queue sends them here: hidden from the feed is not hidden from the person
+  // who has to decide whether it should be.
+  if (data.underReview === true && !isModerator(identity)) {
+    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+    return;
+  }
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     ...toSummary(doc.id, data),
@@ -527,6 +569,14 @@ async function report(
     note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
     createdAt: FieldValue.serverTimestamp(),
   });
+
+  // Read back rather than counted up: reports are one per person, and a second
+  // one from the same person replaced the first rather than adding to it.
+  const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
+  const reasons = filed.docs.map((doc) => doc.data().reason as typeof reason);
+  if (decideHide({ reasons, reviewed: stored.reviewed === true })) {
+    await list.ref.set({ underReview: true }, { merge: true });
+  }
 
   response.status(204).send();
 }
