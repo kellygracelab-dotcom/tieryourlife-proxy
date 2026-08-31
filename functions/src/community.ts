@@ -1,6 +1,6 @@
 import { defineString } from "firebase-functions/params";
 import { onRequest } from "firebase-functions/v2/https";
-import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
@@ -13,6 +13,19 @@ import {
   type WordingConcern,
 } from "./wording";
 import { isPictureId } from "./safety";
+import {
+  chunked,
+  cursorOf,
+  decideFollow,
+  followId,
+  isUid,
+  MAX_FOLLOWING,
+  mergePages,
+  readCursor,
+  sortOrder,
+  type Cursor,
+  type Sort,
+} from "./follows";
 import {
   copyAsFace,
   copyForPublication,
@@ -33,10 +46,23 @@ import {
 
 const PUBLISHED = "publishedLists";
 const REPORTS = "reports";
-const VERBS = ["report", "takedown", "dismiss"];
+const FOLLOWS = "follows";
+const TAKES = "takes";
+const VERBS = ["report", "takedown", "dismiss", "taken"];
 
 /** Not a list at all: turning one of your own pictures into a face. */
 const FACE = "face";
+
+/** Nor is this one: following an author, or stopping. */
+const FOLLOW = "follow";
+
+/**
+ * How many authors the empty following screen offers, and how many lists are
+ * read to find them. Read wider than offered because the lists people have
+ * taken most are not by that many different people.
+ */
+const SUGGESTIONS = 12;
+const SUGGESTIONS_READ = 60;
 
 /**
  * Whoever reads the reports. One person, named by configuration rather than
@@ -97,6 +123,13 @@ interface StoredList {
    * longer take it out of the feed. Per snapshot: republishing makes a new one.
    */
   reviewed?: boolean;
+  /**
+   * How many people have taken this list to rank for themselves. Written as
+   * zero at publication rather than left absent: Firestore leaves documents
+   * without the field out of an ordering on it entirely, and a list nobody has
+   * taken yet still belongs at the bottom of "most taken" rather than nowhere.
+   */
+  takeCount?: number;
 }
 
 function refuse(response: Response, decision: Exclude<PublishDecision, { ok: true }>): void {
@@ -131,6 +164,7 @@ function toSummary(id: string, data: StoredList) {
     previewImages: data.previewImages ?? [],
     tierColors: data.tierColors ?? [],
     updatedAt: data.updatedAt?.toMillis() ?? 0,
+    takeCount: data.takeCount ?? 0,
   };
 }
 
@@ -160,6 +194,8 @@ export const lists = onRequest(
     const id = (verb ? segments[segments.length - 2] : last) ?? "";
     const hasId = id.length > 0;
     const makingAFace = !verb && segments[0] === FACE;
+    const aboutAnAuthor = !verb && segments[0] === FOLLOW;
+    const authorUid = segments[1] ?? "";
     const listingReports = !verb && id === "reports";
     const listingMine = !verb && id === "mine";
 
@@ -172,17 +208,27 @@ export const lists = onRequest(
           if (listingMine) {
             return await readMine(response, identity);
           }
+          if (aboutAnAuthor) {
+            return authorUid
+              ? await readFollowState(response, identity, authorUid)
+              : await readSuggestedAuthors(response, identity);
+          }
           return hasId
             ? await readOne(response, identity, id)
-            : await readFeed(response, {
+            : await readFeed(response, identity, {
                 category: categoryFilter(request.query.category),
                 author: singleParam(request.query.author),
                 query: searchTerm(request.query.q),
                 after: singleParam(request.query.after),
+                sort: sortOrder(request.query.sort),
+                following: request.query.following === "1",
               });
         case "POST":
           if (makingAFace) {
             return await makeFace(response, identity, segments[1] ?? "");
+          }
+          if (aboutAnAuthor) {
+            return await follow(response, identity, authorUid);
           }
           if (verb) {
             if (!hasId) {
@@ -191,12 +237,18 @@ export const lists = onRequest(
             if (verb === "report") {
               return await report(response, identity, id, request.body);
             }
+            if (verb === "taken") {
+              return await recordTake(response, identity, id);
+            }
             return await settleReports(response, identity, id, verb === "takedown");
           }
           return await publish(response, identity, request.body, hasId ? id : null);
         case "PATCH":
           return await refreshAuthor(response, identity);
         case "DELETE":
+          if (aboutAnAuthor) {
+            return await unfollow(response, identity, authorUid);
+          }
           return hasId
             ? await unpublish(response, identity, id)
             : void response.status(400).json({ error: "Which list?" });
@@ -259,8 +311,15 @@ interface FeedFilters {
   category: Category | null;
   author: string | null;
   query: string | null;
-  /** Id of the last list on the page before, or null for the first page. */
+  /**
+   * Id of the last list on the page before, or null for the first page. The
+   * feed of people you follow carries a pair of values here instead -- see
+   * `cursorOf` for why one document cannot resume several queries.
+   */
   after: string | null;
+  sort: Sort;
+  /** Only from the authors this person follows. */
+  following: boolean;
 }
 
 /**
@@ -271,7 +330,10 @@ export function nextCursor(pageIds: string[], pageSize: number = FEED_PAGE_SIZE)
   return pageIds.length === pageSize ? pageIds[pageIds.length - 1] : null;
 }
 
-async function readFeed(response: Response, filters: FeedFilters): Promise<void> {
+async function readFeed(response: Response, identity: Identity, filters: FeedFilters): Promise<void> {
+  if (filters.following) {
+    return await readFollowingFeed(response, identity, filters);
+  }
   const collection = getFirestore().collection(PUBLISHED);
   let query: FirebaseFirestore.Query = collection;
   if (filters.category) {
@@ -282,13 +344,13 @@ async function readFeed(response: Response, filters: FeedFilters): Promise<void>
   }
 
   // A range has to be ordered by the field it ranges over, so a search orders
-  // by title and everything else by recency.
+  // by title whatever was asked for, and everything else by what was asked.
   let ordered = filters.query
     ? query
         .where("titleLower", ">=", filters.query)
         .where("titleLower", "<=", `${filters.query}`)
         .orderBy("titleLower")
-    : query.orderBy("updatedAt", "desc");
+    : query.orderBy(filters.sort === "popular" ? "takeCount" : "updatedAt", "desc");
 
   // The cursor is the last id of the page before. Reading that document
   // back costs one read and lets Firestore resume from it under either
@@ -319,6 +381,235 @@ async function readFeed(response: Response, filters: FeedFilters): Promise<void>
     lists,
     nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
   });
+}
+
+/**
+ * The feed of the people somebody follows.
+ *
+ * Firestore answers `in` with at most thirty values, so this is several
+ * queries merged rather than one. That is also why the cursor here is a pair
+ * of values rather than a document: the list that ended the page belongs to
+ * one of the runs and means nothing to the others, so every run has to be
+ * resumed from the same place instead.
+ */
+async function readFollowingFeed(response: Response, identity: Identity, filters: FeedFilters): Promise<void> {
+  const authors = await followedBy(identity.uid);
+  if (authors.length === 0) {
+    // Not an error and not an empty feed: an answer the screen can say
+    // something useful about, which "no lists" on its own cannot.
+    response.setHeader("Cache-Control", "no-store");
+    response.status(200).json({ lists: [], nextCursor: null, followingNobody: true });
+    return;
+  }
+
+  const cursor = readCursor(filters.after);
+  const runs = await Promise.all(chunked(authors).map((run) => followedRun(run, filters, cursor)));
+  const page = mergePages(runs, filters.sort, FEED_PAGE_SIZE);
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    lists: page.map((one) => one.summary),
+    nextCursor: cursorOf(page, FEED_PAGE_SIZE, filters.sort),
+  });
+}
+
+interface FeedRow {
+  id: string;
+  updatedAt: number;
+  takeCount: number;
+  summary: ReturnType<typeof toSummary>;
+}
+
+/** One run of up to thirty authors, ordered the way the whole page will be. */
+async function followedRun(authors: string[], filters: FeedFilters, cursor: Cursor | null): Promise<FeedRow[]> {
+  let query: FirebaseFirestore.Query = getFirestore()
+    .collection(PUBLISHED)
+    .where("authorUid", "in", authors);
+  if (filters.category) {
+    query = query.where("category", "==", filters.category);
+  }
+
+  const by = filters.sort === "popular" ? "takeCount" : "updatedAt";
+  // Ties break on the document id, so two lists saved in the same millisecond
+  // always come back in the same order. A page boundary that wobbles repeats a
+  // list or skips one.
+  let ordered = query.orderBy(by, "desc").orderBy(FieldPath.documentId());
+  if (cursor) {
+    const value = by === "updatedAt" ? Timestamp.fromMillis(cursor.value) : cursor.value;
+    ordered = ordered.startAfter(value, cursor.id);
+  }
+
+  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
+  return snapshot.docs
+    .filter((doc) => (doc.data() as StoredList).underReview !== true)
+    .map((doc) => {
+      const data = doc.data() as StoredList;
+      return {
+        id: doc.id,
+        updatedAt: data.updatedAt?.toMillis() ?? 0,
+        takeCount: data.takeCount ?? 0,
+        summary: toSummary(doc.id, data),
+      };
+    });
+}
+
+/** Whom this person follows, at most as many as one page will draw from. */
+async function followedBy(uid: string): Promise<string[]> {
+  const snapshot = await getFirestore()
+    .collection(FOLLOWS)
+    .where("follower", "==", uid)
+    .limit(MAX_FOLLOWING)
+    .get();
+  return snapshot.docs.map((doc) => doc.get("author") as string);
+}
+
+/**
+ * Whether this person follows that author, and how many people do.
+ *
+ * The count is read here rather than kept on the author, because there is no
+ * author document: an author is whoever published something, and their name
+ * and face travel on each list. Counting costs one aggregation query, and the
+ * screen that asks is one somebody opened deliberately.
+ */
+async function readFollowState(response: Response, identity: Identity, authorUid: string): Promise<void> {
+  if (!isUid(authorUid)) {
+    response.status(400).json({ error: "Which author?", code: "INVALID" });
+    return;
+  }
+  const collection = getFirestore().collection(FOLLOWS);
+  const [mine, followers] = await Promise.all([
+    collection.doc(followId(identity.uid, authorUid)).get(),
+    collection.where("author", "==", authorUid).count().get(),
+  ]);
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ following: mine.exists, followers: followers.data().count });
+}
+
+/**
+ * Authors worth following, for somebody who follows nobody yet.
+ *
+ * Taken from the lists people have taken most, because that is the only
+ * standing anybody has here -- there is no author document to rank and no
+ * editorial list to keep. Read wide and thinned to one entry per author, so
+ * that one person with four popular lists does not become the whole answer.
+ *
+ * Whoever is already followed is left out, and so is the reader: a screen that
+ * opens on "follow yourself" has answered the wrong question.
+ */
+async function readSuggestedAuthors(response: Response, identity: Identity): Promise<void> {
+  const [popular, already] = await Promise.all([
+    getFirestore()
+      .collection(PUBLISHED)
+      .orderBy("takeCount", "desc")
+      .limit(SUGGESTIONS_READ)
+      .get(),
+    followedBy(identity.uid),
+  ]);
+
+  const skip = new Set([...already, identity.uid]);
+  const authors = new Map<string, { uid: string; name: string; photoUrl: string | null; takeCount: number }>();
+  for (const doc of popular.docs) {
+    const data = doc.data() as StoredList;
+    if (data.underReview === true || skip.has(data.authorUid) || authors.has(data.authorUid)) {
+      continue;
+    }
+    authors.set(data.authorUid, {
+      uid: data.authorUid,
+      name: data.authorName,
+      photoUrl: data.authorPhotoUrl ?? null,
+      takeCount: data.takeCount ?? 0,
+    });
+    if (authors.size === SUGGESTIONS) {
+      break;
+    }
+  }
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ authors: [...authors.values()] });
+}
+
+async function follow(response: Response, identity: Identity, authorUid: string): Promise<void> {
+  const collection = getFirestore().collection(FOLLOWS);
+  // Counted before deciding rather than after, so the ceiling is the real one
+  // and not one this request has already stepped over.
+  const already = await collection.where("follower", "==", identity.uid).count().get();
+  const decision = decideFollow(
+    { uid: identity.uid, isAnonymous: identity.isAnonymous, following: already.data().count },
+    authorUid,
+  );
+  if (!decision.ok) {
+    return void refuseFollow(response, decision.reason);
+  }
+
+  // A deterministic id, so following twice writes the same document rather
+  // than leaving two rows that say the same thing.
+  await collection.doc(followId(identity.uid, authorUid)).set({
+    follower: identity.uid,
+    author: authorUid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  response.status(200).json({ following: true });
+}
+
+async function unfollow(response: Response, identity: Identity, authorUid: string): Promise<void> {
+  if (!isUid(authorUid)) {
+    response.status(400).json({ error: "Which author?", code: "INVALID" });
+    return;
+  }
+  // Deleting what is not there is what the caller asked for either way.
+  await getFirestore().collection(FOLLOWS).doc(followId(identity.uid, authorUid)).delete();
+  response.status(200).json({ following: false });
+}
+
+function refuseFollow(response: Response, reason: string): void {
+  switch (reason) {
+    case "not_signed_in":
+      response.status(403).json({ error: "Sign in to follow", code: "NOT_SIGNED_IN" });
+      return;
+    case "yourself":
+      response.status(409).json({ error: "You already have your own lists", code: "YOURSELF" });
+      return;
+    case "too_many":
+      response.status(409).json({ error: "Following too many people", code: "TOO_MANY_FOLLOWING" });
+      return;
+    default:
+      response.status(400).json({ error: "Which author?", code: "INVALID" });
+  }
+}
+
+/**
+ * Somebody took this list to rank for themselves, which is the only thing the
+ * popular ordering counts.
+ *
+ * Counted once per person and written down as a document rather than trusted
+ * to the caller: without that, one phone tapping the same list all afternoon
+ * would decide what everybody else sees. Taking your own list back does not
+ * count either, because an author cannot vote for themselves.
+ */
+async function recordTake(response: Response, identity: Identity, listId: string): Promise<void> {
+  const db = getFirestore();
+  const list = db.collection(PUBLISHED).doc(listId);
+  const snapshot = await list.get();
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+    return;
+  }
+  if ((snapshot.data() as StoredList).authorUid === identity.uid) {
+    response.status(200).json({ counted: false });
+    return;
+  }
+
+  const take = db.collection(TAKES).doc(`${listId}_${identity.uid}`);
+  const counted = await db.runTransaction(async (transaction) => {
+    if ((await transaction.get(take)).exists) {
+      return false;
+    }
+    transaction.set(take, { listId, taker: identity.uid, createdAt: FieldValue.serverTimestamp() });
+    transaction.update(list, { takeCount: FieldValue.increment(1) });
+    return true;
+  });
+  response.status(200).json({ counted });
 }
 
 /**
@@ -553,7 +844,16 @@ async function publish(
     return;
   }
 
-  await collection.doc(target).set({ ...document, publishedAt: FieldValue.serverTimestamp() });
+  // Only on a new list. Republishing merges, and a count written here would
+  // reset it: an author who fixes a typo would lose everybody who had taken
+  // their list, which is a strange thing to charge for an edit. Taking is
+  // about the list, not about the snapshot -- unlike being reviewed, which is
+  // about exactly this snapshot and is cleared above.
+  await collection.doc(target).set({
+    ...document,
+    publishedAt: FieldValue.serverTimestamp(),
+    takeCount: 0,
+  });
   await noteWordingConcern(target, document.title, identity, concern);
   response.status(201).json({ id: target });
 }
