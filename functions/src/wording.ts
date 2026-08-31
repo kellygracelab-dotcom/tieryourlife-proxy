@@ -1,18 +1,21 @@
 /**
- * Whether the words on a board may go into the feed.
+ * What the classifier makes of the words on a board.
  *
- * Sibling to `safety.ts`, which does the same for pictures, and deliberately
- * far more cautious than it. A picture is either a photograph of a person with
- * no clothes on or it is not. Words are not like that: a board called "Best
- * diss tracks" is about insults, a board of war films is about war, and a
- * tier list of horror is about death. Every one of those scores high on a
- * classifier's topic categories and every one of them is a perfectly good
- * board.
+ * It does not decide whether they may be published, because it measurably
+ * cannot. Asked about real board text in three languages, it answered 0.64 for
+ * "Best sex scenes in cinema" -- a perfectly good film list -- and 0.69 for a
+ * list of pornographic actresses. Five hundredths apart, because the two are
+ * about the same subject and a classifier reading twelve words has no way to
+ * tell an appreciation from an advertisement.
  *
- * So this refuses on very little, and refuses only when the classifier is sure.
- * A wrongly refused board is a person told their list is unacceptable with no
- * way to find out which word did it, which is worse than a rude title reaching
- * a feed that already has a report button under every card.
+ * Its `derogatory` score was worse still: "Shit I have to do this week" scored
+ * 0.92, above an actual list of people somebody wanted dead at 0.91. A rule
+ * that refuses a to-do list for swearing while letting hatred through is not a
+ * rule worth having, so nothing refuses on derogatory at all.
+ *
+ * So this feeds the queue instead. A noisy signal belongs in front of a person,
+ * not in front of a gate: a wrong guess costs a look rather than telling
+ * somebody their list is unacceptable with no way to learn why.
  */
 
 /** Cloud Natural Language answers each category with a confidence in 0..1. */
@@ -26,29 +29,34 @@ export interface WordingVerdict {
 }
 
 /**
- * Where each category stops being publishable.
+ * Both numbers come from asking the real classifier about real board text.
  *
- * `sexual` and `derogatory` refuse at nine tenths -- higher than the picture
- * thresholds, because there is no equivalent of "a photograph is obviously a
- * photograph" for a sentence, and the classifier's confidence on short text
- * like a board title is poor. Twelve words is not much to judge.
+ * Ordinary boards -- films, albums, war films, horror, "my beach photos" --
+ * scored between 0.00 and 0.14 in English, Russian and Ukrainian. The two
+ * awkward ones were "Best diss tracks" at 0.32 and "Best sex scenes in
+ * cinema" at 0.64. Lists of pornographic actresses scored 0.69 in English,
+ * 0.85 in Ukrainian and 0.91 in Russian.
  *
- * `profanity` refuses at nothing at all. A swear word in a board title is not
- * against the rules of any store, it is how a great many people name things,
- * and refusing it would be this app deciding it knows better. It is kept in
- * the verdict because it is worth being able to see it later.
+ * So [WORTH_A_LOOK] sits below the film list as well as the porn list: both
+ * reach the queue, and a person spends five seconds telling them apart. And
+ * [HIDE_UNTIL_LOOKED_AT] sits above anything an ordinary board scored by a
+ * wide margin, so hiding on it costs an innocent board nothing.
  */
-export const REFUSE_SEXUAL_AT = 0.9;
-export const REFUSE_DEROGATORY_AT = 0.9;
+export const WORTH_A_LOOK = 0.6;
+export const HIDE_UNTIL_LOOKED_AT = 0.85;
 
-export type WordingRefusal = "sexual" | "derogatory";
+export type WordingConcern = "none" | "queue" | "hide";
 
-export type WordingDecision = { ok: true } | { ok: false; because: WordingRefusal };
-
-export function decideWording(verdict: WordingVerdict): WordingDecision {
-  if (verdict.sexual >= REFUSE_SEXUAL_AT) return { ok: false, because: "sexual" };
-  if (verdict.derogatory >= REFUSE_DEROGATORY_AT) return { ok: false, because: "derogatory" };
-  return { ok: true };
+/**
+ * What to do about a board's words: nothing, put it in front of somebody, or
+ * take it out of the feed until somebody has looked.
+ *
+ * Never "refuse". Publishing is not blocked on this at any confidence.
+ */
+export function decideWordingConcern(verdict: WordingVerdict): WordingConcern {
+  if (verdict.sexual >= HIDE_UNTIL_LOOKED_AT) return "hide";
+  if (verdict.sexual >= WORTH_A_LOOK) return "queue";
+  return "none";
 }
 
 /**

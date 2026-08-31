@@ -5,7 +5,13 @@ import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
 import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
-import { decideWording, ENOUGH_TO_JUDGE, realModeration, wordsOf } from "./wording";
+import {
+  decideWordingConcern,
+  ENOUGH_TO_JUDGE,
+  realModeration,
+  wordsOf,
+  type WordingConcern,
+} from "./wording";
 import {
   copyForPublication,
   discardPublished,
@@ -447,25 +453,12 @@ async function publish(
     }
   }
 
-  // Before the pictures, because it costs one call and no bytes: a board
-  // refused on its words should not have had ninety photographs read, looked
-  // at and copied first.
+  // Asked before the pictures, because it costs one call and no bytes.
+  // Answered after the board is stored, because the answer is a report about
+  // a list and there has to be a list to report.
   const words = wordsOf(decision.draft);
-  if (words.length >= ENOUGH_TO_JUDGE) {
-    const verdict = await realModeration(words);
-    // Null means the classifier could not be asked. Publishing goes ahead:
-    // words reach a feed that has a report button under every card, and an
-    // outage must not stop somebody publishing a board about films.
-    const wording = verdict === null ? { ok: true as const } : decideWording(verdict);
-    if (!wording.ok) {
-      response.status(422).json({
-        error: "That wording cannot go in the feed",
-        code: "WORDING_REFUSED",
-        because: wording.because,
-      });
-      return;
-    }
-  }
+  const wording = words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
+  const concern = wording === null ? "none" : decideWordingConcern(wording);
 
   // A new list is named before it is written. The pictures have to be copied
   // somewhere, and that somewhere is the list's own folder.
@@ -517,6 +510,7 @@ async function publish(
 
   if (existingId) {
     await collection.doc(existingId).set(document, { merge: true });
+    await noteWordingConcern(existingId, document.title, identity, concern);
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
     await discardUnusedPublished(existingId, [...addresses.keys()]);
@@ -525,6 +519,7 @@ async function publish(
   }
 
   await collection.doc(target).set({ ...document, publishedAt: FieldValue.serverTimestamp() });
+  await noteWordingConcern(target, document.title, identity, concern);
   response.status(201).json({ id: target });
 }
 
@@ -623,3 +618,47 @@ async function unpublish(response: Response, identity: Identity, id: string): Pr
   await discardPublished(id);
   response.status(204).send();
 }
+
+/**
+ * Puts a board the classifier was unsure about in front of the person who
+ * reads the queue, and takes it out of the feed if it was more than unsure.
+ *
+ * Filed as a report like anybody else's, under a reporter id nobody can hold,
+ * so it groups with the human ones and is settled by the same two buttons. A
+ * separate mechanism would have meant a second queue to remember to look at.
+ *
+ * Never blocks the publication. The classifier cannot tell a film list about
+ * sex scenes from a list of pornography -- measured, not guessed -- so it is
+ * allowed to raise a hand and not to refuse.
+ */
+async function noteWordingConcern(
+  listId: string,
+  listTitle: string,
+  identity: Identity,
+  concern: WordingConcern,
+): Promise<void> {
+  if (concern === "none") return;
+
+  const db = getFirestore();
+  await db.collection(REPORTS).doc(`${listId}_${WATCHER}`).set({
+    listId,
+    listTitle,
+    authorUid: identity.uid,
+    authorName: identity.name ?? "Anonymous",
+    reporterUid: WATCHER,
+    reason: "sexual",
+    note: null,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  if (concern === "hide") {
+    await db.collection(PUBLISHED).doc(listId).set({ underReview: true }, { merge: true });
+  }
+}
+
+/**
+ * The reporter id the classifier files under. Not a uid anybody can be issued,
+ * so it can never collide with a person, and one per list like everybody else
+ * -- republishing replaces its report rather than stacking a second one.
+ */
+const WATCHER = "__wording__";

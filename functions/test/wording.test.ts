@@ -1,37 +1,49 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { decideWording, ENOUGH_TO_JUDGE, wordsOf } from "../src/wording";
+import { decideWordingConcern, ENOUGH_TO_JUDGE, wordsOf } from "../src/wording";
 
 const verdict = (sexual = 0, derogatory = 0, profanity = 0) => ({ sexual, derogatory, profanity });
 
-describe("decideWording", () => {
-  it("lets an ordinary board through", () => {
-    assert.deepEqual(decideWording(verdict()), { ok: true });
+/**
+ * Every number here was measured against the real classifier, not chosen.
+ * The comments name what scored what, because the day somebody moves a
+ * threshold they should have to argue with the measurement.
+ */
+describe("decideWordingConcern", () => {
+  // Films, albums, war films, horror, beach photos: 0.00 to 0.14 across
+  // English, Russian and Ukrainian.
+  it("says nothing about an ordinary board", () => {
+    assert.equal(decideWordingConcern(verdict(0.14)), "none");
   });
 
-  it("refuses sexual wording once the classifier is sure", () => {
-    assert.deepEqual(decideWording(verdict(0.95)), { ok: false, because: "sexual" });
+  // "Best diss tracks of all time" scored 0.32 sexual, 0.30 derogatory.
+  it("says nothing about a board that is merely rude", () => {
+    assert.equal(decideWordingConcern(verdict(0.32, 0.30)), "none");
   });
 
-  it("refuses abuse once the classifier is sure", () => {
-    assert.deepEqual(decideWording(verdict(0, 0.95)), { ok: false, because: "derogatory" });
+  // "Best sex scenes in cinema" scored 0.64 and is a perfectly good film
+  // list. "Hottest pornstars ranked" scored 0.69 and is not. Five hundredths
+  // apart, so both go to a person and neither is refused.
+  it("puts both a film list about sex and a list of pornography in front of somebody", () => {
+    assert.equal(decideWordingConcern(verdict(0.64)), "queue");
+    assert.equal(decideWordingConcern(verdict(0.69)), "queue");
   });
 
-  // Short text judged by a classifier is a coin toss dressed up as a number,
-  // and a wrongly refused board is a person told their list is unacceptable
-  // with no way to learn which word did it.
-  it("lets through what the classifier is merely leaning towards", () => {
-    assert.deepEqual(decideWording(verdict(0.7, 0.8)), { ok: true });
+  // Ukrainian and Russian lists of pornographic actresses scored 0.85 and
+  // 0.91, far above anything an ordinary board reached.
+  it("takes the clear cases out of the feed until somebody looks", () => {
+    assert.equal(decideWordingConcern(verdict(0.85)), "hide");
+    assert.equal(decideWordingConcern(verdict(0.91)), "hide");
   });
 
-  // A board called "Best diss tracks" is about insults. A war films board is
-  // about war. Swearing in a title is how a great many people name things.
-  it("never refuses on swearing alone, however certain", () => {
-    assert.deepEqual(decideWording(verdict(0, 0, 1)), { ok: true });
+  // "Shit I have to do this week" scored 0.92 derogatory -- above an actual
+  // list of people somebody wanted dead, at 0.91. Nothing acts on it.
+  it("ignores derogatory entirely, however certain", () => {
+    assert.equal(decideWordingConcern(verdict(0, 1)), "none");
   });
 
-  it("names sexual first when a board is several things at once", () => {
-    assert.deepEqual(decideWording(verdict(0.99, 0.99)), { ok: false, because: "sexual" });
+  it("ignores swearing entirely, however certain", () => {
+    assert.equal(decideWordingConcern(verdict(0, 0, 1)), "none");
   });
 });
 
