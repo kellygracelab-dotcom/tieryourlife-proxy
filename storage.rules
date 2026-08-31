@@ -36,6 +36,13 @@ service firebase.storage {
       allow read: if true;
     }
 
+    // A face is shown beside every list somebody publishes, so it is public
+    // for the same reason those are. Written only by the function that checked
+    // it, never by a client.
+    match /avatars/{uid}/{pictureId} {
+      allow read: if true;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

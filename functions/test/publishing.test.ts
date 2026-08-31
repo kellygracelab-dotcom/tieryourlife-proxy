@@ -290,3 +290,54 @@ describe("settle", () => {
     assert.equal(list.items[0].imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
   });
 });
+
+/**
+ * Where the author put each card. Published from now on, because a reader who
+ * opens somebody's list came to see what they thought, and until now the
+ * snapshot threw that away and handed over a pile of cards.
+ */
+describe("the author's own arrangement", () => {
+  const ranked = (tierIndex: unknown) =>
+    decidePublish({
+      body: body({
+        tiers: [
+          { label: "S", caption: null, colorLight: "#B03A32", colorDark: "#F1948C" },
+          { label: "A", caption: null, colorLight: "#C06A25", colorDark: "#E9A867" },
+        ],
+        items: [{ title: "Arrival", tierIndex }],
+      }),
+      isAnonymous: false,
+      listsAlreadyPublished: 0,
+    });
+
+  it("carries which tier the card was in", () => {
+    const decision = ranked(1);
+    assert.equal(decision.ok && decision.draft.items[0].tierIndex, 1);
+  });
+
+  it("keeps it through to the stored snapshot", () => {
+    const decision = ranked(1);
+    assert.equal(decision.ok && settle(decision.draft, new Map()).items[0].tierIndex, 1);
+  });
+
+  const tierIndexIn = (value: unknown): number | null | false => {
+    const decision = ranked(value);
+    return decision.ok && decision.draft.items[0].tierIndex;
+  };
+
+  it("calls a card nobody ranked unranked", () => {
+    assert.equal(tierIndexIn(null), null);
+  });
+
+  // The phone and the snapshot disagreeing about the tiers is not a reason to
+  // put a card in a tier nobody can see.
+  it("calls a card in a tier this board does not have unranked", () => {
+    assert.equal(tierIndexIn(7), null);
+    assert.equal(tierIndexIn(-1), null);
+  });
+
+  it("ignores anything that is not a whole number", () => {
+    assert.equal(tierIndexIn("1"), null);
+    assert.equal(tierIndexIn(1.5), null);
+  });
+});

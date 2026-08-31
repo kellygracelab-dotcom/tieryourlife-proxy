@@ -57,6 +57,15 @@ export interface PublishedItem {
   title: string;
   /** Only ever an https URL. Somebody else's, or our own published copy. */
   imageUrl: string | null;
+  /**
+   * Which tier the author put this card in, by position in [PublishedList.tiers],
+   * or null for one they left unranked.
+   *
+   * Absent on everything published before this existed, which reads as null:
+   * those snapshots genuinely do not know, and guessing would be inventing an
+   * opinion on somebody else's behalf. They fill in when the author updates.
+   */
+  tierIndex: number | null;
 }
 
 /**
@@ -73,6 +82,7 @@ export interface DraftItem {
   title: string;
   imageUrl: string | null;
   pictureId: string | null;
+  tierIndex: number | null;
 }
 
 export interface PublishDraft {
@@ -121,6 +131,18 @@ function keepableImageUrl(value: unknown): string | null {
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
   return trimmed.length > 2000 ? null : trimmed;
+}
+
+/**
+ * Where the author put a card, kept only if it names a tier this board has.
+ *
+ * Out of range means the phone and the snapshot disagree about the tiers, and
+ * the honest answer to that is "unranked" rather than a card in a tier nobody
+ * can see.
+ */
+function tierIndexOf(value: unknown, tierCount: number): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value)) return null;
+  return value >= 0 && value < tierCount ? value : null;
 }
 
 function cleanText(value: unknown, maxLength: number): string | null {
@@ -207,7 +229,7 @@ export function decidePublish({
     if (!itemTitle && !imageUrl && pictureId === null) {
       return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
-    items.push({ title: itemTitle ?? "", imageUrl, pictureId });
+    items.push({ title: itemTitle ?? "", imageUrl, pictureId, tierIndex: tierIndexOf(item.tierIndex, tiers.length) });
   }
 
   const coverPictureId = isPictureId(source.coverPictureId) ? source.coverPictureId : null;
@@ -257,6 +279,7 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
   const items: PublishedItem[] = draft.items.map((item) => ({
     title: item.title,
     imageUrl: resolve(item.imageUrl, item.pictureId),
+    tierIndex: item.tierIndex,
   }));
 
   return {

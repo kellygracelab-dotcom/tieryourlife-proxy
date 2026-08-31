@@ -12,7 +12,9 @@ import {
   wordsOf,
   type WordingConcern,
 } from "./wording";
+import { isPictureId } from "./safety";
 import {
+  copyAsFace,
   copyForPublication,
   discardPublished,
   discardUnusedPublished,
@@ -32,6 +34,9 @@ import {
 const PUBLISHED = "publishedLists";
 const REPORTS = "reports";
 const VERBS = ["report", "takedown", "dismiss"];
+
+/** Not a list at all: turning one of your own pictures into a face. */
+const FACE = "face";
 
 /**
  * Whoever reads the reports. One person, named by configuration rather than
@@ -154,6 +159,7 @@ export const lists = onRequest(
     const verb = VERBS.includes(last) ? last : null;
     const id = (verb ? segments[segments.length - 2] : last) ?? "";
     const hasId = id.length > 0;
+    const makingAFace = !verb && segments[0] === FACE;
     const listingReports = !verb && id === "reports";
     const listingMine = !verb && id === "mine";
 
@@ -175,6 +181,9 @@ export const lists = onRequest(
                 after: singleParam(request.query.after),
               });
         case "POST":
+          if (makingAFace) {
+            return await makeFace(response, identity, segments[1] ?? "");
+          }
           if (verb) {
             if (!hasId) {
               return void response.status(400).json({ error: "Which list?" });
@@ -200,6 +209,32 @@ export const lists = onRequest(
     }
   },
 );
+
+/**
+ * Turns one of this person's own pictures into a face the community can see.
+ *
+ * Their pictures live in a folder only they may read, so a face has to be a
+ * copy somewhere everybody may -- the same as a board's pictures when it is
+ * published, and looked at by Vision on the same terms. Catalogue art needs
+ * none of this: it already has an address of its own.
+ */
+async function makeFace(response: Response, identity: Identity, pictureId: string): Promise<void> {
+  if (!isPictureId(pictureId)) {
+    response.status(400).json({ error: "Which picture?", code: "INVALID" });
+    return;
+  }
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+    return;
+  }
+
+  const address = await copyAsFace(identity.uid, pictureId);
+  if (address === null) {
+    response.status(422).json({ error: "That picture cannot be a face", code: "PICTURE_REFUSED" });
+    return;
+  }
+  response.status(200).json({ url: address });
+}
 
 /** Anything that is not one of the eight means "no filter", not an error. */
 function categoryFilter(raw: unknown): Category | null {

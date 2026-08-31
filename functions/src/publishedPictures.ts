@@ -181,3 +181,31 @@ export async function discardUnusedPublished(listId: string, keeping: string[]):
       .map((file) => file.delete().catch(() => undefined)),
   );
 }
+
+/**
+ * A picture of this person's own, made into a face the community can see.
+ *
+ * The same shape as publishing a board's pictures and for the same reason: a
+ * face is shown next to every list they publish, so it has to live somewhere
+ * everybody may read, and their private folder is not that. Copied rather than
+ * opened up, and looked at first.
+ *
+ * Answers null when the picture is missing or when Vision objected -- the
+ * caller turns the request down and the person keeps the face they had.
+ */
+export async function copyAsFace(uid: string, pictureId: string): Promise<string | null> {
+  const bucket = getStorage().bucket();
+  let bytes: Buffer;
+  try {
+    [bytes] = await bucket.file(privatePath(uid, pictureId)).download();
+  } catch {
+    return null;
+  }
+
+  const [verdict] = await realSafeSearch([bytes]);
+  if (!verdict || !decideSafe(verdict).ok) return null;
+
+  const path = `avatars/${uid}/${pictureId}`;
+  await bucket.file(path).save(bytes, { contentType: "image/jpeg", resumable: false });
+  return addressOf(bucket.name, path);
+}
