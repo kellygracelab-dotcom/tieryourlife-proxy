@@ -59,10 +59,26 @@ export interface QueuedReport {
   createdAtMs: number;
 }
 
+export interface ListStanding {
+  hidden: boolean;
+  reviewed: boolean;
+  /**
+   * The picture the list shows in the feed, so a moderator can see what was
+   * complained about without opening it. The whole complaint is often the
+   * picture; making somebody travel to it is making them decide blind.
+   */
+  coverImageUrl: string | null;
+  authorUid: string | null;
+  authorPhotoUrl: string | null;
+}
+
 export interface QueuedList {
   listId: string;
   listTitle: string;
   authorName: string;
+  authorUid: string | null;
+  authorPhotoUrl: string | null;
+  coverImageUrl: string | null;
   /** Newest first, because the last thing said is the most useful. */
   reasons: Reason[];
   notes: string[];
@@ -85,7 +101,7 @@ export interface QueuedList {
  */
 export function groupReports(
   reports: QueuedReport[],
-  state: Map<string, { hidden: boolean; reviewed: boolean }>,
+  state: Map<string, ListStanding>,
 ): QueuedList[] {
   const byList = new Map<string, QueuedReport[]>();
   for (const report of reports) {
@@ -97,11 +113,20 @@ export function groupReports(
   return [...byList.values()]
     .map((filed) => {
       const newest = [...filed].sort((a, b) => b.createdAtMs - a.createdAtMs);
-      const known = state.get(newest[0].listId) ?? { hidden: false, reviewed: false };
+      const known = state.get(newest[0].listId) ?? {
+        hidden: false,
+        reviewed: false,
+        coverImageUrl: null,
+        authorUid: null,
+        authorPhotoUrl: null,
+      };
       return {
         listId: newest[0].listId,
         listTitle: newest[0].listTitle,
         authorName: newest[0].authorName,
+        authorUid: known.authorUid,
+        authorPhotoUrl: known.authorPhotoUrl,
+        coverImageUrl: known.coverImageUrl,
         reasons: newest.map((one) => one.reason),
         notes: newest.map((one) => one.note).filter((note): note is string => note !== null),
         reportCount: newest.length,
