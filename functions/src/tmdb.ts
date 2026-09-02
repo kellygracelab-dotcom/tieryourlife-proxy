@@ -5,7 +5,10 @@ import { requireAppCheck } from "./appCheck";
 const tmdbReadAccessToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
 
 const TMDB_BASE_URL = "https://api.themoviedb.org";
-const ALLOWED_PATHS = ["/3/search/movie"];
+// `multi` is what the app asks for now. `movie` stays because a phone
+// carrying an older build still asks for it, and taking it away would
+// break search on a version somebody has not updated yet.
+const ALLOWED_PATHS = ["/3/search/multi", "/3/search/movie"];
 
 export const tmdb = onRequest(
   {
