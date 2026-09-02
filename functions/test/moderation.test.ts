@@ -4,9 +4,22 @@ import {
   decideHide,
   groupReports,
   REPORTS_BEFORE_HIDING,
+  type ListStanding,
   type QueuedReport,
   type Reason,
 } from "../src/moderation";
+
+/** A standing with only the parts a test is about. */
+function standing(some: Partial<ListStanding>): ListStanding {
+  return {
+    hidden: false,
+    reviewed: false,
+    coverImageUrl: null,
+    authorUid: null,
+    authorPhotoUrl: null,
+    ...some,
+  };
+}
 
 describe("decideHide", () => {
   it("leaves a list up while one person has complained", () => {
@@ -80,7 +93,7 @@ describe("groupReports", () => {
   it("puts a hidden list above a newer one that is still visible", () => {
     const rows = groupReports(
       [report("old", "spam", 1), report("new", "spam", 100)],
-      new Map([["old", { hidden: true, reviewed: false }]]),
+      new Map([["old", standing({ hidden: true, reviewed: false })]]),
     );
     assert.deepEqual(rows.map((row) => row.listId), ["old", "new"]);
   });
@@ -102,7 +115,7 @@ describe("groupReports", () => {
   it("carries the reviewed mark through, so the queue can say why nothing happened", () => {
     const rows = groupReports(
       [report("a", "spam", 1)],
-      new Map([["a", { hidden: false, reviewed: true }]]),
+      new Map([["a", standing({ hidden: false, reviewed: true })]]),
     );
     assert.equal(rows[0].reviewed, true);
   });

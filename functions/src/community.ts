@@ -4,6 +4,7 @@ import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/f
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
+import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
 import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
@@ -48,6 +49,7 @@ const PUBLISHED = "publishedLists";
 const REPORTS = "reports";
 const FOLLOWS = "follows";
 const TAKES = "takes";
+const BANS = "bans";
 const VERBS = ["report", "takedown", "dismiss", "taken"];
 
 /** Not a list at all: turning one of your own pictures into a face. */
@@ -240,7 +242,17 @@ export const lists = onRequest(
             if (verb === "taken") {
               return await recordTake(response, identity, id);
             }
-            return await settleReports(response, identity, id, verb === "takedown");
+            // The ban travels with the takedown rather than as a call of its
+            // own: one decision, one request, and no window in which a list
+            // is gone but its author is not yet answered for.
+            const asked = (request.body as { ban?: unknown } | null)?.ban;
+            return await settleReports(
+              response,
+              identity,
+              id,
+              verb === "takedown",
+              isBanLength(asked) ? asked : null,
+            );
           }
           return await publish(response, identity, request.body, hasId ? id : null);
         case "PATCH":
@@ -671,7 +683,16 @@ async function readReports(response: Response, identity: Identity): Promise<void
   const state = new Map(
     lists.map((doc) => {
       const data = (doc.data() ?? {}) as StoredList;
-      return [doc.id, { hidden: data.underReview === true, reviewed: data.reviewed === true }];
+      return [doc.id, {
+        hidden: data.underReview === true,
+        reviewed: data.reviewed === true,
+        // The list's own cover if it has one, and the first card's picture
+        // otherwise -- the feed shows the same thing, so this is what the
+        // person complaining was looking at.
+        coverImageUrl: data.coverImageUrl ?? data.previewImages?.[0] ?? null,
+        authorUid: data.authorUid ?? null,
+        authorPhotoUrl: data.authorPhotoUrl ?? null,
+      }];
     }),
   );
 
@@ -689,6 +710,7 @@ async function settleReports(
   identity: Identity,
   listId: string,
   takeDown: boolean,
+  banLength: BanLength | null,
 ): Promise<void> {
   if (!isModerator(identity)) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
@@ -697,10 +719,21 @@ async function settleReports(
 
   const db = getFirestore();
   const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
+  // Read before the batch deletes them: the author is on the complaint, and
+  // after the batch there is nothing left to ask.
+  const authorUid = filed.docs.map((doc) => doc.data().authorUid as string).find(Boolean) ?? null;
+  // What they were reported for, kept on the ban so the moderator's own
+  // memory of why is not the only record of it.
+  const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
   const batch = db.batch();
   filed.docs.forEach((doc) => batch.delete(doc.ref));
   if (takeDown) {
     batch.delete(db.collection(PUBLISHED).doc(listId));
+    // Only with a takedown. Putting a list back and banning its author in one
+    // gesture would be two opposite judgements at once.
+    if (banLength !== null && authorUid !== null) {
+      batch.set(db.collection(BANS).doc(authorUid), banFrom(banLength, Date.now(), reasonForBan));
+    }
   } else {
     // Back into the feed, and marked so that the next three complaints cannot
     // take it out again. Somebody looked; that is what looking is for.
@@ -749,6 +782,15 @@ async function publish(
 ): Promise<void> {
   const db = getFirestore();
   const collection = db.collection(PUBLISHED);
+
+  // Before anything is read or written: somebody who may not publish may not
+  // replace what they published either, or a ban would last exactly as long
+  // as it took them to edit an old list.
+  const ban = await readBan(identity.uid);
+  if (isBanned(ban, Date.now())) {
+    response.status(403).json({ error: "You cannot publish at the moment", ...noticeFor(ban) });
+    return;
+  }
 
   // Replacing a list the author already published does not add to their count.
   const alreadyPublished = existingId
@@ -936,6 +978,12 @@ async function report(
   }
 
   response.status(204).send();
+}
+
+/** The ban on somebody, or nothing at all. Expiry is judged where it is read. */
+async function readBan(uid: string): Promise<Ban | null> {
+  const doc = await getFirestore().collection(BANS).doc(uid).get();
+  return doc.exists ? (doc.data() as Ban) : null;
 }
 
 async function unpublish(response: Response, identity: Identity, id: string): Promise<void> {

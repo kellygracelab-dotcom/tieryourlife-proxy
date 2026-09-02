@@ -30,7 +30,7 @@ export const MAX_PREVIEW_IMAGES = 6;
 export const MAX_TIER_COLORS = 5;
 
 /**
- * Eight of them, fixed. A free-text category would splinter the feed into
+ * Nine of them, fixed. A free-text category would splinter the feed into
  * synonyms nobody can browse.
  */
 export const CATEGORIES = [
@@ -38,6 +38,7 @@ export const CATEGORIES = [
   "film_tv",
   "games",
   "music",
+  "books",
   "food",
   "sport",
   "people",
