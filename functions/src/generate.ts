@@ -49,6 +49,17 @@ function refuse(response: Response, decision: Exclude<ReserveDecision, { outcome
   }
 }
 
+/**
+ * Whether the service is paying for generations at all.
+ *
+ * Off unless `OFFER_GENERATION` says otherwise, so the expensive thing is
+ * never on by accident -- a missing variable in a fresh project reads as off,
+ * which is the safe way round for something that spends money.
+ */
+function generationIsOffered(): boolean {
+  return process.env.OFFER_GENERATION === "yes";
+}
+
 export const generate = onRequest(
   {
     region: "europe-west1",
@@ -63,6 +74,13 @@ export const generate = onRequest(
   async (request, response) => {
     if (request.method !== "POST") {
       response.status(405).json({ error: "Use POST" });
+      return;
+    }
+    // Closed here as well as hidden in the app, because hiding a button does
+    // not stop a request. Config rather than code, so turning it back on is a
+    // deploy of the same build rather than a release of a new one.
+    if (!generationIsOffered()) {
+      response.status(503).json({ error: "Generation is off", code: "GENERATION_OFF" });
       return;
     }
     if (!(await requireAppCheck(request, response))) {

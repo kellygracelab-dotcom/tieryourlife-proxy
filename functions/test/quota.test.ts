@@ -162,16 +162,31 @@ describe("decideCarry", () => {
   // The case this exists for: somebody used the app as a guest, then signed
   // into a Google account that already existed. The guest uid keeps the
   // balance and can never be reached again.
-  it("hands a fresh account the guest's balance when it is the larger one", () => {
+  //
+  // Said relative to the grant rather than as a number. Written as a number it
+  // silently changed meaning the day the grant came down.
+  it("leaves a fresh account its own grant when the guest had less", () => {
     const decision = decideCarry({
       destination: empty,
       destinationPurchased: 0,
-      guestCredits: 4,
+      guestCredits: FREE_GENERATION_GRANT - 1,
       guestPurchased: 0,
     });
 
     assert.equal(decision.credits, FREE_GENERATION_GRANT);
     assert.equal(decision.moved, false);
+  });
+
+  it("hands a fresh account the guest's balance when that is the larger one", () => {
+    const decision = decideCarry({
+      destination: empty,
+      destinationPurchased: 0,
+      guestCredits: FREE_GENERATION_GRANT + 1,
+      guestPurchased: 0,
+    });
+
+    assert.equal(decision.credits, FREE_GENERATION_GRANT + 1);
+    assert.equal(decision.moved, true);
   });
 
   it("keeps the guest's balance when the account has already spent more", () => {

@@ -173,6 +173,21 @@ firebase functions:secrets:set TMDB_READ_ACCESS_TOKEN
 Each command prompts for the value and stores it. `functions/.env` and
 `.runtimeconfig.json` are git-ignored so a local override cannot leak either.
 
+## Switches
+
+`functions/.env` also holds the settings that are not secret but are not code
+either:
+
+| Name | Meaning |
+| --- | --- |
+| `MODERATOR_UID`, `MODERATOR_EMAIL` | Who may read the report queue. |
+| `OFFER_GENERATION` | `yes` to pay for image generation. Anything else refuses every request, whatever the app shows. |
+
+`OFFER_GENERATION` is off, because nothing charges for a generation yet.
+Turning it back on is a deploy of the same build rather than a release of a new
+app -- but the app hides the button behind `Features.GENERATION_OFFERED`, so
+both have to move for anybody to see it.
+
 ## Tests
 
 The rules that decide whether a generation may happen are pure functions in
