@@ -288,12 +288,36 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
  *
  * A first write says nothing, which is how a board arrives on a second device
  * with the same uid: the same board, not a conflict.
+ *
+ * The revision alone cannot tell the two apart, and getting that wrong is not
+ * theoretical: a phone that uploads a board and then dies before it can write
+ * down the revision it was given comes back saying the old number. Judged on
+ * numbers that is somebody else's edit, and the phone dutifully keeps a second
+ * copy of its own board. Kill the app three times and there are three of them.
+ *
+ * What settles it is the fingerprint, which is already stored and until now
+ * was only ever shown. If what arrives is the same content the account is
+ * already holding, this is that lost receipt and nothing else -- there is
+ * nothing to merge and nobody to warn, only a number to hand back.
  */
-export type WriteVerdict = "create" | "update" | "conflict";
+export type WriteVerdict = "create" | "update" | "conflict" | "already";
 
-export function decideWrite(storedRevision: number | null, basedOn: unknown): WriteVerdict {
-  if (storedRevision === null) {
+export interface StoredWrite {
+  revision: number;
+  fingerprint: string | null;
+}
+
+export function decideWrite(stored: StoredWrite | null, basedOn: unknown, fingerprint: string | null): WriteVerdict {
+  if (stored === null) {
     return "create";
   }
-  return typeof basedOn === "number" && basedOn === storedRevision ? "update" : "conflict";
+  if (typeof basedOn === "number" && basedOn === stored.revision) {
+    return "update";
+  }
+  // Only a fingerprint that exists on both sides says anything. Two boards
+  // that have never been fingerprinted are not thereby the same board.
+  if (fingerprint !== null && fingerprint === stored.fingerprint) {
+    return "already";
+  }
+  return "conflict";
 }

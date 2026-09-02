@@ -274,24 +274,43 @@ describe("decideStore", () => {
 });
 
 describe("decideWrite", () => {
+  const held = (revision: number, fingerprint: string | null = "theirs") => ({ revision, fingerprint });
+
   // The same board arriving on a second device is the same board, not a fight.
   it("creates when the account has never seen the board", () => {
-    assert.equal(decideWrite(null, null), "create");
+    assert.equal(decideWrite(null, null, "ours"), "create");
   });
 
   it("updates when the device was working from what is stored", () => {
-    assert.equal(decideWrite(4, 4), "update");
+    assert.equal(decideWrite(held(4), 4, "ours"), "update");
   });
 
   // The order of the cards is the content, so there is no arithmetic that
   // merges two afternoons. Both are kept instead.
   it("calls it a conflict when the account moved on", () => {
-    assert.equal(decideWrite(5, 4), "conflict");
+    assert.equal(decideWrite(held(5), 4, "ours"), "conflict");
   });
 
   it("calls it a conflict when the device says nothing about what it saw", () => {
-    assert.equal(decideWrite(5, null), "conflict");
-    assert.equal(decideWrite(5, undefined), "conflict");
-    assert.equal(decideWrite(5, "5"), "conflict");
+    assert.equal(decideWrite(held(5), null, "ours"), "conflict");
+    assert.equal(decideWrite(held(5), undefined, "ours"), "conflict");
+    assert.equal(decideWrite(held(5), "5", "ours"), "conflict");
+  });
+
+  // The bug this was written for. A phone uploads, the account stores it and
+  // answers, and the phone dies before it can write the new revision down. It
+  // comes back quoting the old one, which by the numbers is a stranger's edit
+  // -- and it was dutifully keeping a second copy of its own board.
+  it("knows its own answer coming back, when the content is unchanged", () => {
+    assert.equal(decideWrite(held(5, "same"), 4, "same"), "already");
+  });
+
+  it("still calls it a conflict when the content really did change", () => {
+    assert.equal(decideWrite(held(5, "theirs"), 4, "ours"), "conflict");
+  });
+
+  // Two boards nobody has ever fingerprinted are not thereby the same board.
+  it("will not call two unfingerprinted boards the same board", () => {
+    assert.equal(decideWrite(held(5, null), 4, null), "conflict");
   });
 });

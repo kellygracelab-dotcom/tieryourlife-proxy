@@ -256,7 +256,17 @@ async function write(
   }
 
   const stored = existing.exists ? (existing.data() as BoardDocument) : null;
-  const verdict = decideWrite(stored ? stored.revision : null, source.basedOn);
+  const verdict = decideWrite(
+    stored ? { revision: stored.revision, fingerprint: stored.fingerprint ?? null } : null,
+    source.basedOn,
+    decision.board.fingerprint,
+  );
+  // The same board coming back a second time, because the first answer never
+  // arrived. Storing it again would only spend a write and move the revision
+  // out from under whichever phone did hear the first answer.
+  if (verdict === "already") {
+    return void response.status(200).json({ uid: id, revision: stored!.revision });
+  }
   if (verdict === "conflict") {
     // Both versions are somebody's afternoon. The device keeps its own and
     // takes this one as a second board, which is why the whole thing is here
