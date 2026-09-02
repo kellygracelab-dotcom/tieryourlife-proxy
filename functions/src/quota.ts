@@ -5,11 +5,24 @@
  * file that turns these decisions into writes.
  */
 
-/** Generations handed to an account the first time it asks for one. */
-export const FREE_GENERATION_GRANT = 10;
+/**
+ * Generations handed to an account the first time it asks for one.
+ *
+ * Three rather than ten while nobody is paying for any of them. Enough to see
+ * what the feature does and decide whether it is worth money later; not enough
+ * to be somebody's free image service.
+ */
+export const FREE_GENERATION_GRANT = 3;
 
-/** Generations the whole service will pay for in a single UTC day. */
-export const DAILY_GENERATION_CEILING = 500;
+/**
+ * Generations the whole service will pay for in a single UTC day.
+ *
+ * This is the number that actually bounds the bill, because it does not care
+ * how many people installed the app or how many guest identities somebody
+ * makes. A hundred a day is a figure worth saying out loud; five hundred was
+ * chosen when there was nobody to spend it.
+ */
+export const DAILY_GENERATION_CEILING = 100;
 
 /**
  * How long a reservation holds the account. Longer than the function's own 300
