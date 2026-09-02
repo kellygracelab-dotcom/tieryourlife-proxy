@@ -3,6 +3,7 @@ import { FieldPath, FieldValue, Timestamp, getFirestore } from "firebase-admin/f
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
+import { eraseAccount } from "./erase";
 import {
   BOARD_PAGE_SIZE,
   MAX_BOARDS_PER_ACCOUNT,
@@ -30,6 +31,9 @@ import {
 
 const ACCOUNTS = "accounts";
 const BOARDS = "boards";
+
+/** Not a board: the whole account, and everything this service holds about it. */
+const ACCOUNT = "account";
 
 interface BoardDocument extends Partial<StoredBoard> {
   /** Bumped by this file on every accepted write. Never sent by a device. */
@@ -130,6 +134,9 @@ export const boards = onRequest(
     }
     const id = segments[0] ?? "";
     const hasId = id.length > 0;
+    // Board ids are Firestore's twenty characters, so this word can never be
+    // one, the same way "face" and "follow" cannot be a list id.
+    const aboutTheAccount = id === ACCOUNT;
 
     try {
       switch (request.method) {
@@ -142,6 +149,9 @@ export const boards = onRequest(
             ? await write(response, identity, id, request.body)
             : void response.status(400).json({ error: "Which board?" });
         case "DELETE":
+          if (aboutTheAccount) {
+            return await erase(response, identity);
+          }
           return hasId
             ? await forget(response, identity, id)
             : void response.status(400).json({ error: "Which board?" });
@@ -154,6 +164,23 @@ export const boards = onRequest(
     }
   },
 );
+
+/**
+ * Removes the account and everything belonging to it, for good.
+ *
+ * Offered inside the app because Google requires an app that creates accounts
+ * to let somebody end one from the same place, without writing to anybody.
+ * Refused for a guest: there is no account to end, and the sweep takes an
+ * abandoned guest away by itself.
+ */
+async function erase(response: Response, identity: Identity): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+    return;
+  }
+  await eraseAccount(identity.uid);
+  response.status(204).send();
+}
 
 function singleParam(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
