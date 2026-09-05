@@ -1,14 +1,8 @@
 /**
- * Which guest identities have been abandoned, and may be swept.
- *
- * Every install signs in anonymously before it can call anything metered. Most
- * of those identities are kept and used for months. Some are dropped the moment
- * they are made: signing in with a Google account that already exists cannot
- * merge the two, so Firebase leaves the guest behind and the person becomes
- * their older self. Those are the ones that pile up.
- *
- * Deliberately pure — no Admin SDK, no clock. `sweep.ts` is the only file that
- * turns these decisions into deletions.
+ * Which guest identities have been abandoned. Every install signs in
+ * anonymously; the ones that pile up are those left behind when somebody
+ * signs into a Google account that already exists, which cannot be merged.
+ * Pure: `sweep.ts` turns these decisions into deletions.
  */
 
 /**

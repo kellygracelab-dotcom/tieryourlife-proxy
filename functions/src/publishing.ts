@@ -11,13 +11,9 @@ import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
  */
 export const MAX_LISTS_PER_AUTHOR = 50;
 /**
- * Someone can genuinely have watched thousands of films, so the count is
- * generous. Two thousand is where a board still opens without the phone
- * stumbling over it, measured on a device rather than guessed. The real
- * ceiling is Firestore's one-megabyte document, which a count alone cannot
- * express -- a list of two hundred cards with very long addresses can outweigh
- * a thousand with short ones -- so the assembled snapshot is weighed as well,
- * well under the limit.
+ * Two thousand is where a board still opens without the phone stumbling,
+ * measured on a device. The real ceiling is Firestore's one-megabyte
+ * document, which a count cannot express, so the assembled snapshot is weighed as well.
  */
 export const MAX_ITEMS_PER_LIST = 2000;
 export const MAX_TIERS_PER_LIST = 20;
@@ -60,24 +56,17 @@ export interface PublishedItem {
   imageUrl: string | null;
   /**
    * Which tier the author put this card in, by position in [PublishedList.tiers],
-   * or null for one they left unranked.
-   *
-   * Absent on everything published before this existed, which reads as null:
-   * those snapshots genuinely do not know, and guessing would be inventing an
-   * opinion on somebody else's behalf. They fill in when the author updates.
+   * or null for one left unranked. Absent on everything published before this
+   * existed, which reads as null: those snapshots genuinely do not know.
    */
   tierIndex: number | null;
 }
 
 /**
- * A card before its own photograph has been given a public address.
- *
- * Two kinds of picture reach this point and they arrive differently. A poster
- * comes as an https address somebody else already hosts, and is carried
- * through untouched. A photograph out of somebody's gallery comes as the name
- * of a file already sitting in their private folder, and cannot go into the
- * feed as it is -- nobody but them can read that folder. The adapter looks at
- * those, copies the ones that pass, and [settle] puts the new addresses in.
+ * A card before its own photograph has a public address. A poster comes as an
+ * https address and is carried through; a gallery photograph comes as the
+ * name of a file in a private folder nobody else can read, so the adapter
+ * copies the ones that pass and [settle] puts the new addresses in.
  */
 export interface DraftItem {
   title: string;
@@ -135,11 +124,8 @@ function keepableImageUrl(value: unknown): string | null {
 }
 
 /**
- * Where the author put a card, kept only if it names a tier this board has.
- *
- * Out of range means the phone and the snapshot disagree about the tiers, and
- * the honest answer to that is "unranked" rather than a card in a tier nobody
- * can see.
+ * Kept only if it names a tier this board has: out of range means the phone
+ * and the snapshot disagree, and the honest answer is "unranked".
  */
 function tierIndexOf(value: unknown, tierCount: number): number | null {
   if (typeof value !== "number" || !Number.isInteger(value)) return null;
@@ -222,11 +208,8 @@ export function decidePublish({
     const itemTitle = cleanText(item.title, MAX_TITLE_LENGTH);
     const imageUrl = keepableImageUrl(item.imageUrl);
     const pictureId = isPictureId(item.pictureId) ? item.pictureId : null;
-    // A card is a name or a picture, and needs one of them to be a card at
-    // all. It used to need the name, from back when every card came out of a
-    // catalogue and arrived with one; a photograph somebody chose from their
-    // gallery has no name and does not need one -- the picture is what it is.
-    // A card with neither is nothing, and refusing it is still right.
+    // A card is a name or a picture and needs one of them: a photograph from
+    // the gallery has no name and does not need one. Neither is nothing.
     if (!itemTitle && !imageUrl && pictureId === null) {
       return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
@@ -267,11 +250,8 @@ export function decidePublish({
 }
 
 /**
- * The draft with its own photographs given the addresses they were copied to.
- *
  * A picture missing from [addresses] leaves its card without art rather than
- * failing the publication: the card still says what it is, and a board of
- * ninety photographs should not be lost to one that would not copy.
+ * failing the publication: ninety photographs should not be lost to one that would not copy.
  */
 export function settle(draft: PublishDraft, addresses: Map<string, string>): PublishedList {
   const resolve = (imageUrl: string | null, pictureId: string | null): string | null =>

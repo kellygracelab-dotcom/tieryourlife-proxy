@@ -13,19 +13,11 @@ const TAKES = "takes";
 const BATCH = 500;
 
 /**
- * Everything this service holds about one person, removed.
- *
- * The order is the design. The identity goes last, because everything before
- * it is authorised by that identity: delete the account first and a failure
- * halfway leaves somebody unable to sign in, unable to try again, and with
- * their boards still here. Deleting the data first means a failure is simply a
- * failed attempt, and pressing the button again picks up where it stopped --
- * every step below is safe to repeat.
- *
- * What is deliberately left behind: the take counts on other people's lists.
- * The document naming this person as the taker goes, so nothing points back at
- * them; the number it contributed to stays, because it is now an anonymous
- * total that belongs to somebody else's list rather than a fact about them.
+ * Everything this service holds about one person, removed. The identity goes
+ * last, because everything before it is authorised by that identity, and
+ * every step is safe to repeat, so a failure halfway is just a failed
+ * attempt. Take counts on other people's lists stay: the document naming
+ * this person goes, the anonymous total does not.
  */
 export async function eraseAccount(uid: string): Promise<void> {
   const db = getFirestore();

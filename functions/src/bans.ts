@@ -1,13 +1,7 @@
 /**
- * Who may not publish, and until when.
- *
- * Pure, like the rest of the deciding here: `community.ts` reads and writes
- * the documents, this file only says what they mean.
- *
- * A ban is on publishing and on nothing else. Somebody who has been banned
- * keeps every board on their phone, keeps making new ones, keeps ranking
- * other people's lists and keeps their account. What stops is putting things
- * in front of other people, which is the only thing they misused.
+ * Who may not publish, and until when. Pure: `community.ts` reads and writes
+ * the documents. A ban is on publishing and nothing else: boards, ranking and
+ * the account stay.
  */
 
 /** How long a ban can be, in the moderator's words. */
@@ -17,13 +11,7 @@ export type BanLength = (typeof BAN_LENGTHS)[number];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Months as thirty days rather than calendar months.
- *
- * A ban is a length of time, not a date in a diary: "a month" that lands on
- * the 31st and quietly becomes the 3rd is a worse answer than thirty days,
- * and the difference matters to nobody being told to wait.
- */
+/** Months as thirty days: a ban is a length of time, not a date in a diary. */
 const LENGTH_IN_DAYS: Record<Exclude<BanLength, "forever">, number> = {
   week: 7,
   month: 30,
@@ -53,12 +41,8 @@ export function banFrom(length: BanLength, nowMs: number, reason: string | null)
 }
 
 /**
- * Whether a ban still stands.
- *
- * Expiry is decided when somebody tries to publish rather than by anything
- * sweeping the collection: a job that has not run yet would keep somebody
- * banned past their time, and being let out late is the one mistake here
- * nobody would forgive.
+ * Expiry is decided when somebody tries to publish rather than by a sweep:
+ * a job that has not run yet would keep somebody banned past their time.
  */
 export function isBanned(ban: Ban | null, nowMs: number): ban is Ban {
   if (ban === null) return false;

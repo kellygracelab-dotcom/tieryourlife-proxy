@@ -15,18 +15,14 @@ import {
 } from "./sync";
 
 /**
- * The copy of someone's boards that outlives their phone.
- *
- * Written here rather than by the app talking to Firestore directly, which
- * would mean opening a hole in `firestore.rules`. The rules deny everything on
- * purpose -- a client that can write one collection is a client whose writes
- * have to be argued about -- and boards are not worth being the first
- * exception.
+ * The copy of someone's boards that outlives their phone, written here rather
+ * than by the app talking to Firestore: `firestore.rules` deny everything on
+ * purpose.
  *
  *   accounts/{uid}/boards/{boardUid}
  *
- * The board's uid is the device's own, so the same board written from two
- * phones lands on one document instead of two.
+ * The board's uid is the device's own, so the same board from two phones
+ * lands on one document.
  */
 
 const ACCOUNTS = "accounts";
@@ -166,12 +162,9 @@ export const boards = onRequest(
 );
 
 /**
- * Removes the account and everything belonging to it, for good.
- *
- * Offered inside the app because Google requires an app that creates accounts
- * to let somebody end one from the same place, without writing to anybody.
- * Refused for a guest: there is no account to end, and the sweep takes an
- * abandoned guest away by itself.
+ * Offered inside the app because Google requires an app that creates
+ * accounts to let somebody end one from the same place. Refused for a guest:
+ * the sweep takes an abandoned guest away by itself.
  */
 async function erase(response: Response, identity: Identity): Promise<void> {
   if (identity.isAnonymous) {
@@ -291,11 +284,8 @@ async function write(
 }
 
 /**
- * Throwing a board away leaves a marker rather than nothing.
- *
- * Without one the account forgets the board, the other phone still has it, and
- * the next sync puts it back -- the delete that will not stick, which reads as
- * the app ignoring you.
+ * A marker rather than nothing: otherwise the other phone still has the board
+ * and the next sync puts it back.
  */
 async function forget(response: Response, identity: Identity, id: string): Promise<void> {
   if (identity.isAnonymous) {

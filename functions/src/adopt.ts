@@ -6,18 +6,11 @@ import { requireUser } from "./auth";
 import { decideCarry } from "./quota";
 
 /**
- * Takes over the balance left on a guest identity.
- *
- * Somebody who used the app without an account and then signed into a Google
- * account that already existed cannot be linked to it -- the Google account is
- * already an identity of its own -- so Firebase signs them in and leaves the
- * guest uid behind, holding credits nobody can ever reach again. This is how
- * they get them back.
- *
- * Both sides have to prove who they are. The caller's own token says where the
- * credits are going; the guest's token, minted before the switch and still
- * valid for the hour, says where they are coming from. Naming a uid in the
- * body would let anyone drain anyone.
+ * Takes over the balance left on a guest identity: Firebase cannot link a
+ * guest onto a Google account that already exists, so it signs the person in
+ * and leaves the guest uid behind with its credits. Both sides prove who they
+ * are by token -- the caller's own, and the guest's minted before the switch.
+ * Naming a uid in the body would let anyone drain anyone.
  */
 
 const ACCOUNTS = "accounts";

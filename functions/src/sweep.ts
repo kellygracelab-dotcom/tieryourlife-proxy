@@ -87,10 +87,8 @@ async function forgetLedgerRows(uids: Set<string>): Promise<void> {
     const refs = slice.map((uid) => db.collection("accounts").doc(uid));
     const snapshots = await db.getAll(...refs);
 
-    // Say what is going. Today every balance here is the free grant and losing
-    // it costs nobody anything -- the identity that replaced this one drew its
-    // own. The day credits can be bought that stops being true, and a line in
-    // the log is the difference between knowing that and guessing.
+    // Say what is going: today every balance is the free grant, but the day
+    // credits can be bought a line in the log is the difference between knowing and guessing.
     snapshots.forEach((snapshot) => {
       const credits = (snapshot.data()?.credits as number | undefined) ?? 0;
       if (credits > 0) {

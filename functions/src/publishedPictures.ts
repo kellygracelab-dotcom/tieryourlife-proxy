@@ -1,15 +1,8 @@
 /**
  * Moving somebody's own photographs from their private folder into the feed.
- *
  * The adapter to `safety.ts`, which decides, and to Cloud Vision, which looks.
- * Nothing here judges: it fetches bytes, asks, copies what passed, and hands
- * back addresses.
- *
- * Copies rather than opening the private folder for reading. A published list
- * is a snapshot and has always behaved like one -- editing the board does not
- * edit what the feed shows -- and a copy keeps that true of the pictures as
- * well. It also keeps `storage.rules` closed: the client writes only to its own
- * folder, and the public folder is written by this file alone.
+ * Copies rather than opening the private folder: a published list is a
+ * snapshot, and the public folder is written by this file alone.
  */
 import { getStorage } from "firebase-admin/storage";
 import { decideSafe, type Likelihood, type SafeSearchVerdict, type SafetyRefusal } from "./safety";
@@ -87,10 +80,8 @@ export async function copyForPublication(
 
   const bucket = getStorage().bucket();
 
-  // A copy already in this list's folder has been here before, and nothing but
-  // this function can put one there -- so it was looked at when it arrived.
-  // Republishing a board whose title changed should not pay to look at ninety
-  // unchanged photographs again.
+  // A copy already in this list's folder was looked at when it arrived, and
+  // nothing but this function can put one there.
   const [existing] = await bucket.getFiles({ prefix: `published/${listId}/` });
   const alreadyHere = new Set(
     existing.map((file) => file.name.slice(`published/${listId}/`.length)),
@@ -183,15 +174,9 @@ export async function discardUnusedPublished(listId: string, keeping: string[]):
 }
 
 /**
- * A picture of this person's own, made into a face the community can see.
- *
- * The same shape as publishing a board's pictures and for the same reason: a
- * face is shown next to every list they publish, so it has to live somewhere
- * everybody may read, and their private folder is not that. Copied rather than
- * opened up, and looked at first.
- *
- * Answers null when the picture is missing or when Vision objected -- the
- * caller turns the request down and the person keeps the face they had.
+ * The same shape as publishing a board's pictures: a face is shown next to
+ * every list they publish, so it is copied somewhere everybody may read, and
+ * looked at first. Null when the picture is missing or Vision objected.
  */
 export async function copyAsFace(uid: string, pictureId: string): Promise<string | null> {
   const bucket = getStorage().bucket();

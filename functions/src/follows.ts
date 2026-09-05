@@ -5,14 +5,9 @@
  */
 
 /**
- * How many authors one person's feed will draw from.
- *
  * Firestore answers `in` with at most thirty values, so a following feed is
- * already several queries merged. The ceiling is on how many of those we are
- * willing to run for one page -- at two hundred that is seven, which is a lot
- * for a screen but still a fixed, knowable cost. Nobody following that many
- * people is reading all of them anyway, and a limit that can be stated is
- * better than a page that quietly gets slower the more you follow.
+ * several queries merged; at two hundred that is seven per page, a fixed and
+ * knowable cost.
  */
 export const MAX_FOLLOWING = 200;
 
@@ -39,12 +34,8 @@ export interface Follower {
 }
 
 /**
- * Whether this person may follow that one.
- *
- * Following is kept behind an account rather than allowed to guests. It is a
- * list that has to survive the phone it was made on, and a guest is an
- * identity this app hands out and sweeps away -- letting one build a following
- * list would be promising to keep something we delete.
+ * Behind an account rather than allowed to guests: a following list has to
+ * survive the phone, and a guest is an identity this app sweeps away.
  */
 export function decideFollow(follower: Follower, authorUid: string): FollowDecision {
   if (follower.isAnonymous) {
@@ -94,16 +85,9 @@ export interface Ranked {
 }
 
 /**
- * One page out of several already-sorted pages.
- *
- * The following feed asks Firestore once per thirty authors, so what comes
- * back is several sorted runs rather than one. Merging them here keeps the
- * ordering the reader was promised; doing it any other way would show the
- * first thirty authors' lists ahead of everyone else's regardless of date.
- *
- * Ties break on id so that two lists saved in the same millisecond always come
- * back in the same order -- a page boundary that wobbles repeats a list or
- * skips one.
+ * One page out of several already-sorted runs, merged to keep the ordering
+ * the reader was promised. Ties break on id so a page boundary never wobbles
+ * and repeats or skips a list.
  */
 export function mergePages<T extends Ranked>(pages: T[][], sort: Sort, pageSize: number): T[] {
   const seen = new Set<string>();
@@ -127,12 +111,8 @@ function compare(left: Ranked, right: Ranked, sort: Sort): number {
 }
 
 /**
- * Where the next page starts, said in values rather than as a document.
- *
- * The plain feed can resume from the last document it handed out, because it
- * ran one query. A merged feed cannot: the document that ended the page is in
- * one of the runs and means nothing to the others, so every run has to be
- * resumed from the same pair of values instead.
+ * Said in values rather than as a document: the document that ended the page
+ * is in one run and means nothing to the others.
  */
 export function cursorOf(page: Ranked[], pageSize: number, sort: Sort): string | null {
   if (page.length < pageSize) {
