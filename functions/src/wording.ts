@@ -1,21 +1,10 @@
 /**
- * What the classifier makes of the words on a board.
- *
- * It does not decide whether they may be published, because it measurably
- * cannot. Asked about real board text in three languages, it answered 0.64 for
- * "Best sex scenes in cinema" -- a perfectly good film list -- and 0.69 for a
- * list of pornographic actresses. Five hundredths apart, because the two are
- * about the same subject and a classifier reading twelve words has no way to
- * tell an appreciation from an advertisement.
- *
- * Its `derogatory` score was worse still: "Shit I have to do this week" scored
- * 0.92, above an actual list of people somebody wanted dead at 0.91. A rule
- * that refuses a to-do list for swearing while letting hatred through is not a
- * rule worth having, so nothing refuses on derogatory at all.
- *
- * So this feeds the queue instead. A noisy signal belongs in front of a person,
- * not in front of a gate: a wrong guess costs a look rather than telling
- * somebody their list is unacceptable with no way to learn why.
+ * What the classifier makes of the words on a board. It does not decide
+ * whether they may be published, because it measurably cannot: on real board
+ * text "Best sex scenes in cinema" scored 0.64 and a list of pornographic
+ * actresses 0.69, and `derogatory` put "Shit I have to do this week" (0.92)
+ * above a list of people somebody wanted dead (0.91). So nothing refuses on
+ * it; a noisy signal belongs in front of a person, and this feeds the queue.
  */
 
 /** Cloud Natural Language answers each category with a confidence in 0..1. */
@@ -29,18 +18,12 @@ export interface WordingVerdict {
 }
 
 /**
- * Both numbers come from asking the real classifier about real board text.
- *
- * Ordinary boards -- films, albums, war films, horror, "my beach photos" --
- * scored between 0.00 and 0.14 in English, Russian and Ukrainian. The two
- * awkward ones were "Best diss tracks" at 0.32 and "Best sex scenes in
- * cinema" at 0.64. Lists of pornographic actresses scored 0.69 in English,
- * 0.85 in Ukrainian and 0.91 in Russian.
- *
- * So [WORTH_A_LOOK] sits below the film list as well as the porn list: both
- * reach the queue, and a person spends five seconds telling them apart. And
- * [HIDE_UNTIL_LOOKED_AT] sits above anything an ordinary board scored by a
- * wide margin, so hiding on it costs an innocent board nothing.
+ * Both from asking the real classifier about real board text. Ordinary boards
+ * scored 0.00-0.14 in English, Russian and Ukrainian; "Best diss tracks" 0.32;
+ * "Best sex scenes in cinema" 0.64; lists of pornographic actresses 0.69
+ * (English), 0.85 (Ukrainian) and 0.91 (Russian). [WORTH_A_LOOK] sits below
+ * the film list so both reach the queue; [HIDE_UNTIL_LOOKED_AT] sits far
+ * above anything an ordinary board scored.
  */
 export const WORTH_A_LOOK = 0.6;
 export const HIDE_UNTIL_LOOKED_AT = 0.85;
@@ -60,14 +43,9 @@ export function decideWordingConcern(verdict: WordingVerdict): WordingConcern {
 }
 
 /**
- * Everything a reader will see written on a board, as one piece of text.
- *
- * One document rather than one per field: a classifier reads a sentence better
- * than it reads a word, and "Arrival" on its own tells it nothing. It is also
- * one call instead of a hundred.
- *
- * Newline-separated, so that two innocent card titles cannot run together into
- * something that reads as a third thing.
+ * Everything a reader will see on a board, as one document: a classifier
+ * reads a sentence better than a word, and it is one call instead of a
+ * hundred. Newline-separated so two innocent titles cannot run together.
  */
 export function wordsOf(list: {
   title: string;
@@ -91,13 +69,9 @@ export function wordsOf(list: {
 export const ENOUGH_TO_JUDGE = 20;
 
 /**
- * What the classifier says about a board's words, or nothing.
- *
- * Injected so the deciding can be exercised without a network, and answering
- * null on any trouble at all is deliberate: the classifier being down must not
- * stop somebody publishing. Pictures are the other way round -- there a
- * failure is a picture nobody looked at -- but words reach the feed under a
- * report button, and the cost of the two failures is not the same.
+ * Injected so the deciding can be exercised without a network. Null on any
+ * trouble is deliberate: the classifier being down must not stop somebody
+ * publishing -- words reach the feed under a report button, pictures do not.
  */
 export type ReadWords = (text: string) => Promise<WordingVerdict | null>;
 

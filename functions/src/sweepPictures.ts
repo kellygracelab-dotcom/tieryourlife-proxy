@@ -4,12 +4,8 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { decideDiscard, type StoredPicture } from "./pictures";
 
 /**
- * Storage knows nothing about boards, so nothing here is deleted by anything
- * else. Without this the pictures of every card anybody ever removed stay
- * forever, and the bill only grows.
- *
- * The client could tidy up after itself, and does not: somebody who uninstalls
- * the app leaves their rubbish behind, and we are the ones paying to keep it.
+ * Storage knows nothing about boards, so nothing else deletes these; without
+ * this the pictures of every removed card stay forever and the bill grows.
  */
 export const sweepPictures = onSchedule(
   {
@@ -27,10 +23,8 @@ export const sweepPictures = onSchedule(
     let discarded = 0;
     let accounts = 0;
 
-    // Driven by who has boards rather than by who has files: an account with
-    // no boards at all has nothing to compare against, and deleting its
-    // pictures on that basis would be deleting somebody's library because a
-    // read failed.
+    // Driven by who has boards rather than who has files: an account with no
+    // boards has nothing to compare against, and a failed read is no reason to delete.
     const owners = await db.collectionGroup("boards").select().get();
     const uids = new Set(
       owners.docs

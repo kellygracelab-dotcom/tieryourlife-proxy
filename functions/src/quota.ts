@@ -5,22 +5,12 @@
  * file that turns these decisions into writes.
  */
 
-/**
- * Generations handed to an account the first time it asks for one.
- *
- * Three rather than ten while nobody is paying for any of them. Enough to see
- * what the feature does and decide whether it is worth money later; not enough
- * to be somebody's free image service.
- */
+/** Three rather than ten while nobody is paying: enough to see what the feature does, not enough to be a free image service. */
 export const FREE_GENERATION_GRANT = 3;
 
 /**
- * Generations the whole service will pay for in a single UTC day.
- *
- * This is the number that actually bounds the bill, because it does not care
- * how many people installed the app or how many guest identities somebody
- * makes. A hundred a day is a figure worth saying out loud; five hundred was
- * chosen when there was nobody to spend it.
+ * Generations the whole service will pay for in a single UTC day: the number
+ * that actually bounds the bill, whatever the count of installs or guest identities.
  */
 export const DAILY_GENERATION_CEILING = 100;
 
@@ -97,12 +87,9 @@ export interface Settlement {
 }
 
 /**
- * A failure gives the credit back, because nothing was delivered; a success
- * keeps it spent.
- *
- * A run that dies without settling keeps the credit spent too — once the
- * request reached Gemini we cannot tell whether it was billed, and guessing in
- * the caller's favour would hand out a free image on every crash.
+ * A failure gives the credit back; a success keeps it spent. A run that dies
+ * without settling keeps it spent too: once the request reached Gemini we
+ * cannot tell whether it was billed.
  */
 export function decideSettlement(succeeded: boolean): Settlement {
   return succeeded
@@ -116,18 +103,11 @@ export function dayKey(nowMs: number): string {
 }
 
 /**
- * What one account ends up with after taking over a guest's balance.
- *
- * The case: somebody used the app without an account, then signed into a
- * Google account that already existed. Firebase cannot link the two -- the
- * Google account is already an identity -- so it signs them in and the guest
- * uid is left behind with whatever was on it. That balance is theirs; it was
- * simply held under a name they can never use again.
- *
- * Not a sum, and that is the whole point. Every credit today is the free
- * grant, and adding the two together would make signing out and back in a way
- * of printing them. Bought credits are different -- nobody prints those -- so
- * they add, and the single free grant is counted once at its higher remainder.
+ * What one account ends up with after taking over a guest's balance (Firebase
+ * cannot link a guest onto an existing Google account, so the guest uid is
+ * left behind with its balance). Not a sum: every credit today is the free
+ * grant, and adding would make signing out and in a way of printing them.
+ * Bought credits add; the free grant is counted once at its higher remainder.
  */
 export interface CarryInput {
   destination: AccountSnapshot;

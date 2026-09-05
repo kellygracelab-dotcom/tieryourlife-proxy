@@ -1,11 +1,7 @@
 /**
- * Whether a picture somebody drew from their own gallery may go into the feed.
- * Pure, like the rest of the deciding in this repo: `community.ts` fetches the
- * bytes and calls Vision, this file only reads the verdict.
- *
- * Only ever asked about pictures the person supplied. Posters from TMDB and
- * images from Wikidata arrive as https addresses somebody else already hosts
- * and already moderates, and paying to look at them again would buy nothing.
+ * Whether a picture from somebody's own gallery may go into the feed. Pure:
+ * `community.ts` fetches the bytes and calls Vision. Posters and Wikidata
+ * images are hosted and moderated elsewhere, so they are never looked at.
  */
 
 /**
@@ -29,18 +25,9 @@ export interface SafeSearchVerdict {
 }
 
 /**
- * Where each category stops being publishable.
- *
- * `adult` is the one the policy is actually about, so it refuses at "likely" —
- * one step before certainty, because a picture Vision is unsure about is not a
- * picture a feed should be arguing over.
- *
- * `racy` is deliberately one step laxer. It fires on swimwear, on a hand near a
- * face, on half the film posters ever printed; refusing at "likely" would mean
- * refusing a board of beach photographs, which is not what anybody asked for.
- *
- * `violence` catches gore rather than a war film's poster, so it sits with
- * adult rather than with racy.
+ * `adult` refuses at "likely", one step before certainty. `racy` is one step
+ * laxer: it fires on swimwear and half the film posters ever printed.
+ * `violence` catches gore rather than a war film's poster, so it sits with adult.
  */
 export const REFUSE_ADULT_AT: Likelihood = "LIKELY";
 export const REFUSE_RACY_AT: Likelihood = "VERY_LIKELY";
@@ -68,13 +55,9 @@ export function decideSafe(verdict: SafeSearchVerdict): SafetyDecision {
 }
 
 /**
- * How many of a person's own photographs one published list may carry.
- *
- * A board may hold two thousand cards, and every own photograph costs a read
- * from storage, a call to Vision and a copy — per publish, and again on every
- * republish. Two hundred is far past any board somebody actually assembled by
- * hand from their own camera roll, and it keeps one press of Publish from
- * becoming a four-figure bill.
+ * Every own photograph costs a read, a Vision call and a copy per publish.
+ * Two hundred is far past any board assembled by hand and keeps one press of
+ * Publish from becoming a four-figure bill.
  */
 export const MAX_OWN_PICTURES_PER_LIST = 200;
 

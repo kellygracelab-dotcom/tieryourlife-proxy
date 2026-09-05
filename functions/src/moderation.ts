@@ -13,13 +13,8 @@ export const REPORT_REASONS = [
 export type Reason = (typeof REPORT_REASONS)[number];
 
 /**
- * How many people have to complain before a list goes out of the feed while
- * somebody looks at it.
- *
- * Three, so that one person cannot silence anybody they dislike — except for
- * the one complaint that cannot wait for a second opinion. A list reported as
- * sexual content is the case the whole system exists for, and three strangers
- * seeing it first is three too many.
+ * Three, so one person cannot silence anybody they dislike -- except the one
+ * complaint that cannot wait: a list reported as sexual content.
  */
 export const REPORTS_BEFORE_HIDING = 3;
 export const HIDES_ON_FIRST: Reason = "sexual";
@@ -31,18 +26,10 @@ export interface HideInput {
 }
 
 /**
- * Whether this list should be out of the feed right now.
- *
- * A snapshot that has been looked at and kept is never hidden again, however
- * many complaints arrive afterwards. Without that, anyone with three accounts
- * could keep a list they disliked invisible for ever, and the reviewing would
- * mean nothing. The complaints still arrive and are still shown -- the queue
- * is how somebody notices a list being reported over and over -- they simply
- * no longer act on their own.
- *
- * Reviewing is per snapshot, not per person: republishing makes a new one, and
- * a new one has not been looked at. Otherwise one approval would be a shield
- * to hide anything behind afterwards.
+ * A snapshot that has been looked at and kept is never hidden again, or three
+ * accounts could keep a list invisible for ever; the complaints still arrive
+ * and are shown. Reviewing is per snapshot: republishing makes a new one, or
+ * one approval would be a shield to hide anything behind.
  */
 export function decideHide({ reasons, reviewed }: HideInput): boolean {
   if (reviewed) return false;
@@ -90,14 +77,9 @@ export interface QueuedList {
 }
 
 /**
- * The queue, one row per list rather than one per complaint.
- *
- * The decision is about a list, so the row is a list. Three people complaining
- * about one board used to arrive as three rows with the same title and the same
- * two buttons, and pressing either of them answered all three anyway.
- *
- * How many complained is not lost, because it is the useful part: it is the
- * difference between one person taking offence and a queue forming.
+ * One row per list rather than per complaint: the decision is about a list.
+ * How many complained is kept, being the difference between one person
+ * taking offence and a queue forming.
  */
 export function groupReports(
   reports: QueuedReport[],

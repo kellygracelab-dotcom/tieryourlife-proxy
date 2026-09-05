@@ -18,11 +18,8 @@ export interface Identity {
 }
 
 /**
- * Who is calling. App Check answers "is this the released app"; this answers
- * "which install", which is what the ledger counts against.
- *
- * The uid is never taken from the request body — a caller who could name itself
- * could name someone else. It comes out of a token Firebase signed.
+ * App Check answers "is this the released app"; this answers "which install".
+ * The uid comes out of a token Firebase signed, never the body.
  */
 export async function requireUser(request: Request, response: Response): Promise<Identity | null> {
   const header = request.header("Authorization") ?? "";

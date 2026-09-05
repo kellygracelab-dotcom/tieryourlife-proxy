@@ -75,13 +75,9 @@ const moderatorUid = defineString("MODERATOR_UID");
 const moderatorEmail = defineString("MODERATOR_EMAIL");
 
 /**
- * Two keys to one door, and the second is why: an account can be lost, and its
- * uid dies with it, while the address survives and can be signed in with
- * again. Naming only the uid means one lost password locks the moderator out
- * of their own queue until somebody redeploys.
- *
- * The address is only ever the one the provider verified -- [Identity] drops
- * unverified ones -- so this cannot be claimed by asserting it.
+ * Two keys to one door: a uid dies with a lost account, while the address
+ * survives and can be signed in with again. The address is only ever the one
+ * the provider verified, so this cannot be claimed by asserting it.
  */
 export function isModerator(
   identity: Pick<Identity, "uid" | "email">,
@@ -126,10 +122,8 @@ interface StoredList {
    */
   reviewed?: boolean;
   /**
-   * How many people have taken this list to rank for themselves. Written as
-   * zero at publication rather than left absent: Firestore leaves documents
-   * without the field out of an ordering on it entirely, and a list nobody has
-   * taken yet still belongs at the bottom of "most taken" rather than nowhere.
+   * Written as zero at publication rather than left absent: Firestore leaves
+   * documents without the field out of an ordering on it entirely.
    */
   takeCount?: number;
 }
@@ -186,10 +180,8 @@ export const lists = onRequest(
       return;
     }
 
-    // Everything after /lists: nothing for the feed, an id for one list, an
-    // id plus a verb for something done to it, and "reports" or "mine" for the
-    // two listings that are not a list. Firestore ids are twenty characters,
-    // so none of these words can be one.
+    // Everything after /lists: nothing, an id, an id plus a verb, or "reports"
+    // and "mine". Firestore ids are twenty characters, so no word can be one.
     const segments = request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "lists");
     const last = segments[segments.length - 1] ?? "";
     const verb = VERBS.includes(last) ? last : null;
@@ -275,12 +267,9 @@ export const lists = onRequest(
 );
 
 /**
- * Turns one of this person's own pictures into a face the community can see.
- *
- * Their pictures live in a folder only they may read, so a face has to be a
- * copy somewhere everybody may -- the same as a board's pictures when it is
- * published, and looked at by Vision on the same terms. Catalogue art needs
- * none of this: it already has an address of its own.
+ * Their pictures live in a folder only they may read, so a face is a copy
+ * somewhere everybody may, looked at by Vision on the same terms as a
+ * published board. Catalogue art already has an address of its own.
  */
 async function makeFace(response: Response, identity: Identity, pictureId: string): Promise<void> {
   if (!isPictureId(pictureId)) {
@@ -379,11 +368,9 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
   }
 
   const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
-  // Filtered here rather than in the query. A `where` on this would need a
-  // composite index for every combination of category, author and ordering the
-  // feed already supports, and the whole cost of doing it in code is that a
-  // page carrying a hidden list comes back one short -- which nobody scrolling
-  // an endless feed can see.
+  // Filtered here rather than in the query: a `where` would need a composite
+  // index for every combination of category, author and ordering, and a page
+  // one short is invisible to somebody scrolling an endless feed.
   const lists = snapshot.docs
     .filter((doc) => (doc.data() as StoredList).underReview !== true)
     .map((doc) => toSummary(doc.id, doc.data() as StoredList));
@@ -396,13 +383,9 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
 }
 
 /**
- * The feed of the people somebody follows.
- *
  * Firestore answers `in` with at most thirty values, so this is several
- * queries merged rather than one. That is also why the cursor here is a pair
- * of values rather than a document: the list that ended the page belongs to
- * one of the runs and means nothing to the others, so every run has to be
- * resumed from the same place instead.
+ * queries merged, and the cursor is a pair of values rather than a document:
+ * every run has to be resumed from the same place.
  */
 async function readFollowingFeed(response: Response, identity: Identity, filters: FeedFilters): Promise<void> {
   const authors = await followedBy(identity.uid);
@@ -476,12 +459,8 @@ async function followedBy(uid: string): Promise<string[]> {
 }
 
 /**
- * Whether this person follows that author, and how many people do.
- *
  * The count is read here rather than kept on the author, because there is no
- * author document: an author is whoever published something, and their name
- * and face travel on each list. Counting costs one aggregation query, and the
- * screen that asks is one somebody opened deliberately.
+ * author document: an author is whoever published something.
  */
 async function readFollowState(response: Response, identity: Identity, authorUid: string): Promise<void> {
   if (!isUid(authorUid)) {
@@ -499,15 +478,9 @@ async function readFollowState(response: Response, identity: Identity, authorUid
 }
 
 /**
- * Authors worth following, for somebody who follows nobody yet.
- *
- * Taken from the lists people have taken most, because that is the only
- * standing anybody has here -- there is no author document to rank and no
- * editorial list to keep. Read wide and thinned to one entry per author, so
- * that one person with four popular lists does not become the whole answer.
- *
- * Whoever is already followed is left out, and so is the reader: a screen that
- * opens on "follow yourself" has answered the wrong question.
+ * Authors worth following, taken from the lists people have taken most --
+ * the only standing anybody has here. Read wide and thinned to one entry per
+ * author; whoever is already followed is left out, and so is the reader.
  */
 async function readSuggestedAuthors(response: Response, identity: Identity): Promise<void> {
   const [popular, already] = await Promise.all([
@@ -591,13 +564,9 @@ function refuseFollow(response: Response, reason: string): void {
 }
 
 /**
- * Somebody took this list to rank for themselves, which is the only thing the
- * popular ordering counts.
- *
- * Counted once per person and written down as a document rather than trusted
- * to the caller: without that, one phone tapping the same list all afternoon
- * would decide what everybody else sees. Taking your own list back does not
- * count either, because an author cannot vote for themselves.
+ * The only thing the popular ordering counts. Once per person and written
+ * down as a document, or one phone tapping all afternoon would decide what
+ * everybody sees. Taking your own list back does not count either.
  */
 async function recordTake(response: Response, identity: Identity, listId: string): Promise<void> {
   const db = getFirestore();
@@ -625,10 +594,9 @@ async function recordTake(response: Response, identity: Identity, listId: string
 }
 
 /**
- * What this person has in the community, straight from the collection
- * rather than from their phone. A list published from a device they no
- * longer have -- or one whose local copy is gone -- is still theirs, and
- * this is the only place it can be seen or taken down.
+ * Straight from the collection rather than from the phone: a list published
+ * from a device they no longer have is still theirs, and this is the only
+ * place it can be seen or taken down.
  */
 async function readMine(response: Response, identity: Identity): Promise<void> {
   const snapshot = await getFirestore()
@@ -758,10 +726,8 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     return;
   }
   const data = doc.data() as StoredList;
-  // Hiding it from the feed and leaving it open to anyone holding the address
-  // would hide it from nobody. The moderator is the exception, because the
-  // queue sends them here: hidden from the feed is not hidden from the person
-  // who has to decide whether it should be.
+  // Hidden from the feed but open to anyone holding the address would hide it
+  // from nobody. The moderator is the exception: the queue sends them here.
   if (data.underReview === true && !isModerator(identity)) {
     response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
     return;
@@ -869,9 +835,7 @@ async function publish(
     tierColors: list.tierColors,
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
-    // at -- whatever was true of the one it replaced. Merging without these
-    // left the shield in place: publish something harmless, wait to be kept,
-    // then put anything at all behind a mark that complaints cannot lift.
+    // at. Merging without these left a shield for anything published behind it.
     underReview: false,
     reviewed: false,
   };
@@ -886,11 +850,8 @@ async function publish(
     return;
   }
 
-  // Only on a new list. Republishing merges, and a count written here would
-  // reset it: an author who fixes a typo would lose everybody who had taken
-  // their list, which is a strange thing to charge for an edit. Taking is
-  // about the list, not about the snapshot -- unlike being reviewed, which is
-  // about exactly this snapshot and is cleared above.
+  // Only on a new list: republishing merges, and a count written here would
+  // reset it. Taking is about the list, not the snapshot.
   await collection.doc(target).set({
     ...document,
     publishedAt: FieldValue.serverTimestamp(),
@@ -1004,15 +965,9 @@ async function unpublish(response: Response, identity: Identity, id: string): Pr
 
 /**
  * Puts a board the classifier was unsure about in front of the person who
- * reads the queue, and takes it out of the feed if it was more than unsure.
- *
- * Filed as a report like anybody else's, under a reporter id nobody can hold,
- * so it groups with the human ones and is settled by the same two buttons. A
- * separate mechanism would have meant a second queue to remember to look at.
- *
- * Never blocks the publication. The classifier cannot tell a film list about
- * sex scenes from a list of pornography -- measured, not guessed -- so it is
- * allowed to raise a hand and not to refuse.
+ * reads the queue, filed as a report under a reporter id nobody can hold so
+ * it is settled by the same two buttons. Never blocks the publication: the
+ * classifier cannot tell a film list about sex scenes from pornography.
  */
 async function noteWordingConcern(
   listId: string,

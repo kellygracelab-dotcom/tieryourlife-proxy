@@ -50,11 +50,8 @@ function refuse(response: Response, decision: Exclude<ReserveDecision, { outcome
 }
 
 /**
- * Whether the service is paying for generations at all.
- *
- * Off unless `OFFER_GENERATION` says otherwise, so the expensive thing is
- * never on by accident -- a missing variable in a fresh project reads as off,
- * which is the safe way round for something that spends money.
+ * Off unless `OFFER_GENERATION` says otherwise: a missing variable in a fresh
+ * project reads as off, the safe way round for something that spends money.
  */
 function generationIsOffered(): boolean {
   return process.env.OFFER_GENERATION === "yes";

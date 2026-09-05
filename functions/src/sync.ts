@@ -1,19 +1,13 @@
 /**
  * Rules for the copy of a board an account keeps. Pure, like `publishing.ts`:
- * the adapter in `boards.ts` turns these decisions into Firestore writes.
- *
- * This is not the published snapshot. A published list is a picture of a board
- * arranged for strangers to look at; this is the board itself, the thing a
- * person would lose with their phone -- pool included, trash included, the
- * order of everything, and the identifiers that let a second device recognise
- * a board it has already seen rather than duplicating it.
+ * `boards.ts` turns these decisions into Firestore writes. Not the published
+ * snapshot: this is the board itself, pool and trash included, with the
+ * identifiers that let a second device recognise a board it has seen.
  */
 
 /**
- * Firestore's own ceiling is a megabyte per document. The same headroom as a
- * published snapshot, for the same reason: a count of cards cannot express
- * weight, since two hundred cards with very long addresses outweigh a thousand
- * with short ones.
+ * Firestore's ceiling is a megabyte per document. A count of cards cannot
+ * express weight: two hundred cards with long addresses outweigh a thousand short ones.
  */
 export const MAX_BOARD_BYTES = 700_000;
 export const MAX_ITEMS_PER_BOARD = 2000;
@@ -55,10 +49,9 @@ export interface StoredTier {
 export interface StoredItem {
   uid: string;
   /**
-   * A picture of this person's own -- taken or generated -- kept in their
-   * account rather than on anybody else's server. The id is the file's own
-   * name, which is already unique and already means the same thing on a second
-   * phone; the path around it does not, so only this travels.
+   * A picture of this person's own, kept in their account. The id is the
+   * file's own name, which means the same thing on a second phone; the path
+   * around it does not, so only this travels.
    */
   pictureId: string | null;
   /** The tier it sits in, by the tier's own uid rather than a row number. */
@@ -73,10 +66,9 @@ export interface StoredItem {
 
 export interface StoredBoard {
   /**
-   * The device's own short stand-in for these contents. Opaque here -- never
-   * parsed, never compared, only handed back. It exists so a phone whose
-   * database returned from a system backup can tell "the same board twice"
-   * from "two afternoons", which a revision number cannot say.
+   * The device's own stand-in for these contents; opaque here, only handed
+   * back. Lets a phone whose database returned from a system backup tell "the
+   * same board twice" from "two afternoons", which a revision number cannot.
    */
   fingerprint: string | null;
   title: string;
@@ -277,28 +269,17 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
 }
 
 /**
- * Whether a write may land on what is already there.
+ * Whether a write may land on what is already there. If the account has moved
+ * on since the revision the device worked from, two people edited the board
+ * apart and there is no merge -- the order of cards is the content -- so the
+ * write is refused and the caller is handed what is stored. A first write says
+ * nothing: the same board arriving on a second device is not a conflict.
  *
- * The device says which revision it was working from. If the account has moved
- * on since, two people edited the same board apart from each other, and there
- * is no arithmetic that merges them -- the order of cards is the content, and
- * an automatic merge would silently invent an arrangement neither person made.
- * So the write is refused and the caller is handed what is stored, to keep
- * beside its own.
- *
- * A first write says nothing, which is how a board arrives on a second device
- * with the same uid: the same board, not a conflict.
- *
- * The revision alone cannot tell the two apart, and getting that wrong is not
- * theoretical: a phone that uploads a board and then dies before it can write
- * down the revision it was given comes back saying the old number. Judged on
- * numbers that is somebody else's edit, and the phone dutifully keeps a second
- * copy of its own board. Kill the app three times and there are three of them.
- *
- * What settles it is the fingerprint, which is already stored and until now
- * was only ever shown. If what arrives is the same content the account is
- * already holding, this is that lost receipt and nothing else -- there is
- * nothing to merge and nobody to warn, only a number to hand back.
+ * The revision alone cannot tell the two apart: a phone that uploads a board
+ * and dies before writing down the revision it was given comes back saying the
+ * old number, and judged on numbers it kept a second copy of its own board per
+ * crash. The fingerprint settles it: the same content as stored is that lost
+ * receipt, and only a number is handed back.
  */
 export type WriteVerdict = "create" | "update" | "conflict" | "already";
 
