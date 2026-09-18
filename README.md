@@ -225,6 +225,12 @@ works there, but `/generate` still wants an ID token from the Auth emulator.
 firebase deploy --only functions
 ```
 
+There is no `hosting` block in `firebase.json` on purpose. `tieryourlife.web.app`
+is the web version now, deployed from its own repository, and a deploy from here
+must not be able to replace it. The pages in `public/` are what stood at that
+address before; the privacy policy and the account deletion page live on there
+under the same paths.
+
 Region is `europe-west1`. `/generate` runs with a 300 second timeout because
 image generation regularly takes over a minute — the client's read timeout must
 be larger than this one, or it will hang up on a request that was still being
