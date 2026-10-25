@@ -121,6 +121,15 @@ describe("decideStore", () => {
     assert.equal(decision.ok && decision.board.items[0].imageUrl, null);
   });
 
+  it("keeps the pictures chosen for the cover, in their order, and only ones another phone can fetch", () => {
+    const decision = store({
+      coverImageUrls: ["https://example.test/b.jpg", "file:///data/a.jpg", "https://example.test/a.jpg"],
+    });
+
+    assert.equal(decision.ok, true);
+    assert.deepEqual(decision.ok && decision.board.coverImageUrls, ["https://example.test/b.jpg", "https://example.test/a.jpg"]);
+  });
+
   // A card pointing at a tier that is not here would come back invisible,
   // which reads as losing it rather than as a bad write.
   it("refuses a card that names a tier the board does not have", () => {

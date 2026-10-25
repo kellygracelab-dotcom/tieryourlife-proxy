@@ -83,6 +83,8 @@ export interface PublishDraft {
   items: DraftItem[];
   coverImageUrl: string | null;
   coverPictureId: string | null;
+  /** The pictures the author chose for the collage, in their order; empty when the cards' art decides. */
+  coverImageUrls: string[];
   tierColors: string[];
 }
 
@@ -130,6 +132,16 @@ function keepableImageUrl(value: unknown): string | null {
 function tierIndexOf(value: unknown, tierCount: number): number | null {
   if (typeof value !== "number" || !Number.isInteger(value)) return null;
   return value >= 0 && value < tierCount ? value : null;
+}
+
+/**
+ * The collage an author chose: each picture once, in their order, as many as a
+ * preview holds, and only ones the feed can fetch. A photograph from the
+ * gallery is a card picture and travels as one, not here.
+ */
+export function chosenPictures(value: unknown): string[] {
+  const urls = (Array.isArray(value) ? value : []).map(keepableImageUrl).filter((url): url is string => url !== null);
+  return [...new Set(urls)].slice(0, MAX_PREVIEW_IMAGES);
 }
 
 function cleanText(value: unknown, maxLength: number): string | null {
@@ -217,6 +229,7 @@ export function decidePublish({
   }
 
   const coverPictureId = isPictureId(source.coverPictureId) ? source.coverPictureId : null;
+  const coverImageUrls = chosenPictures(source.coverImageUrls);
   const wanted = new Set(
     [...items.map((item) => item.pictureId), coverPictureId].filter(
       (id): id is string => id !== null,
@@ -236,6 +249,7 @@ export function decidePublish({
     items,
     coverImageUrl: keepableImageUrl(source.coverImageUrl),
     coverPictureId,
+    coverImageUrls,
     tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
   };
 
@@ -270,10 +284,13 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
     tiers: draft.tiers,
     items,
     coverImageUrl: resolve(draft.coverImageUrl, draft.coverPictureId),
-    previewImages: items
-      .map((item) => item.imageUrl)
-      .filter((url): url is string => url !== null)
-      .slice(0, MAX_PREVIEW_IMAGES),
+    // What the author chose, or failing that the first cards' art.
+    previewImages: draft.coverImageUrls.length > 0
+      ? draft.coverImageUrls
+      : items
+        .map((item) => item.imageUrl)
+        .filter((url): url is string => url !== null)
+        .slice(0, MAX_PREVIEW_IMAGES),
     tierColors: draft.tierColors,
   };
 }

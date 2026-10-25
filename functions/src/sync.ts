@@ -9,6 +9,8 @@
  * Firestore's ceiling is a megabyte per document. A count of cards cannot
  * express weight: two hundred cards with long addresses outweigh a thousand short ones.
  */
+import { chosenPictures } from "./publishing";
+
 export const MAX_BOARD_BYTES = 700_000;
 export const MAX_ITEMS_PER_BOARD = 2000;
 export const MAX_TIERS_PER_BOARD = 20;
@@ -75,6 +77,8 @@ export interface StoredBoard {
   displayMode: string;
   category: string | null;
   coverImageUrl: string | null;
+  /** The pictures chosen for the cover collage, in their order; empty when the cards' art decides. */
+  coverImageUrls: string[];
   authorName: string | null;
   publishedId: string | null;
   /** When the whole board went to the trash, or null while it is in use. */
@@ -254,6 +258,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
     displayMode: DISPLAY_MODES.find((known) => known === source.displayMode) ?? "WRAP",
     category: cleanText(source.category, MAX_TITLE_LENGTH),
     coverImageUrl: keepableImageUrl(source.coverImageUrl),
+    coverImageUrls: chosenPictures(source.coverImageUrls),
     authorName: cleanText(source.authorName, MAX_TITLE_LENGTH),
     publishedId: cleanText(source.publishedId, MAX_TITLE_LENGTH),
     deletedAt: timestamp(source.deletedAt),

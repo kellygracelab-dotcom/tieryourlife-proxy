@@ -283,6 +283,28 @@ describe("settle", () => {
     assert.deepEqual(list.previewImages, ["https://example.test/abc"]);
   });
 
+  it("shows the collage the author chose, in their order, instead of the cards' art", () => {
+    const decision = decidePublish({
+      body: body({ coverImageUrls: ["https://example.test/2.jpg", "https://example.test/1.jpg"] }),
+      isAnonymous: false,
+      listsAlreadyPublished: 0,
+    });
+    assert.equal(decision.ok, true);
+    const list = settle(decision.ok ? decision.draft : null!, new Map());
+    assert.deepEqual(list.previewImages, ["https://example.test/2.jpg", "https://example.test/1.jpg"]);
+  });
+
+  it("takes a chosen collage each picture once, as many as a preview holds, and nothing local", () => {
+    const chosen = Array.from({ length: MAX_PREVIEW_IMAGES + 2 }, (_, i) => `https://example.test/${i}.jpg`);
+    const decision = decidePublish({
+      body: body({ coverImageUrls: ["file:///data/photo.jpg", chosen[0], ...chosen] }),
+      isAnonymous: false,
+      listsAlreadyPublished: 0,
+    });
+    assert.equal(decision.ok, true);
+    assert.deepEqual(decision.ok && decision.draft.coverImageUrls, chosen.slice(0, MAX_PREVIEW_IMAGES));
+  });
+
   it("leaves a poster's own address alone", () => {
     const decision = decidePublish({ body: body(), isAnonymous: false, listsAlreadyPublished: 0 });
     assert.equal(decision.ok, true);
