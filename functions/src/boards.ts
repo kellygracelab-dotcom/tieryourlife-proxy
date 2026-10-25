@@ -76,6 +76,7 @@ function toFullBoard(id: string, data: BoardDocument) {
     displayMode: data.displayMode ?? "WRAP",
     category: data.category ?? null,
     coverImageUrl: data.coverImageUrl ?? null,
+    coverImageUrls: data.coverImageUrls ?? [],
     authorName: data.authorName ?? null,
     publishedId: data.publishedId ?? null,
     deletedAt: data.deletedAt ?? null,
