@@ -45,13 +45,43 @@ import {
   type Category,
   type PublishDecision,
 } from "./publishing";
+import {
+  decideAttachment,
+  decideTopicAction,
+  isTopicId,
+  orderMine,
+  readTopicRequest,
+  similarTopics,
+  SIMILAR_TOPICS,
+  topicsPageSize,
+  TOPIC_ACTIONS,
+  type Attachment,
+  type KnownTopic,
+  type Topic,
+  type TopicAction,
+  type TopicRequest,
+  type TopicStatus,
+} from "./topics";
 
 const PUBLISHED = "publishedLists";
 const REPORTS = "reports";
 const FOLLOWS = "follows";
 const TAKES = "takes";
 const BANS = "bans";
-const VERBS = ["report", "takedown", "dismiss", "taken"];
+const TOPICS = "topics";
+const TOPIC_FOLLOWS = "topicFollows";
+const ROLES = "roles";
+const VERBS = ["report", "takedown", "dismiss", "taken", "move"];
+
+/** Paths that are not about one list: topics and the people who may decide them. */
+const TOPICS_PATH = "topics";
+const MODERATORS_PATH = "moderators";
+
+/** Firestore takes five hundred writes in a batch; a topic's lists are rewritten in parts under that. */
+const WRITES_PER_BATCH = 400;
+
+/** How many of somebody's own topics, or of the queue, one answer carries. */
+const TOPICS_READ = 100;
 
 /** Not a list at all: turning one of your own pictures into a face. */
 const FACE = "face";
@@ -94,6 +124,18 @@ export function isModerator(
     configuredEmail.trim().toLowerCase() === identity.email;
   return byUid || byEmail;
 }
+
+/**
+ * The configured person, and whoever they have appointed since: a role in
+ * the database, written only by these functions on the owner's word. The
+ * owner alone appoints, so the door is still one person's to open.
+ */
+async function isModeratorNow(identity: Identity): Promise<boolean> {
+  if (isModerator(identity)) return true;
+  const role = await getFirestore().collection(ROLES).doc(identity.uid).get();
+  return role.exists && role.get("moderator") === true;
+}
+
 const MAX_NOTE_LENGTH = 500;
 
 
@@ -110,6 +152,9 @@ interface StoredList {
   coverImageUrl: string | null;
   previewImages: string[];
   tierColors: string[];
+  /** The topic this list carries, if any; the name is copied so a card needs no second read. */
+  topicId?: string | null;
+  topicName?: string | null;
   updatedAt?: FirebaseFirestore.Timestamp;
   /**
    * Out of the feed while somebody looks at it. Set by enough complaints,
@@ -160,8 +205,52 @@ function toSummary(id: string, data: StoredList) {
     coverImageUrl: data.coverImageUrl ?? null,
     previewImages: data.previewImages ?? [],
     tierColors: data.tierColors ?? [],
+    topicId: data.topicId ?? null,
+    topicName: data.topicName ?? null,
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     takeCount: data.takeCount ?? 0,
+  };
+}
+
+interface StoredTopic {
+  name: string;
+  nameLower: string;
+  section: Category | null;
+  status: TopicStatus;
+  /** The section the proposer wanted; the moderator's hint, not the answer. */
+  requestedSection: Category | null;
+  createdBy: string;
+  proposerName: string;
+  createdAt?: FirebaseFirestore.Timestamp;
+  decidedAt?: FirebaseFirestore.Timestamp | null;
+  decidedBy?: string | null;
+  listCount?: number;
+  followerCount?: number;
+  mergedInto?: string | null;
+}
+
+function knownTopic(id: string, data: StoredTopic): KnownTopic {
+  return {
+    id,
+    name: data.name,
+    nameLower: data.nameLower,
+    status: data.status,
+    section: data.section ?? null,
+    createdBy: data.createdBy,
+  };
+}
+
+function toTopic(id: string, data: StoredTopic, following: boolean): Topic {
+  return {
+    id,
+    name: data.name,
+    section: data.section ?? null,
+    status: data.status,
+    listCount: data.listCount ?? 0,
+    followerCount: data.followerCount ?? 0,
+    following,
+    createdBy: data.createdBy,
+    mergedInto: data.mergedInto ?? null,
   };
 }
 
@@ -194,8 +283,17 @@ export const lists = onRequest(
     const listingReports = !verb && id === "reports";
     const listingMine = !verb && id === "mine";
     const listingFollowing = !verb && id === "following";
+    const query = request.query as Record<string, unknown>;
 
     try {
+      // Topics and moderators have their own small trees of paths.
+      if (segments[0] === TOPICS_PATH) {
+        return await routeTopics(request.method, segments.slice(1), query, request.body, response, identity);
+      }
+      if (segments[0] === MODERATORS_PATH) {
+        return await routeModerators(request.method, segments[1] ?? "", request.body, response, identity);
+      }
+
       switch (request.method) {
         case "GET":
           if (listingReports) {
@@ -217,6 +315,7 @@ export const lists = onRequest(
             : await readFeed(response, identity, {
                 category: categoryFilter(request.query.category),
                 author: singleParam(request.query.author),
+                topic: isTopicId(request.query.topic) ? request.query.topic : null,
                 query: searchTerm(request.query.q),
                 after: singleParam(request.query.after),
                 sort: sortOrder(request.query.sort),
@@ -238,6 +337,9 @@ export const lists = onRequest(
             }
             if (verb === "taken") {
               return await recordTake(response, identity, id);
+            }
+            if (verb === "move") {
+              return await moveList(response, identity, id, request.body);
             }
             // The ban travels with the takedown rather than as a call of its
             // own: one decision, one request, and no window in which a list
@@ -316,6 +418,8 @@ function searchTerm(raw: unknown): string | null {
 interface FeedFilters {
   category: Category | null;
   author: string | null;
+  /** One topic's lists, in whatever section the topic has put them. */
+  topic: string | null;
   query: string | null;
   /**
    * Id of the last list on the page before, or null for the first page. The
@@ -347,6 +451,9 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
   }
   if (filters.author) {
     query = query.where("authorUid", "==", filters.author);
+  }
+  if (filters.topic) {
+    query = query.where("topicId", "==", filters.topic);
   }
 
   // A range has to be ordered by the field it ranges over, so a search orders
@@ -393,8 +500,8 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
  * every run has to be resumed from the same place.
  */
 async function readFollowingFeed(response: Response, identity: Identity, filters: FeedFilters): Promise<void> {
-  const authors = await followedBy(identity.uid);
-  if (authors.length === 0) {
+  const [authors, topics] = await Promise.all([followedBy(identity.uid), followedTopicIds(identity.uid)]);
+  if (authors.length === 0 && topics.length === 0) {
     // Not an error and not an empty feed: an answer the screen can say
     // something useful about, which "no lists" on its own cannot.
     response.setHeader("Cache-Control", "no-store");
@@ -403,7 +510,12 @@ async function readFollowingFeed(response: Response, identity: Identity, filters
   }
 
   const cursor = readCursor(filters.after);
-  const runs = await Promise.all(chunked(authors).map((run) => followedRun(run, filters, cursor)));
+  // People and topics are two sets of runs over the same page; a list by a
+  // followed author in a followed topic is in both and comes out once.
+  const runs = await Promise.all([
+    ...chunked(authors).map((run) => followedRun("authorUid", run, filters, cursor)),
+    ...chunked(topics).map((run) => followedRun("topicId", run, filters, cursor)),
+  ]);
   const page = mergePages(runs, filters.sort, FEED_PAGE_SIZE);
 
   response.setHeader("Cache-Control", "no-store");
@@ -420,12 +532,21 @@ interface FeedRow {
   summary: ReturnType<typeof toSummary>;
 }
 
-/** One run of up to thirty authors, ordered the way the whole page will be. */
-async function followedRun(authors: string[], filters: FeedFilters, cursor: Cursor | null): Promise<FeedRow[]> {
+/**
+ * One run of up to thirty authors or topics, ordered the way the whole page
+ * will be. A topic run narrows by category after reading: the index for that
+ * combination was not worth keeping for a filter nobody has asked for yet.
+ */
+async function followedRun(
+  field: "authorUid" | "topicId",
+  values: string[],
+  filters: FeedFilters,
+  cursor: Cursor | null,
+): Promise<FeedRow[]> {
   let query: FirebaseFirestore.Query = getFirestore()
     .collection(PUBLISHED)
-    .where("authorUid", "in", authors);
-  if (filters.category) {
+    .where(field, "in", values);
+  if (filters.category && field === "authorUid") {
     query = query.where("category", "==", filters.category);
   }
 
@@ -441,7 +562,11 @@ async function followedRun(authors: string[], filters: FeedFilters, cursor: Curs
 
   const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
   return snapshot.docs
-    .filter((doc) => (doc.data() as StoredList).underReview !== true)
+    .filter((doc) => {
+      const data = doc.data() as StoredList;
+      const inCategory = filters.category === null || field === "authorUid" || data.category === filters.category;
+      return data.underReview !== true && inCategory;
+    })
     .map((doc) => {
       const data = doc.data() as StoredList;
       return {
@@ -451,6 +576,16 @@ async function followedRun(authors: string[], filters: FeedFilters, cursor: Curs
         summary: toSummary(doc.id, data),
       };
     });
+}
+
+/** The topics this person follows, at most as many as one page will draw from. */
+async function followedTopicIds(uid: string): Promise<string[]> {
+  const snapshot = await getFirestore()
+    .collection(TOPIC_FOLLOWS)
+    .where("follower", "==", uid)
+    .limit(MAX_FOLLOWING)
+    .get();
+  return snapshot.docs.map((doc) => doc.get("topicId") as string);
 }
 
 /** Whom this person follows, at most as many as one page will draw from. */
@@ -469,16 +604,22 @@ async function followedBy(uid: string): Promise<string[]> {
  * author whose lists are all old must still come back with a name.
  */
 async function readFollowing(response: Response, identity: Identity): Promise<void> {
-  const followed = await followedBy(identity.uid);
   const db = getFirestore();
-  const pages = await Promise.all(
-    chunked(followed).map((authors) =>
-      db.collection(PUBLISHED).where("authorUid", "in", authors).orderBy("updatedAt", "desc").limit(MAX_FOLLOWING).get(),
+  const [followed, topicIds] = await Promise.all([followedBy(identity.uid), followedTopicIds(identity.uid)]);
+  const [pages, topicDocs] = await Promise.all([
+    Promise.all(
+      chunked(followed).map((authors) =>
+        db.collection(PUBLISHED).where("authorUid", "in", authors).orderBy("updatedAt", "desc").limit(MAX_FOLLOWING).get(),
+      ),
     ),
-  );
+    topicIds.length > 0 ? db.getAll(...topicIds.map((id) => db.collection(TOPICS).doc(id))) : Promise.resolve([]),
+  ]);
   const lists = pages.flatMap((page) => page.docs.map((doc) => doc.data() as StoredList));
+  const topics = topicDocs
+    .filter((doc) => doc.exists)
+    .map((doc) => toTopic(doc.id, doc.data() as StoredTopic, true));
   response.setHeader("Cache-Control", "no-store");
-  response.status(200).json({ authors: followedAuthors(followed, lists) });
+  response.status(200).json({ authors: followedAuthors(followed, lists), topics });
 }
 
 /**
@@ -640,7 +781,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
  * would hide how many there were, which is the useful part.
  */
 async function readReports(response: Response, identity: Identity): Promise<void> {
-  if (!isModerator(identity)) {
+  if (!(await isModeratorNow(identity))) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -703,13 +844,18 @@ async function settleReports(
   takeDown: boolean,
   banLength: BanLength | null,
 ): Promise<void> {
-  if (!isModerator(identity)) {
+  if (!(await isModeratorNow(identity))) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
 
   const db = getFirestore();
-  const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
+  const [filed, listDoc] = await Promise.all([
+    db.collection(REPORTS).where("listId", "==", listId).get(),
+    db.collection(PUBLISHED).doc(listId).get(),
+  ]);
+  // The topic's count of lists comes down with the list; read before the batch removes it.
+  const topicId = listDoc.exists ? (listDoc.data() as StoredList).topicId ?? null : null;
   // Read before the batch deletes them: the author is on the complaint, and
   // after the batch there is nothing left to ask.
   const authorUid = filed.docs.map((doc) => doc.data().authorUid as string).find(Boolean) ?? null;
@@ -720,6 +866,9 @@ async function settleReports(
   filed.docs.forEach((doc) => batch.delete(doc.ref));
   if (takeDown) {
     batch.delete(db.collection(PUBLISHED).doc(listId));
+    if (topicId !== null) {
+      batch.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(-1) });
+    }
     // Only with a takedown. Putting a list back and banning its author in one
     // gesture would be two opposite judgements at once.
     if (banLength !== null && authorUid !== null) {
@@ -751,7 +900,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
   const data = doc.data() as StoredList;
   // Hidden from the feed but open to anyone holding the address would hide it
   // from nobody. The moderator is the exception: the queue sends them here.
-  if (data.underReview === true && !isModerator(identity)) {
+  if (data.underReview === true && !(await isModeratorNow(identity))) {
     response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
     return;
   }
@@ -798,16 +947,32 @@ async function publish(
 
   // Whose list this is, settled before any picture is read: replacing somebody
   // else's list should cost nothing and reach nothing.
+  let previous: StoredList | null = null;
   if (existingId) {
     const existing = await collection.doc(existingId).get();
     if (!existing.exists) {
       response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
       return;
     }
-    if ((existing.data() as StoredList).authorUid !== identity.uid) {
+    previous = existing.data() as StoredList;
+    if (previous.authorUid !== identity.uid) {
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
       return;
     }
+  }
+
+  // Which topic, settled before the pictures as well: a refused topic should
+  // cost nothing either.
+  const source = body as Record<string, unknown>;
+  const asked = readTopicRequest(source.topicId, source.newTopic);
+  if (!asked.ok) {
+    refuseTopicRequest(response, asked.reason);
+    return;
+  }
+  const attachment = await resolveAttachment(identity, asked.request, decision.draft.category);
+  if (attachment.kind === "refuse") {
+    refuseAttachment(response, attachment.reason);
+    return;
   }
 
   // Asked before the pictures, because it costs one call and no bytes.
@@ -843,13 +1008,22 @@ async function publish(
   );
   const list = settle(decision.draft, addresses);
 
+  // A new topic is named here, with the list, so the two are written together.
+  const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
+  const topicId = attachment.kind === "attach" ? attachment.topic.id : topicRef?.id ?? null;
+  const topicName = attachment.kind === "attach" ? attachment.topic.name : attachment.kind === "create" ? attachment.name : null;
+
   const document = {
     authorUid: identity.uid,
     authorName: identity.name ?? "Anonymous",
     authorPhotoUrl: identity.picture,
     title: list.title,
     titleLower: list.titleLower,
-    category: list.category,
+    // A topic decides the section: an approved one brings its own, a waiting
+    // one holds the list under "other" until somebody has looked.
+    category: attachment.kind === "none" ? list.category : attachment.category,
+    topicId,
+    topicName,
     tiers: list.tiers,
     items: list.items,
     itemCount: list.items.length,
@@ -863,25 +1037,115 @@ async function publish(
     reviewed: false,
   };
 
+  const batch = db.batch();
+  // The topics' counts of lists follow the list: off the one it leaves, onto
+  // the one it joins, and a new topic starts at one.
+  const previousTopic = previous?.topicId ?? null;
+  if (previousTopic !== null && previousTopic !== topicId) {
+    batch.update(db.collection(TOPICS).doc(previousTopic), { listCount: FieldValue.increment(-1) });
+  }
+  if (topicRef !== null && attachment.kind === "create") {
+    batch.set(topicRef, {
+      name: attachment.name,
+      nameLower: attachment.nameLower,
+      section: null,
+      status: "pending",
+      requestedSection: attachment.requestedSection,
+      createdBy: identity.uid,
+      proposerName: identity.name ?? "Anonymous",
+      createdAt: FieldValue.serverTimestamp(),
+      decidedAt: null,
+      decidedBy: null,
+      listCount: 1,
+      followerCount: 0,
+      mergedInto: null,
+    });
+  } else if (topicId !== null && topicId !== previousTopic) {
+    batch.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
+  }
+
   if (existingId) {
-    await collection.doc(existingId).set(document, { merge: true });
+    batch.set(collection.doc(existingId), document, { merge: true });
+    await batch.commit();
     await noteWordingConcern(existingId, document.title, identity, concern);
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
     await discardUnusedPublished(existingId, [...addresses.keys()]);
-    response.status(200).json({ id: existingId });
+    response.status(200).json({ id: existingId, topicId });
     return;
   }
 
   // Only on a new list: republishing merges, and a count written here would
   // reset it. Taking is about the list, not the snapshot.
-  await collection.doc(target).set({
+  batch.set(collection.doc(target), {
     ...document,
     publishedAt: FieldValue.serverTimestamp(),
     takeCount: 0,
   });
+  await batch.commit();
   await noteWordingConcern(target, document.title, identity, concern);
-  response.status(201).json({ id: target });
+  response.status(201).json({ id: target, topicId });
+}
+
+function refuseTopicRequest(response: Response, reason: "both" | "bad_name" | "bad_id"): void {
+  switch (reason) {
+    case "both":
+      response.status(400).json({ error: "Pick a topic or name a new one, not both", code: "INVALID" });
+      return;
+    case "bad_name":
+      response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID" });
+      return;
+    case "bad_id":
+      response.status(400).json({ error: "Which topic?", code: "INVALID" });
+      return;
+  }
+}
+
+function refuseAttachment(response: Response, reason: "bad_id" | "not_available" | "too_many_pending"): void {
+  switch (reason) {
+    case "bad_id":
+      response.status(400).json({ error: "No such topic", code: "INVALID" });
+      return;
+    case "not_available":
+      response.status(400).json({ error: "That topic is not open to you", code: "INVALID" });
+      return;
+    case "too_many_pending":
+      response.status(409).json({ error: "Three of your topics are still waiting", code: "TOO_MANY_PENDING_TOPICS" });
+      return;
+  }
+}
+
+/** What the deciding needs to know about the topic a publication asked for. */
+async function resolveAttachment(identity: Identity, request: TopicRequest, chosen: Category): Promise<Attachment> {
+  if (request.kind === "none") {
+    return { kind: "none" };
+  }
+  const topics = getFirestore().collection(TOPICS);
+  const base = { request, chosenCategory: chosen, callerUid: identity.uid };
+  if (request.kind === "existing") {
+    const snapshot = await topics.doc(request.topicId).get();
+    const byId = snapshot.exists ? knownTopic(snapshot.id, snapshot.data() as StoredTopic) : null;
+    return decideAttachment({ ...base, byId, approvedByName: null, ownPendingByName: null, pendingCount: 0 });
+  }
+  const [approved, ownPending, pending] = await Promise.all([
+    topics.where("nameLower", "==", request.nameLower).where("status", "==", "approved").limit(1).get(),
+    topics
+      .where("nameLower", "==", request.nameLower)
+      .where("status", "==", "pending")
+      .where("createdBy", "==", identity.uid)
+      .limit(1)
+      .get(),
+    topics.where("createdBy", "==", identity.uid).where("status", "==", "pending").count().get(),
+  ]);
+  const first = (snapshot: FirebaseFirestore.QuerySnapshot): KnownTopic | null =>
+    snapshot.empty ? null : knownTopic(snapshot.docs[0].id, snapshot.docs[0].data() as StoredTopic);
+  return decideAttachment({
+    ...base,
+    byId: null,
+    approvedByName: first(approved),
+    ownPendingByName: first(ownPending),
+    pendingCount: pending.data().count,
+  });
 }
 
 /**
@@ -977,11 +1241,17 @@ async function unpublish(response: Response, identity: Identity, id: string): Pr
     response.status(204).send();
     return;
   }
-  if ((existing.data() as StoredList).authorUid !== identity.uid) {
+  const stored = existing.data() as StoredList;
+  if (stored.authorUid !== identity.uid) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
-  await doc.delete();
+  const batch = getFirestore().batch();
+  batch.delete(doc);
+  if (stored.topicId) {
+    batch.update(getFirestore().collection(TOPICS).doc(stored.topicId), { listCount: FieldValue.increment(-1) });
+  }
+  await batch.commit();
   await discardPublished(id);
   response.status(204).send();
 }
@@ -1023,3 +1293,440 @@ async function noteWordingConcern(
  * -- republishing replaces its report rather than stacking a second one.
  */
 const WATCHER = "__wording__";
+
+/**
+ * Everything under lists/topics: the approved ones to pick from, somebody's
+ * own, the queue, one topic, following it, and the moderator's four words.
+ */
+async function routeTopics(
+  method: string,
+  rest: string[],
+  query: Record<string, unknown>,
+  body: unknown,
+  response: Response,
+  identity: Identity,
+): Promise<void> {
+  const [first = "", second = ""] = rest;
+  if (method === "GET") {
+    if (first === "") {
+      return await readTopics(response, identity, {
+        prefix: searchTerm(query.q),
+        section: categoryFilter(query.section),
+        limit: topicsPageSize(query.limit),
+      });
+    }
+    if (first === "mine") return await readMyTopics(response, identity);
+    if (first === "pending") return await readPendingTopics(response, identity);
+    if (second === "") return await readTopic(response, identity, first);
+  }
+  if (method === "POST" && first !== "") {
+    if (second === "follow") return await followTopic(response, identity, first);
+    const action = TOPIC_ACTIONS.find((known) => known === second);
+    if (action) return await settleTopic(response, identity, first, action, body);
+  }
+  if (method === "DELETE" && first !== "" && second === "follow") {
+    return await unfollowTopic(response, identity, first);
+  }
+  response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+interface TopicFilters {
+  prefix: string | null;
+  section: Category | null;
+  limit: number;
+}
+
+/** Approved topics: the ones that start with what was typed, or the biggest, within a section if asked. */
+async function readTopics(response: Response, identity: Identity, filters: TopicFilters): Promise<void> {
+  let query: FirebaseFirestore.Query = getFirestore().collection(TOPICS).where("status", "==", "approved");
+  if (filters.prefix) {
+    query = query
+      .where("nameLower", ">=", filters.prefix)
+      .where("nameLower", "<=", `${filters.prefix}`)
+      .orderBy("nameLower");
+  } else {
+    if (filters.section) {
+      query = query.where("section", "==", filters.section);
+    }
+    query = query.orderBy("listCount", "desc");
+  }
+
+  const [snapshot, followed] = await Promise.all([query.limit(filters.limit).get(), followedTopicIds(identity.uid)]);
+  const mine = new Set(followed);
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    topics: snapshot.docs.map((doc) => toTopic(doc.id, doc.data() as StoredTopic, mine.has(doc.id))),
+  });
+}
+
+/** Everything this person proposed, whatever became of it: the waiting ones first. */
+async function readMyTopics(response: Response, identity: Identity): Promise<void> {
+  const [snapshot, followed] = await Promise.all([
+    getFirestore().collection(TOPICS).where("createdBy", "==", identity.uid).limit(TOPICS_READ).get(),
+    followedTopicIds(identity.uid),
+  ]);
+  const mine = new Set(followed);
+  const topics = orderMine(
+    snapshot.docs.map((doc) => {
+      const data = doc.data() as StoredTopic;
+      return {
+        status: data.status,
+        createdAtMs: data.createdAt?.toMillis() ?? 0,
+        topic: toTopic(doc.id, data, mine.has(doc.id)),
+      };
+    }),
+  ).map((one) => one.topic);
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ topics });
+}
+
+/**
+ * The queue, oldest first, each with who asked, where they wanted it and the
+ * approved topics it might be a twin of -- the three things a decision needs.
+ */
+async function readPendingTopics(response: Response, identity: Identity): Promise<void> {
+  if (!(await isModeratorNow(identity))) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  const db = getFirestore();
+  const snapshot = await db.collection(TOPICS).where("status", "==", "pending").limit(TOPICS_READ).get();
+  const waiting = snapshot.docs
+    .map((doc) => ({ id: doc.id, data: doc.data() as StoredTopic }))
+    .sort((left, right) => (left.data.createdAt?.toMillis() ?? 0) - (right.data.createdAt?.toMillis() ?? 0));
+
+  const topics = await Promise.all(
+    waiting.map(async ({ id, data }) => {
+      const pending = knownTopic(id, data);
+      const word = pending.nameLower.split(" ")[0] ?? "";
+      const candidates = word.length === 0
+        ? []
+        : (
+            await db
+              .collection(TOPICS)
+              .where("status", "==", "approved")
+              .where("nameLower", ">=", word)
+              .where("nameLower", "<=", `${word}`)
+              .orderBy("nameLower")
+              .limit(SIMILAR_TOPICS + 1)
+              .get()
+          ).docs.map((doc) => ({ doc, known: knownTopic(doc.id, doc.data() as StoredTopic) }));
+      const similar = similarTopics(pending, candidates.map((one) => one.known)).map((known) => {
+        const found = candidates.find((one) => one.known.id === known.id)!;
+        return toTopic(found.doc.id, found.doc.data() as StoredTopic, false);
+      });
+      return {
+        ...toTopic(id, data, false),
+        proposerName: data.proposerName,
+        requestedSection: data.requestedSection ?? null,
+        similar,
+      };
+    }),
+  );
+
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ topics });
+}
+
+async function readTopic(response: Response, identity: Identity, topicId: string): Promise<void> {
+  if (!isTopicId(topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  const db = getFirestore();
+  const [doc, follow] = await Promise.all([
+    db.collection(TOPICS).doc(topicId).get(),
+    db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId)).get(),
+  ]);
+  if (!doc.exists) {
+    response.status(404).json({ error: "No such topic", code: "NOT_FOUND" });
+    return;
+  }
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json(toTopic(doc.id, doc.data() as StoredTopic, follow.exists));
+}
+
+/**
+ * Following a topic is following an approved word; a waiting one is a label,
+ * not yet a place. Idempotent, and the topic's count moves only when the
+ * follow is new, inside one transaction.
+ */
+async function followTopic(response: Response, identity: Identity, topicId: string): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in to follow", code: "NOT_SIGNED_IN" });
+    return;
+  }
+  if (!isTopicId(topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  const db = getFirestore();
+  const topicRef = db.collection(TOPICS).doc(topicId);
+  const already = await db.collection(TOPIC_FOLLOWS).where("follower", "==", identity.uid).count().get();
+  if (already.data().count >= MAX_FOLLOWING) {
+    response.status(409).json({ error: "Following too many topics", code: "TOO_MANY_FOLLOWING" });
+    return;
+  }
+
+  const outcome = await db.runTransaction(async (transaction) => {
+    const topic = await transaction.get(topicRef);
+    if (!topic.exists) return "missing";
+    if ((topic.data() as StoredTopic).status !== "approved") return "not_approved";
+    const followRef = db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId));
+    if ((await transaction.get(followRef)).exists) return "already";
+    transaction.set(followRef, { follower: identity.uid, topicId, createdAt: FieldValue.serverTimestamp() });
+    transaction.update(topicRef, { followerCount: FieldValue.increment(1) });
+    return "followed";
+  });
+
+  switch (outcome) {
+    case "missing":
+      response.status(404).json({ error: "No such topic", code: "NOT_FOUND" });
+      return;
+    case "not_approved":
+      response.status(409).json({ error: "That topic is still waiting", code: "NOT_APPROVED" });
+      return;
+    default:
+      response.status(200).json({ following: true });
+  }
+}
+
+async function unfollowTopic(response: Response, identity: Identity, topicId: string): Promise<void> {
+  if (!isTopicId(topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  const db = getFirestore();
+  const followRef = db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId));
+  await db.runTransaction(async (transaction) => {
+    if (!(await transaction.get(followRef)).exists) return;
+    transaction.delete(followRef);
+    const topicRef = db.collection(TOPICS).doc(topicId);
+    if ((await transaction.get(topicRef)).exists) {
+      transaction.update(topicRef, { followerCount: FieldValue.increment(-1) });
+    }
+  });
+  response.status(200).json({ following: false });
+}
+
+/**
+ * A moderator's word on a topic: approved into a section, renamed, merged into
+ * another, or rejected. The lists carrying it are rewritten in the same
+ * breath, in parts small enough for a batch.
+ */
+async function settleTopic(
+  response: Response,
+  identity: Identity,
+  topicId: string,
+  action: TopicAction,
+  body: unknown,
+): Promise<void> {
+  if (!(await isModeratorNow(identity))) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  if (!isTopicId(topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  const db = getFirestore();
+  const ref = db.collection(TOPICS).doc(topicId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "No such topic", code: "NOT_FOUND" });
+    return;
+  }
+  const topic = knownTopic(topicId, snapshot.data() as StoredTopic);
+
+  const source = (body ?? {}) as Record<string, unknown>;
+  let into: KnownTopic | null = null;
+  if (action === "merge" && isTopicId(source.into)) {
+    const target = await db.collection(TOPICS).doc(source.into).get();
+    into = target.exists ? knownTopic(target.id, target.data() as StoredTopic) : null;
+  }
+
+  const outcome = decideTopicAction(action, topic, { section: source.section, name: source.name, into });
+  if (!outcome.ok) {
+    refuseTopicAction(response, outcome.reason);
+    return;
+  }
+
+  const carrying = await db.collection(PUBLISHED).where("topicId", "==", topicId).get();
+  for (const part of chunked(carrying.docs, WRITES_PER_BATCH)) {
+    const batch = db.batch();
+    part.forEach((doc) => batch.update(doc.ref, outcome.lists));
+    await batch.commit();
+  }
+
+  const update: Record<string, unknown> = { ...outcome.topic };
+  if (outcome.decided) {
+    update.decidedAt = FieldValue.serverTimestamp();
+    update.decidedBy = identity.uid;
+  }
+  if (action === "merge" && into !== null) {
+    update.listCount = 0;
+    await db.collection(TOPICS).doc(into.id).update({ listCount: FieldValue.increment(carrying.size) });
+  }
+  if (action === "reject") {
+    update.listCount = 0;
+  }
+  await ref.update(update);
+
+  const [fresh, follow] = await Promise.all([
+    ref.get(),
+    db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId)).get(),
+  ]);
+  response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists));
+}
+
+function refuseTopicAction(
+  response: Response,
+  reason: "no_section" | "bad_name" | "settled" | "no_target" | "target_not_approved" | "itself",
+): void {
+  switch (reason) {
+    case "no_section":
+      response.status(400).json({ error: "Approving needs a section", code: "INVALID" });
+      return;
+    case "bad_name":
+      response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID" });
+      return;
+    case "settled":
+      response.status(409).json({ error: "That topic has been decided already", code: "SETTLED" });
+      return;
+    case "no_target":
+      response.status(400).json({ error: "Merge into which topic?", code: "INVALID" });
+      return;
+    case "target_not_approved":
+      response.status(400).json({ error: "Merge into an approved topic", code: "INVALID" });
+      return;
+    case "itself":
+      response.status(400).json({ error: "A topic cannot be merged into itself", code: "INVALID" });
+      return;
+  }
+}
+
+/**
+ * A moderator moves one list: into a topic, which brings its section, or into
+ * a section, which keeps the list's topic only while the two still agree.
+ */
+async function moveList(response: Response, identity: Identity, listId: string, body: unknown): Promise<void> {
+  if (!(await isModeratorNow(identity))) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  const db = getFirestore();
+  const ref = db.collection(PUBLISHED).doc(listId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+    return;
+  }
+  const stored = snapshot.data() as StoredList;
+  const source = (body ?? {}) as Record<string, unknown>;
+  const from = stored.topicId ?? null;
+
+  let update: { category: Category; topicId: string | null; topicName: string | null };
+  if (Object.prototype.hasOwnProperty.call(source, "topicId") && source.topicId !== null) {
+    if (!isTopicId(source.topicId)) {
+      response.status(400).json({ error: "Which topic?", code: "INVALID" });
+      return;
+    }
+    const target = await db.collection(TOPICS).doc(source.topicId).get();
+    const topic = target.exists ? (target.data() as StoredTopic) : null;
+    if (!topic || topic.status !== "approved" || topic.section === null) {
+      response.status(400).json({ error: "Move into an approved topic", code: "INVALID" });
+      return;
+    }
+    update = { category: topic.section, topicId: target.id, topicName: topic.name };
+  } else {
+    const category = CATEGORIES.find((known) => known === source.category);
+    if (!category) {
+      response.status(400).json({ error: "Which section?", code: "INVALID" });
+      return;
+    }
+    let keeps = false;
+    if (from !== null && !Object.prototype.hasOwnProperty.call(source, "topicId")) {
+      const current = await db.collection(TOPICS).doc(from).get();
+      keeps = current.exists && (current.data() as StoredTopic).section === category;
+    }
+    update = keeps
+      ? { category, topicId: from, topicName: stored.topicName ?? null }
+      : { category, topicId: null, topicName: null };
+  }
+
+  const batch = db.batch();
+  batch.update(ref, update);
+  if (from !== null && from !== update.topicId) {
+    batch.update(db.collection(TOPICS).doc(from), { listCount: FieldValue.increment(-1) });
+  }
+  if (update.topicId !== null && update.topicId !== from) {
+    batch.update(db.collection(TOPICS).doc(update.topicId), { listCount: FieldValue.increment(1) });
+  }
+  await batch.commit();
+  response.status(204).send();
+}
+
+/**
+ * Who may decide topics and complaints besides the configured person. Only
+ * that person appoints or removes: a moderator who could make moderators
+ * would make the role mean nothing.
+ */
+async function routeModerators(
+  method: string,
+  uid: string,
+  body: unknown,
+  response: Response,
+  identity: Identity,
+): Promise<void> {
+  if (!isModerator(identity)) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  const roles = getFirestore().collection(ROLES);
+  if (method === "GET" && uid === "") {
+    const snapshot = await roles.where("moderator", "==", true).get();
+    response.setHeader("Cache-Control", "no-store");
+    response.status(200).json({
+      moderators: snapshot.docs.map((doc) => ({
+        uid: doc.id,
+        name: (doc.get("name") as string | undefined) ?? "",
+        photoUrl: (doc.get("photoUrl") as string | null | undefined) ?? null,
+        appointedAt: (doc.get("appointedAt") as FirebaseFirestore.Timestamp | undefined)?.toMillis() ?? 0,
+      })),
+    });
+    return;
+  }
+  if (!isUid(uid)) {
+    response.status(400).json({ error: "Which person?", code: "INVALID" });
+    return;
+  }
+  if (method === "POST") {
+    if (uid === identity.uid) {
+      response.status(409).json({ error: "You already decide here", code: "YOURSELF" });
+      return;
+    }
+    const source = (body ?? {}) as Record<string, unknown>;
+    const photoUrl = typeof source.photoUrl === "string" && source.photoUrl.startsWith("https://") ? source.photoUrl : null;
+    await roles.doc(uid).set({
+      moderator: true,
+      appointedBy: identity.uid,
+      appointedAt: FieldValue.serverTimestamp(),
+      name: cleanText(source.name, MAX_TITLE_LENGTH) ?? "",
+      photoUrl,
+    });
+    response.status(200).json({ uid, moderator: true });
+    return;
+  }
+  if (method === "DELETE") {
+    await roles.doc(uid).delete();
+    response.status(204).send();
+    return;
+  }
+  response.status(405).json({ error: "Use GET, POST or DELETE" });
+}
+
+function cleanText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  return collapsed.length === 0 ? null : collapsed.slice(0, maxLength);
+}

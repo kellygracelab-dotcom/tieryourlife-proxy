@@ -45,6 +45,14 @@ describe("decideHide", () => {
     assert.equal(decideHide({ reasons: many, reviewed: true }), false);
   });
 
+  // Somebody filing a list under the wrong section is not somebody offended by it.
+  it("never hides a list for being in the wrong place, however many say so", () => {
+    const misfiled: Reason[] = Array.from({ length: REPORTS_BEFORE_HIDING + 2 }, () => "wrong_category");
+    assert.equal(decideHide({ reasons: misfiled, reviewed: false }), false);
+    assert.equal(decideHide({ reasons: [...misfiled, "spam", "spam"], reviewed: false }), false);
+    assert.equal(decideHide({ reasons: [...misfiled, "spam", "spam", "spam"], reviewed: false }), true);
+  });
+
   it("hides at exactly the stated number and not one earlier", () => {
     const just = Array.from({ length: REPORTS_BEFORE_HIDING - 1 }, () => "spam" as Reason);
     assert.equal(decideHide({ reasons: just, reviewed: false }), false);
