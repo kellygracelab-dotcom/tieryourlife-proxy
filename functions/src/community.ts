@@ -19,6 +19,7 @@ import {
   cursorOf,
   decideFollow,
   followId,
+  followedAuthors,
   isUid,
   MAX_FOLLOWING,
   mergePages,
@@ -192,6 +193,7 @@ export const lists = onRequest(
     const authorUid = segments[1] ?? "";
     const listingReports = !verb && id === "reports";
     const listingMine = !verb && id === "mine";
+    const listingFollowing = !verb && id === "following";
 
     try {
       switch (request.method) {
@@ -201,6 +203,9 @@ export const lists = onRequest(
           }
           if (listingMine) {
             return await readMine(response, identity);
+          }
+          if (listingFollowing) {
+            return await readFollowing(response, identity);
           }
           if (aboutAnAuthor) {
             return authorUid
@@ -456,6 +461,24 @@ async function followedBy(uid: string): Promise<string[]> {
     .limit(MAX_FOLLOWING)
     .get();
   return snapshot.docs.map((doc) => doc.get("author") as string);
+}
+
+/**
+ * Whom this person follows, each with the name and face their newest list
+ * carries. Read wide on purpose: a manage screen is opened rarely, and an
+ * author whose lists are all old must still come back with a name.
+ */
+async function readFollowing(response: Response, identity: Identity): Promise<void> {
+  const followed = await followedBy(identity.uid);
+  const db = getFirestore();
+  const pages = await Promise.all(
+    chunked(followed).map((authors) =>
+      db.collection(PUBLISHED).where("authorUid", "in", authors).orderBy("updatedAt", "desc").limit(MAX_FOLLOWING).get(),
+    ),
+  );
+  const lists = pages.flatMap((page) => page.docs.map((doc) => doc.data() as StoredList));
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ authors: followedAuthors(followed, lists) });
 }
 
 /**

@@ -137,3 +137,27 @@ export function readCursor(raw: unknown): Cursor | null {
   const id = raw.slice(at + 1);
   return at > 0 && Number.isFinite(value) && id.length > 0 ? { value, id } : null;
 }
+
+export interface FollowedAuthor {
+  uid: string;
+  name: string;
+  photoUrl: string | null;
+}
+
+/**
+ * The people somebody follows, each with the name and face from a list of
+ * theirs. An author with no list left keeps the uid and an empty name, and
+ * still counts as followed: the follow is theirs to undo, not ours to lose.
+ */
+export function followedAuthors(
+  followed: string[],
+  lists: Array<{ authorUid: string; authorName: string; authorPhotoUrl: string | null }>,
+): FollowedAuthor[] {
+  const known = new Map<string, FollowedAuthor>();
+  for (const list of lists) {
+    if (!known.has(list.authorUid)) {
+      known.set(list.authorUid, { uid: list.authorUid, name: list.authorName, photoUrl: list.authorPhotoUrl });
+    }
+  }
+  return followed.map((uid) => known.get(uid) ?? { uid, name: "", photoUrl: null });
+}

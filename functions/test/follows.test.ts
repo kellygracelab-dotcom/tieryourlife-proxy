@@ -5,6 +5,7 @@ import {
   cursorOf,
   decideFollow,
   followId,
+  followedAuthors,
   MAX_FOLLOWING,
   mergePages,
   readCursor,
@@ -151,5 +152,29 @@ describe("sortOrder", () => {
   it("treats anything else as newest first", () => {
     assert.equal(sortOrder("best"), "recent");
     assert.equal(sortOrder(undefined), "recent");
+  });
+});
+
+describe("followedAuthors", () => {
+  const lists = [
+    { authorUid: "b", authorName: "Bea", authorPhotoUrl: "https://example.test/bea.jpg" },
+    { authorUid: "a", authorName: "Ann", authorPhotoUrl: null },
+    { authorUid: "a", authorName: "Ann, renamed", authorPhotoUrl: null },
+  ];
+
+  it("keeps the order of the follows and names each person from their first list", () => {
+    assert.deepEqual(followedAuthors(["a", "b"], lists), [
+      { uid: "a", name: "Ann", photoUrl: null },
+      { uid: "b", name: "Bea", photoUrl: "https://example.test/bea.jpg" },
+    ]);
+  });
+
+  // A follow outlives the lists: the person can still be unfollowed by name or not.
+  it("keeps a followed person who has no list left, without a name", () => {
+    assert.deepEqual(followedAuthors(["gone"], lists), [{ uid: "gone", name: "", photoUrl: null }]);
+  });
+
+  it("answers nothing for somebody who follows nobody", () => {
+    assert.deepEqual(followedAuthors([], lists), []);
   });
 });
