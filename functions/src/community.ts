@@ -46,6 +46,17 @@ import {
   type PublishDecision,
 } from "./publishing";
 import {
+  arrangementOver,
+  decidePublication,
+  mineFirst,
+  RANKINGS_PAGE_SIZE,
+  readTakenFrom,
+  type BasedOn,
+  type Card,
+  type PlacedCard,
+  type Publication,
+} from "./rankings";
+import {
   decideAttachment,
   decideTopicAction,
   isTopicId,
@@ -71,11 +82,13 @@ const BANS = "bans";
 const TOPICS = "topics";
 const TOPIC_FOLLOWS = "topicFollows";
 const ROLES = "roles";
+const RANKINGS = "rankings";
 const VERBS = ["report", "takedown", "dismiss", "taken", "move"];
 
 /** Paths that are not about one list: topics and the people who may decide them. */
 const TOPICS_PATH = "topics";
 const MODERATORS_PATH = "moderators";
+const RANKINGS_PATH = "rankings";
 
 /** Firestore takes five hundred writes in a batch; a topic's lists are rewritten in parts under that. */
 const WRITES_PER_BATCH = 400;
@@ -172,6 +185,20 @@ interface StoredList {
    * documents without the field out of an ordering on it entirely.
    */
   takeCount?: number;
+  /** How many readers have placed this list's cards their own way. Zero at publication, like takeCount. */
+  rankingCount?: number;
+  /** The list this one was made from, when a reader changed the cards rather than only placing them. */
+  basedOn?: BasedOn | null;
+}
+
+interface StoredRanking {
+  listId: string;
+  uid: string;
+  authorName: string;
+  authorPhotoUrl: string | null;
+  arrangement: (number | null)[];
+  tierLabels: string[];
+  updatedAt?: FirebaseFirestore.Timestamp;
 }
 
 function refuse(response: Response, decision: Exclude<PublishDecision, { ok: true }>): void {
@@ -209,6 +236,8 @@ function toSummary(id: string, data: StoredList) {
     topicName: data.topicName ?? null,
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     takeCount: data.takeCount ?? 0,
+    rankingCount: data.rankingCount ?? 0,
+    basedOn: data.basedOn ?? null,
   };
 }
 
@@ -292,6 +321,9 @@ export const lists = onRequest(
       }
       if (segments[0] === MODERATORS_PATH) {
         return await routeModerators(request.method, segments[1] ?? "", request.body, response, identity);
+      }
+      if (segments[1] === RANKINGS_PATH && segments[0]) {
+        return await routeRankings(request.method, segments[0], segments[2] ?? "", query, response, identity);
       }
 
       switch (request.method) {
@@ -961,9 +993,19 @@ async function publish(
     }
   }
 
+  // Where the board came from, settled before the pictures: the same cards
+  // make this a ranking of that list, which copies nothing and names no topic.
+  // A list of the author's own being replaced is a republish whatever it says.
+  const source = body as Record<string, unknown>;
+  const publication = existingId
+    ? ({ kind: "list", basedOn: null } as Publication)
+    : await resolvePublication(identity, readTakenFrom(source.takenFrom), decision.draft.items);
+  if (publication.kind === "ranking") {
+    return await rank(response, identity, publication.listId, decision.draft);
+  }
+
   // Which topic, settled before the pictures as well: a refused topic should
   // cost nothing either.
-  const source = body as Record<string, unknown>;
   const asked = readTopicRequest(source.topicId, source.newTopic);
   if (!asked.ok) {
     refuseTopicRequest(response, asked.reason);
@@ -1030,6 +1072,7 @@ async function publish(
     coverImageUrl: list.coverImageUrl,
     previewImages: list.previewImages,
     tierColors: list.tierColors,
+    basedOn: publication.basedOn,
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
@@ -1081,10 +1124,153 @@ async function publish(
     ...document,
     publishedAt: FieldValue.serverTimestamp(),
     takeCount: 0,
+    rankingCount: 0,
   });
   await batch.commit();
   await noteWordingConcern(target, document.title, identity, concern);
   response.status(201).json({ id: target, topicId });
+}
+
+/** What the deciding needs to know about the list a board was saved from. */
+async function resolvePublication(identity: Identity, takenFrom: string | null, items: Card[]): Promise<Publication> {
+  if (takenFrom === null) {
+    return decidePublication({ takenFrom, source: null, callerUid: identity.uid, items });
+  }
+  const doc = await getFirestore().collection(PUBLISHED).doc(takenFrom).get();
+  const data = doc.exists ? (doc.data() as StoredList) : null;
+  const source = data === null
+    ? null
+    : {
+        id: doc.id,
+        authorUid: data.authorUid,
+        title: data.title,
+        authorName: data.authorName,
+        underReview: data.underReview === true,
+        items: (data.items as Card[]) ?? [],
+      };
+  return decidePublication({ takenFrom, source, callerUid: identity.uid, items });
+}
+
+/**
+ * The reader's placing of somebody's cards, kept beside that list and
+ * counted on it once. Their tier names travel too, so a ranking with other
+ * words than the author's still reads. Publishing it again replaces it.
+ */
+async function rank(
+  response: Response,
+  identity: Identity,
+  listId: string,
+  draft: { tiers: { label: string }[]; items: PlacedCard[] },
+): Promise<void> {
+  const db = getFirestore();
+  const list = db.collection(PUBLISHED).doc(listId);
+  const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  await db.runTransaction(async (transaction) => {
+    const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
+    if (!source.exists) {
+      return;
+    }
+    const cards = ((source.data() as StoredList).items as Card[]) ?? [];
+    transaction.set(ranking, {
+      listId,
+      uid: identity.uid,
+      authorName: identity.name ?? "Anonymous",
+      authorPhotoUrl: identity.picture,
+      arrangement: arrangementOver(cards, draft.items),
+      tierLabels: draft.tiers.map((tier) => tier.label),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    if (!existing.exists) {
+      transaction.update(list, { rankingCount: FieldValue.increment(1) });
+    }
+  });
+  response.status(200).json({ id: listId, ranking: true });
+}
+
+async function routeRankings(
+  method: string,
+  listId: string,
+  rest: string,
+  query: Record<string, unknown>,
+  response: Response,
+  identity: Identity,
+): Promise<void> {
+  if (method === "GET" && rest === "") {
+    return await readRankings(response, identity, listId, singleParam(query.after));
+  }
+  if (method === "DELETE" && rest === "mine") {
+    return await deleteMyRanking(response, identity, listId);
+  }
+  response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+function toRanking(data: StoredRanking) {
+  return {
+    uid: data.uid,
+    authorName: data.authorName,
+    authorPhotoUrl: data.authorPhotoUrl ?? null,
+    arrangement: data.arrangement ?? [],
+    tierLabels: data.tierLabels ?? [],
+    updatedAtMs: data.updatedAt?.toMillis() ?? 0,
+  };
+}
+
+/** Newest first, a page at a time, the reader's own ahead of the page it would otherwise sit in. */
+async function readRankings(response: Response, identity: Identity, listId: string, after: string | null): Promise<void> {
+  const db = getFirestore();
+  const collection = db.collection(RANKINGS);
+  let ordered: FirebaseFirestore.Query = collection.where("listId", "==", listId).orderBy("updatedAt", "desc");
+  if (after) {
+    const previous = await collection.doc(after).get();
+    if (!previous.exists) {
+      response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
+      return;
+    }
+    ordered = ordered.startAfter(previous);
+  }
+  const [page, mine] = await Promise.all([
+    ordered.limit(RANKINGS_PAGE_SIZE).get(),
+    after === null ? collection.doc(`${listId}_${identity.uid}`).get() : null,
+  ]);
+  const rankings = page.docs
+    // Their own never sits in a page: it leads the first one and would repeat on a later one.
+    .filter((doc) => (doc.data() as StoredRanking).uid !== identity.uid)
+    .map((doc) => toRanking(doc.data() as StoredRanking));
+  const withMine = mine?.exists ? [toRanking(mine.data() as StoredRanking), ...rankings] : rankings;
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    rankings: mineFirst(withMine, identity.uid),
+    nextCursor: nextCursor(page.docs.map((doc) => doc.id), RANKINGS_PAGE_SIZE),
+  });
+}
+
+async function deleteMyRanking(response: Response, identity: Identity, listId: string): Promise<void> {
+  const db = getFirestore();
+  const list = db.collection(PUBLISHED).doc(listId);
+  const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  await db.runTransaction(async (transaction) => {
+    const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
+    if (!existing.exists) {
+      return;
+    }
+    transaction.delete(ranking);
+    if (source.exists) {
+      const count = (source.data() as StoredList).rankingCount ?? 0;
+      transaction.update(list, { rankingCount: Math.max(0, count - 1) });
+    }
+  });
+  response.status(204).send();
+}
+
+/** A list that is gone takes its rankings with it; nobody can open them without it. */
+async function discardRankings(listId: string): Promise<void> {
+  const db = getFirestore();
+  const carrying = await db.collection(RANKINGS).where("listId", "==", listId).get();
+  for (const part of chunked(carrying.docs, WRITES_PER_BATCH)) {
+    const batch = db.batch();
+    part.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+  }
 }
 
 function refuseTopicRequest(response: Response, reason: "both" | "bad_name" | "bad_id"): void {
@@ -1253,6 +1439,7 @@ async function unpublish(response: Response, identity: Identity, id: string): Pr
   }
   await batch.commit();
   await discardPublished(id);
+  await discardRankings(id);
   response.status(204).send();
 }
 
