@@ -2,15 +2,19 @@
  * When a complaint takes a list out of the feed, and when it stops being able
  * to. Pure, like the rest of the deciding here; `community.ts` does the writes.
  */
-/** Five, because five is what a person reads before choosing at random. */
+/** Five, because five is what a person reads before choosing at random; the sixth is a note about filing, not a complaint. */
 export const REPORT_REASONS = [
   "sexual",
   "violence",
   "hate",
   "spam",
   "other",
+  "wrong_category",
 ] as const;
 export type Reason = (typeof REPORT_REASONS)[number];
+
+/** A list in the wrong place is still a list people may see; moderators move it. */
+export const NEVER_HIDES: Reason = "wrong_category";
 
 /**
  * Three, so one person cannot silence anybody they dislike -- except the one
@@ -33,8 +37,9 @@ export interface HideInput {
  */
 export function decideHide({ reasons, reviewed }: HideInput): boolean {
   if (reviewed) return false;
-  if (reasons.includes(HIDES_ON_FIRST)) return true;
-  return reasons.length >= REPORTS_BEFORE_HIDING;
+  const complaints = reasons.filter((reason) => reason !== NEVER_HIDES);
+  if (complaints.includes(HIDES_ON_FIRST)) return true;
+  return complaints.length >= REPORTS_BEFORE_HIDING;
 }
 
 export interface QueuedReport {
