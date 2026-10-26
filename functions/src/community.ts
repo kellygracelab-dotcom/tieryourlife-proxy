@@ -1293,7 +1293,7 @@ function refuseAttachment(response: Response, reason: "bad_id" | "not_available"
       response.status(400).json({ error: "No such topic", code: "INVALID" });
       return;
     case "not_available":
-      response.status(400).json({ error: "That topic is not open to you", code: "INVALID" });
+      response.status(400).json({ error: "That topic is not open to you", code: "TOPIC_UNAVAILABLE" });
       return;
     case "too_many_pending":
       response.status(409).json({ error: "Three of your topics are still waiting", code: "TOO_MANY_PENDING_TOPICS" });
