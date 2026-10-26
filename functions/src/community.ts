@@ -57,6 +57,20 @@ import {
   type Publication,
 } from "./rankings";
 import {
+  countWithout,
+  followedSectionRun,
+  isSectionId,
+  NEW_WINDOW_MS,
+  pickCollage,
+  sectionFollowId,
+  SECTION_IDS,
+  SECTION_STATS_TTL_MS,
+  TimedCache,
+  withFollowing,
+  type CollageCandidate,
+  type SectionStats,
+} from "./sections";
+import {
   decideAttachment,
   decideTopicAction,
   isTopicId,
@@ -83,12 +97,17 @@ const TOPICS = "topics";
 const TOPIC_FOLLOWS = "topicFollows";
 const ROLES = "roles";
 const RANKINGS = "rankings";
+const SECTION_FOLLOWS = "sectionFollows";
 const VERBS = ["report", "takedown", "dismiss", "taken", "move"];
 
 /** Paths that are not about one list: topics and the people who may decide them. */
 const TOPICS_PATH = "topics";
 const MODERATORS_PATH = "moderators";
 const RANKINGS_PATH = "rankings";
+const SECTIONS_PATH = "sections";
+
+/** How many of a section's most taken lists are read to find four pictures for its collage. */
+const COLLAGE_READ = 24;
 
 /** Firestore takes five hundred writes in a batch; a topic's lists are rewritten in parts under that. */
 const WRITES_PER_BATCH = 400;
@@ -322,6 +341,9 @@ export const lists = onRequest(
       if (segments[0] === MODERATORS_PATH) {
         return await routeModerators(request.method, segments[1] ?? "", request.body, response, identity);
       }
+      if (segments[0] === SECTIONS_PATH) {
+        return await routeSections(request.method, segments.slice(1), response, identity);
+      }
       if (segments[1] === RANKINGS_PATH && segments[0]) {
         return await routeRankings(request.method, segments[0], segments[2] ?? "", query, response, identity);
       }
@@ -532,8 +554,12 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
  * every run has to be resumed from the same place.
  */
 async function readFollowingFeed(response: Response, identity: Identity, filters: FeedFilters): Promise<void> {
-  const [authors, topics] = await Promise.all([followedBy(identity.uid), followedTopicIds(identity.uid)]);
-  if (authors.length === 0 && topics.length === 0) {
+  const [authors, topics, sections] = await Promise.all([
+    followedBy(identity.uid),
+    followedTopicIds(identity.uid),
+    followedSectionIds(identity.uid),
+  ]);
+  if (authors.length === 0 && topics.length === 0 && sections.length === 0) {
     // Not an error and not an empty feed: an answer the screen can say
     // something useful about, which "no lists" on its own cannot.
     response.setHeader("Cache-Control", "no-store");
@@ -542,11 +568,13 @@ async function readFollowingFeed(response: Response, identity: Identity, filters
   }
 
   const cursor = readCursor(filters.after);
-  // People and topics are two sets of runs over the same page; a list by a
-  // followed author in a followed topic is in both and comes out once.
+  // People, topics and sections are sets of runs over the same page; a list
+  // reached more than one way comes out once.
+  const sectionRun = followedSectionRun(sections, filters.category);
   const runs = await Promise.all([
     ...chunked(authors).map((run) => followedRun("authorUid", run, filters, cursor)),
     ...chunked(topics).map((run) => followedRun("topicId", run, filters, cursor)),
+    ...(sectionRun.length > 0 ? [followedRun("category", sectionRun, filters, cursor)] : []),
   ]);
   const page = mergePages(runs, filters.sort, FEED_PAGE_SIZE);
 
@@ -570,7 +598,7 @@ interface FeedRow {
  * combination was not worth keeping for a filter nobody has asked for yet.
  */
 async function followedRun(
-  field: "authorUid" | "topicId",
+  field: "authorUid" | "topicId" | "category",
   values: string[],
   filters: FeedFilters,
   cursor: Cursor | null,
@@ -596,7 +624,7 @@ async function followedRun(
   return snapshot.docs
     .filter((doc) => {
       const data = doc.data() as StoredList;
-      const inCategory = filters.category === null || field === "authorUid" || data.category === filters.category;
+      const inCategory = filters.category === null || field !== "topicId" || data.category === filters.category;
       return data.underReview !== true && inCategory;
     })
     .map((doc) => {
@@ -620,6 +648,13 @@ async function followedTopicIds(uid: string): Promise<string[]> {
   return snapshot.docs.map((doc) => doc.get("topicId") as string);
 }
 
+/** The sections this person follows, in the order the app draws them. */
+async function followedSectionIds(uid: string): Promise<Category[]> {
+  const snapshot = await getFirestore().collection(SECTION_FOLLOWS).where("follower", "==", uid).get();
+  const followed = new Set(snapshot.docs.map((doc) => doc.get("section") as string));
+  return SECTION_IDS.filter((id) => followed.has(id));
+}
+
 /** Whom this person follows, at most as many as one page will draw from. */
 async function followedBy(uid: string): Promise<string[]> {
   const snapshot = await getFirestore()
@@ -637,21 +672,130 @@ async function followedBy(uid: string): Promise<string[]> {
  */
 async function readFollowing(response: Response, identity: Identity): Promise<void> {
   const db = getFirestore();
-  const [followed, topicIds] = await Promise.all([followedBy(identity.uid), followedTopicIds(identity.uid)]);
-  const [pages, topicDocs] = await Promise.all([
+  const [followed, topicIds, sectionIds] = await Promise.all([
+    followedBy(identity.uid),
+    followedTopicIds(identity.uid),
+    followedSectionIds(identity.uid),
+  ]);
+  const [pages, topicDocs, sectionCounts] = await Promise.all([
     Promise.all(
       chunked(followed).map((authors) =>
         db.collection(PUBLISHED).where("authorUid", "in", authors).orderBy("updatedAt", "desc").limit(MAX_FOLLOWING).get(),
       ),
     ),
     topicIds.length > 0 ? db.getAll(...topicIds.map((id) => db.collection(TOPICS).doc(id))) : Promise.resolve([]),
+    Promise.all(sectionIds.map((id) => db.collection(SECTION_FOLLOWS).where("section", "==", id).count().get())),
   ]);
   const lists = pages.flatMap((page) => page.docs.map((doc) => doc.data() as StoredList));
   const topics = topicDocs
     .filter((doc) => doc.exists)
     .map((doc) => toTopic(doc.id, doc.data() as StoredTopic, true));
+  const sections = sectionIds.map((id, at) => ({ id, followerCount: sectionCounts[at].data().count }));
   response.setHeader("Cache-Control", "no-store");
-  response.status(200).json({ authors: followedAuthors(followed, lists), topics });
+  response.status(200).json({ authors: followedAuthors(followed, lists), topics, sections });
+}
+
+/** Paths under lists/sections: the nine with their counts, and following one. */
+async function routeSections(method: string, rest: string[], response: Response, identity: Identity): Promise<void> {
+  const [id = "", action = ""] = rest;
+  if (id === "" && method === "GET") {
+    return await readSections(response, identity);
+  }
+  if (action === FOLLOW && (method === "POST" || method === "DELETE")) {
+    if (!isSectionId(id)) {
+      response.status(404).json({ error: "No such section", code: "NOT_FOUND" });
+      return;
+    }
+    return method === "POST" ? await followSection(response, identity, id) : await unfollowSection(response, identity, id);
+  }
+  response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+/** Counts change slowly and every reader asks for the same nine, so they are read once in a while, not per request. */
+const sectionStats = new TimedCache<SectionStats[]>(SECTION_STATS_TTL_MS);
+
+async function readSections(response: Response, identity: Identity): Promise<void> {
+  const [stats, followed] = await Promise.all([
+    sectionStats.get(readSectionStats),
+    followedSectionIds(identity.uid),
+  ]);
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ sections: withFollowing(stats, new Set(followed)) });
+}
+
+async function readSectionStats(): Promise<SectionStats[]> {
+  return await Promise.all(SECTION_IDS.map((id) => readOneSection(id)));
+}
+
+/**
+ * One section's numbers. A list under review is subtracted rather than
+ * filtered: Firestore cannot count "not true" over documents that lack the
+ * field, and nearly every list lacks it.
+ */
+async function readOneSection(id: Category): Promise<SectionStats> {
+  const db = getFirestore();
+  const lists = db.collection(PUBLISHED).where("category", "==", id);
+  const since = Timestamp.fromMillis(Date.now() - NEW_WINDOW_MS);
+  const [all, hidden, recent, recentHidden, followers, collage] = await Promise.all([
+    lists.count().get(),
+    lists.where("underReview", "==", true).count().get(),
+    lists.where("updatedAt", ">=", since).count().get(),
+    lists.where("underReview", "==", true).where("updatedAt", ">=", since).count().get(),
+    db.collection(SECTION_FOLLOWS).where("section", "==", id).count().get(),
+    readCollage(id),
+  ]);
+  return {
+    id,
+    listCount: countWithout(all.data().count, hidden.data().count),
+    followerCount: followers.data().count,
+    newThisWeek: countWithout(recent.data().count, recentHidden.data().count),
+    collage,
+  };
+}
+
+/** The pictures of a section's most taken lists that may speak for it; see `pickCollage`. */
+async function readCollage(id: Category): Promise<string[]> {
+  const db = getFirestore();
+  const top = await db
+    .collection(PUBLISHED)
+    .where("category", "==", id)
+    .orderBy("takeCount", "desc")
+    .limit(COLLAGE_READ)
+    .get();
+  const candidates: CollageCandidate[] = top.docs.map((doc) => {
+    const data = doc.data() as StoredList;
+    return {
+      id: doc.id,
+      rankingCount: data.rankingCount ?? 0,
+      underReview: data.underReview === true,
+      coverImageUrl: data.coverImageUrl ?? null,
+      previewImages: data.previewImages ?? [],
+    };
+  });
+  const eligible = candidates.filter((one) => !one.underReview && one.rankingCount > 0);
+  const open = await Promise.all(
+    eligible.map((one) => db.collection(REPORTS).where("listId", "==", one.id).limit(1).get()),
+  );
+  const reported = new Set(eligible.filter((_, at) => !open[at].empty).map((one) => one.id));
+  return pickCollage(candidates, reported);
+}
+
+/** Following a section is open to anybody signed in; there are only nine, so no ceiling is needed. */
+async function followSection(response: Response, identity: Identity, section: Category): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in to follow", code: "NOT_SIGNED_IN" });
+    return;
+  }
+  await getFirestore()
+    .collection(SECTION_FOLLOWS)
+    .doc(sectionFollowId(identity.uid, section))
+    .set({ follower: identity.uid, section, createdAt: FieldValue.serverTimestamp() });
+  response.status(200).json({ following: true });
+}
+
+async function unfollowSection(response: Response, identity: Identity, section: Category): Promise<void> {
+  await getFirestore().collection(SECTION_FOLLOWS).doc(sectionFollowId(identity.uid, section)).delete();
+  response.status(200).json({ following: false });
 }
 
 /**
