@@ -8,6 +8,7 @@ const PUBLISHED = "publishedLists";
 const REPORTS = "reports";
 const FOLLOWS = "follows";
 const TAKES = "takes";
+const SECTION_FOLLOWS = "sectionFollows";
 
 /** Firestore's own ceiling for one batch. */
 const BATCH = 500;
@@ -33,6 +34,7 @@ export async function eraseAccount(uid: string): Promise<void> {
   // Both directions: who they followed, and who followed them.
   await removeWhere(FOLLOWS, "follower", "==", uid);
   await removeWhere(FOLLOWS, "author", "==", uid);
+  await removeWhere(SECTION_FOLLOWS, "follower", "==", uid);
   await removeWhere(TAKES, "taker", "==", uid);
   await removeWhere(REPORTS, "reporterUid", "==", uid);
 
