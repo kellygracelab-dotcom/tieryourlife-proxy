@@ -308,6 +308,9 @@ export const lists = onRequest(
     timeoutSeconds: 30,
     memory: "256MiB",
     maxInstances: 10,
+    // One copy kept warm: a cold start cost 2-5 s on every first open of
+    // Community, a face or a publish. About three dollars a month at this size.
+    minInstances: 1,
   },
   async (request, response) => {
     if (!(await requireAppCheck(request, response))) {
