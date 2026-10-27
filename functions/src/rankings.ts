@@ -99,16 +99,15 @@ export interface PublicationInput {
 }
 
 /**
- * Whether a publication is a list of its own or a ranking of the one it was
- * taken from. A source that is gone or under review decides nothing, and the
- * author of a list cannot rank their own.
+ * A copy is always a list of its own, named after the one it came from, even
+ * with the very same cards: two people can share a taste to the letter, and
+ * those who follow the second one should still see it (Danylo, 27.10). A
+ * source that is gone or under review, or the author's own, credits nobody.
+ * Rankings written before this stay readable on their lists.
  */
-export function decidePublication({ takenFrom, source, callerUid, items }: PublicationInput): Publication {
+export function decidePublication({ takenFrom, source, callerUid }: PublicationInput): Publication {
   if (takenFrom === null || source === null || source.underReview || source.authorUid === callerUid) {
     return { kind: "list", basedOn: null };
-  }
-  if (sameCards(source.items, items)) {
-    return { kind: "ranking", listId: source.id };
   }
   return { kind: "list", basedOn: { id: source.id, title: source.title, authorName: source.authorName } };
 }
