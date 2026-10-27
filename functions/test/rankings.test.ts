@@ -104,11 +104,12 @@ describe("decidePublication", () => {
     assert.deepEqual(decidePublication({ takenFrom: null, source: null, callerUid: "reader", items }), { kind: "list", basedOn: null });
   });
 
-  it("is a ranking when the cards are the author's, in whatever order and tiers", () => {
+  // Two people may share a taste to the letter; the copy is a list of its own, crediting the first.
+  it("is a list of its own based on the source even with the very same cards", () => {
     const reordered = [items[2], items[0], items[1]];
     assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source(), callerUid: "reader", items: reordered }), {
-      kind: "ranking",
-      listId: "list-1",
+      kind: "list",
+      basedOn: { id: "list-1", title: "Space films that hold up", authorName: "Artiman" },
     });
   });
 
