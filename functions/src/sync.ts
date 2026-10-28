@@ -87,6 +87,8 @@ export interface StoredBoard {
   items: StoredItem[];
   /** A game of play mode under way on this board; absent when there is none. */
   play?: Play;
+  /** The author publishes this board without their name; absent, rather than false, when they do not. */
+  anonymous?: true;
 }
 
 export const PLAY_KINDS = ["swiss", "hill", "bracket"] as const;
@@ -379,6 +381,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
   // handed back exactly as it always was.
   const play = readPlay(source.play);
   if (play !== null) board.play = play;
+  if (source.anonymous === true) board.anonymous = true;
 
   if (JSON.stringify(board).length > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };

@@ -90,6 +90,7 @@ export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Dat
     deletedAt: data.deletedAt ?? null,
     tiers: data.tiers ?? [],
     items: data.items ?? [],
+    ...(data.anonymous === true ? { anonymous: true } : {}),
     ...(play === null ? {} : { play }),
   };
 }

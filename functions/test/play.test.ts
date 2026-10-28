@@ -206,3 +206,59 @@ describe("toFullBoard", () => {
     assert.equal("play" in toFullBoard("b1", { ...stored, play: playToDocument(old) }, NOW), false);
   });
 });
+
+describe("a board published without its author's name", () => {
+  it("keeps anonymous only when it is true", () => {
+    const decision = store(board({ anonymous: true }));
+    assert.equal(decision.ok && decision.board.anonymous, true);
+  });
+
+  it("stores nothing for false, or for anything that is not a boolean", () => {
+    for (const anonymous of [false, "true", 1, null]) {
+      const decision = store(board({ anonymous }));
+      assert.equal(decision.ok && "anonymous" in decision.board, false, String(anonymous));
+    }
+  });
+
+  it("is handed back as true, and a board without it is handed back without it", () => {
+    const stored = {
+      revision: 1,
+      deviceName: null,
+      deleted: false,
+      title: "Sci-fi films",
+      tiers: [],
+      items: [],
+    };
+    assert.equal(toFullBoard("b1", { ...stored, anonymous: true }, NOW).anonymous, true);
+    assert.equal("anonymous" in toFullBoard("b1", stored, NOW), false);
+  });
+
+  it("does not change the answer for a board stored before it existed, byte for byte", () => {
+    const decision = store(board());
+    assert.equal(decision.ok, true);
+    if (!decision.ok) return;
+    const { play: _none, ...kept } = decision.board;
+    const stored = { ...kept, revision: 2, deviceName: null, deleted: false };
+    assert.equal(
+      JSON.stringify(toFullBoard("b1", stored, NOW)),
+      JSON.stringify({
+        uid: "b1",
+        revision: 2,
+        updatedAt: 0,
+        deviceName: null,
+        deleted: false,
+        fingerprint: null,
+        title: "Sci-fi films",
+        displayMode: "RANKED",
+        category: null,
+        coverImageUrl: null,
+        coverImageUrls: [],
+        authorName: null,
+        publishedId: null,
+        deletedAt: null,
+        tiers: decision.board.tiers,
+        items: decision.board.items,
+      }),
+    );
+  });
+});
