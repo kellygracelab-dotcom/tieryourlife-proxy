@@ -57,6 +57,7 @@ import {
   type Publication,
 } from "./rankings";
 import {
+  collageImage,
   countWithout,
   followedSectionRun,
   isSectionId,
@@ -239,7 +240,12 @@ function refuse(response: Response, decision: Exclude<PublishDecision, { ok: tru
   }
 }
 
-function toSummary(id: string, data: StoredList) {
+/** Old lists keep the word "null" as their cover; only a web address goes out as a picture. */
+export function webPicture(value: unknown): string | null {
+  return typeof value === "string" && value.startsWith("https://") ? value : null;
+}
+
+export function toSummary(id: string, data: StoredList) {
   return {
     id,
     title: data.title,
@@ -248,8 +254,8 @@ function toSummary(id: string, data: StoredList) {
     authorPhotoUrl: data.authorPhotoUrl ?? null,
     category: data.category ?? "other",
     itemCount: data.itemCount,
-    coverImageUrl: data.coverImageUrl ?? null,
-    previewImages: data.previewImages ?? [],
+    coverImageUrl: webPicture(data.coverImageUrl),
+    previewImages: (data.previewImages ?? []).filter((url) => webPicture(url) !== null),
     tierColors: data.tierColors ?? [],
     topicId: data.topicId ?? null,
     topicName: data.topicName ?? null,
@@ -1000,7 +1006,7 @@ async function readReports(response: Response, identity: Identity): Promise<void
         // The list's own cover if it has one, and the first card's picture
         // otherwise -- the feed shows the same thing, so this is what the
         // person complaining was looking at.
-        coverImageUrl: data.coverImageUrl ?? data.previewImages?.[0] ?? null,
+        coverImageUrl: collageImage({ coverImageUrl: data.coverImageUrl ?? null, previewImages: data.previewImages ?? [] }),
         authorUid: data.authorUid ?? null,
         authorPhotoUrl: data.authorPhotoUrl ?? null,
       }];
