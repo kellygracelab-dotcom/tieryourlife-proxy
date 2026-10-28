@@ -169,6 +169,10 @@ export const MAX_SECTION_NAME_LENGTH = 24;
 /** Three, as for topics: one account cannot fill the queue while its first proposal is still being read. */
 export const MAX_PENDING_SECTIONS_PER_ACCOUNT = 3;
 
+/** However they ended, one account proposes at most ten sections a day. */
+export const MAX_PROPOSALS_PER_DAY = 10;
+export const PROPOSAL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export const MAX_DECLINE_NOTE_LENGTH = 300;
 
 /** How many pictures a section's header collage takes, and how many it needs before it is drawn at all. */
@@ -247,6 +251,8 @@ export interface SectionRecord {
   dismissed: boolean;
   /** The proposal picture's main colours, strongest first, for the moderator choosing a tint. */
   palette: string[];
+  /** A decision is written but the lists it moves are not all moved yet; asking again finishes it. */
+  unfinished: boolean;
   createdAtMs: number;
   approvedAtMs: number | null;
   decidedAtMs: number | null;
@@ -274,6 +280,7 @@ export function builtInRecord(builtIn: BuiltInSection): SectionRecord {
     declineNote: null,
     dismissed: false,
     palette: [],
+    unfinished: false,
     createdAtMs: 0,
     // Approved at the beginning of time, so among themselves they keep their old order.
     approvedAtMs: 0,
@@ -304,6 +311,7 @@ export function newSection(id: string, name: string, nowMs: number): SectionReco
     declineNote: null,
     dismissed: false,
     palette: [],
+    unfinished: false,
     createdAtMs: nowMs,
     approvedAtMs: null,
     decidedAtMs: null,
@@ -312,12 +320,21 @@ export function newSection(id: string, name: string, nowMs: number): SectionReco
 }
 
 /**
+ * The text as it reads: compatibility forms folded (a full-width "ｆｏｏｄ" is
+ * "food") and format characters taken out, so a zero-width space cannot make
+ * two names that look the same into two sections.
+ */
+export function visibleText(value: string): string {
+  return value.normalize("NFKC").replace(/\p{Cf}/gu, "");
+}
+
+/**
  * Collapsed and trimmed, two to twenty-four characters, and something in it
  * that is a letter or a digit. Characters, not UTF-16 units: an emoji is one.
  */
 export function cleanSectionName(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const collapsed = value.replace(/\s+/g, " ").trim();
+  const collapsed = visibleText(value).replace(/\s+/g, " ").trim();
   const length = [...collapsed].length;
   if (length < MIN_SECTION_NAME_LENGTH || length > MAX_SECTION_NAME_LENGTH) return null;
   return /[\p{L}\p{N}]/u.test(collapsed) ? collapsed : null;
@@ -325,7 +342,8 @@ export function cleanSectionName(value: unknown): string | null {
 
 /** What two names are compared by: no case, no accents, single spaces. "Café" and "cafe" are one section. */
 export function nameKey(name: string): string {
-  return name.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
+  return visibleText(name)
+    .normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -362,7 +380,7 @@ export function findClash(names: readonly string[], sections: readonly SectionRe
 
 /** An ASCII slug of the name, or null when the name is in a script that leaves too little of one. */
 export function slugOf(name: string): string | null {
-  const slug = name
+  const slug = visibleText(name)
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
@@ -408,7 +426,8 @@ export type ProposalRefusal =
   | { code: "BAD_ICON" }
   | { code: "BAD_FILE_UNDER" }
   | { code: "BAD_PICTURE"; why: "missing" }
-  | { code: "TOO_MANY_PENDING" };
+  | { code: "TOO_MANY_PENDING" }
+  | { code: "TOO_MANY_PROPOSALS" };
 
 export type ProposalDecision =
   | { ok: true; name: string; icon: string; fileUnder: string; pictureId: string }
@@ -520,6 +539,8 @@ export type ListChange = Record<string, string | null>;
 export type SectionOutcome =
   | {
       ok: true;
+      /** The decision is already written; only its moves are left to finish. */
+      resume: boolean;
       status: SectionStatus;
       mergedInto: string | null;
       /** What changes on the lists waiting for the section (`proposedSection == id`). */
@@ -529,45 +550,123 @@ export type SectionOutcome =
     }
   | { ok: false; reason: SectionActionRefusal };
 
+const SETTLED_AS: Record<SectionAction, SectionStatus> = { approve: "approved", decline: "declined", merge: "merged" };
+
+/** What a decision moves: the lists waiting for the section, and for a merge the lists already in it. */
+function movesOf(action: SectionAction, sectionId: string, into: string | null): Pick<Extract<SectionOutcome, { ok: true }>, "waiting" | "filed"> {
+  switch (action) {
+    case "approve":
+      return { waiting: { category: sectionId, proposedSection: null }, filed: null };
+    case "decline":
+      return { waiting: { proposedSection: null }, filed: null };
+    case "merge":
+      return { waiting: { category: into, proposedSection: null }, filed: { category: into } };
+  }
+}
+
 /**
  * A moderator's word on a section, as data. Approving and declining are for
  * one still waiting; merging also for one already approved, into another
- * approved section. Built-ins are never declined or merged away.
+ * approved section. Built-ins are never declined or merged away. The same
+ * word again on a section it left half done finishes moving its lists; any
+ * other word on a decided section is too late.
  */
 export function decideSectionAction(action: SectionAction, section: SectionRecord, into: SectionRecord | null): SectionOutcome {
+  if (section.builtIn && action !== "approve") return { ok: false, reason: "built_in" };
+  if (section.unfinished && section.status === SETTLED_AS[action]) {
+    if (action === "merge" && section.mergedInto !== into?.id) return { ok: false, reason: "settled" };
+    return { ok: true, resume: true, status: section.status, mergedInto: section.mergedInto, ...movesOf(action, section.id, section.mergedInto) };
+  }
   switch (action) {
     case "approve":
-      if (section.status !== "pending") return { ok: false, reason: "settled" };
-      return {
-        ok: true,
-        status: "approved",
-        mergedInto: null,
-        waiting: { category: section.id, proposedSection: null },
-        filed: null,
-      };
     case "decline":
-      if (section.builtIn) return { ok: false, reason: "built_in" };
       if (section.status !== "pending") return { ok: false, reason: "settled" };
-      return { ok: true, status: "declined", mergedInto: null, waiting: { proposedSection: null }, filed: null };
+      return { ok: true, resume: false, status: SETTLED_AS[action], mergedInto: null, ...movesOf(action, section.id, null) };
     case "merge": {
-      if (section.builtIn) return { ok: false, reason: "built_in" };
       if (section.status !== "pending" && section.status !== "approved") return { ok: false, reason: "settled" };
       if (into === null) return { ok: false, reason: "no_target" };
       if (into.id === section.id) return { ok: false, reason: "itself" };
       if (into.status !== "approved") return { ok: false, reason: "target_not_approved" };
-      return {
-        ok: true,
-        status: "merged",
-        mergedInto: into.id,
-        waiting: { category: into.id, proposedSection: null },
-        filed: { category: into.id },
-      };
+      return { ok: true, resume: false, status: "merged", mergedInto: into.id, ...movesOf(action, section.id, into.id) };
     }
   }
 }
 
 /** A proposer taking their proposal back: the lists stay where they were filed and stop waiting. */
 export const WITHDRAWN_LISTS: ListChange = { proposedSection: null };
+
+/** The times of an account's recent proposals, as stored, without anything older than a day or not a time. */
+export function recentProposals(stored: unknown, nowMs: number): number[] {
+  if (!Array.isArray(stored)) return [];
+  return stored.filter((at): at is number => typeof at === "number" && nowMs - at < PROPOSAL_WINDOW_MS);
+}
+
+/** Whether an account may propose once more: three waiting at most, ten a day at most. */
+export function decideProposalQuota(pending: number, recent: readonly number[]): "TOO_MANY_PENDING" | "TOO_MANY_PROPOSALS" | null {
+  if (pending >= MAX_PENDING_SECTIONS_PER_ACCOUNT) return "TOO_MANY_PENDING";
+  if (recent.length >= MAX_PROPOSALS_PER_DAY) return "TOO_MANY_PROPOSALS";
+  return null;
+}
+
+/** A name held by a section, as its reservation says. */
+export interface NameReservation {
+  key: string;
+  sectionId: string;
+}
+
+/**
+ * Which section, other than `self`, already holds one of these names by
+ * reservation. A reservation counts only while its section is approved or
+ * waiting and still goes by that name: a declined, merged, renamed or deleted
+ * section has given it up without anybody having to say so.
+ */
+export function reservationClash(
+  names: readonly string[],
+  reservations: readonly NameReservation[],
+  holders: ReadonlyMap<string, SectionRecord>,
+  self: string | null,
+): string | null {
+  const wanted = new Set(names.map(nameKey));
+  for (const reservation of reservations) {
+    if (!wanted.has(reservation.key) || reservation.sectionId === self) continue;
+    const holder = holders.get(reservation.sectionId);
+    if (holder && findClash([reservation.key], [holder], self) !== null) return holder.id;
+  }
+  return null;
+}
+
+export type Withdrawal = "missing" | "withdraw" | "dismiss" | "settled";
+
+/**
+ * What the proposer's DELETE does: takes back a proposal still waiting, puts
+ * away a declined or merged one's notice, and nothing to an approved one.
+ * Anybody else's proposal, or a built-in, is not there for them.
+ */
+export function decideWithdrawal(section: SectionRecord | null, callerUid: string): Withdrawal {
+  if (section === null || section.builtIn || section.proposerUid !== callerUid) return "missing";
+  if (section.status === "pending") return "withdraw";
+  if (section.status === "declined" || section.status === "merged") return "dismiss";
+  return "settled";
+}
+
+export type ReaderAnswer = "view" | "merged" | "missing";
+
+/**
+ * What one reader is told about one section. Approved sections are
+ * everybody's; a proposal is its proposer's and the moderators'. A merged
+ * section points onwards for everybody only if it was ever approved; one
+ * merged while it was still a proposal was never public, so it stays theirs.
+ */
+export function answerFor(section: SectionRecord | null, viewer: Viewer): ReaderAnswer {
+  if (section === null) return "missing";
+  const mayKnow = viewer.moderator || (section.proposerUid !== null && section.proposerUid === viewer.uid);
+  if (section.status === "merged") {
+    if (section.mergedInto === null) return "missing";
+    return section.approvedAtMs !== null || mayKnow ? "merged" : "missing";
+  }
+  if (section.status === "approved") return "view";
+  return mayKnow ? "view" : "missing";
+}
 
 export type SectionChoice = { ok: true; category: string; proposedSection: string | null } | { ok: false };
 
@@ -673,6 +772,11 @@ export function decideOrder(
 
 export type DeletionRefusal = "built_in" | "not_empty";
 
+/** The topics that still hold a section: approved or waiting ones. Rejected and merged topics hold nothing. */
+export function liveTopics(statuses: readonly unknown[]): number {
+  return statuses.filter((status) => status === "approved" || status === "pending").length;
+}
+
 /** A section goes only when nothing is filed under it or waits for it, and never a built-in. */
 export function decideDeletion(
   section: Pick<SectionRecord, "builtIn">,
@@ -764,6 +868,7 @@ export interface SectionView {
   proposerName?: string | null;
   mergedInto?: string | null;
   palette?: string[];
+  unfinished?: boolean;
   createdAt?: number;
   decidedAt?: number | null;
   decidedBy?: string | null;
@@ -825,6 +930,7 @@ export function sectionView(
     view.proposerName = section.proposerName;
     view.mergedInto = section.mergedInto;
     view.palette = section.palette;
+    view.unfinished = section.unfinished;
     view.createdAt = section.createdAtMs;
     view.decidedAt = section.decidedAtMs;
     view.decidedBy = section.decidedBy;

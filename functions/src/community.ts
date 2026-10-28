@@ -2,7 +2,7 @@ import { defineString } from "firebase-functions/params";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import type { Response } from "express";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { requireAppCheck } from "./appCheck";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
@@ -58,6 +58,7 @@ import {
 } from "./rankings";
 import {
   ACTIVITY_WINDOW_MS,
+  answerFor,
   base36Of,
   BUILT_IN_SECTION_IDS,
   BUILT_IN_SECTIONS,
@@ -68,16 +69,20 @@ import {
   decideDeletion,
   decideOrder,
   decideProposal,
+  decideProposalQuota,
   decideSectionAction,
   decideSectionChoice,
+  decideWithdrawal,
   DEFAULT_ICON,
   findClash,
   followedSectionRun,
   isOpen,
   isSectionId,
+  liveTopics,
   MAX_DECLINE_NOTE_LENGTH,
   mayCall,
   namesAfter,
+  nameKey,
   NEUTRAL_COLOURS,
   NEW_WINDOW_MS,
   newSection,
@@ -87,6 +92,8 @@ import {
   pickCollage,
   pickSectionId,
   readSectionEdits,
+  recentProposals,
+  reservationClash,
   SECTION_ACTIONS,
   SECTION_STATS_TTL_MS,
   sectionFollowId,
@@ -104,6 +111,7 @@ import {
   type SectionCall,
   type SectionChoice,
   type SectionEdits,
+  type SectionOutcome,
   type SectionPicture,
   type SectionRecord,
   type SectionStats,
@@ -112,6 +120,7 @@ import {
 } from "./sections";
 import {
   coloursFromChosenTint,
+  coloursFromPalette,
   coloursFromPicture,
   coloursFromTint,
   paletteOf,
@@ -124,6 +133,7 @@ import {
   discardOtherSectionPictures,
   discardProposalPicture,
   discardSectionPictures,
+  discardStoredPicture,
   keepForProposal,
   pictureIdOf,
   proposalPath,
@@ -166,6 +176,10 @@ const RANKINGS = "rankings";
 const SECTION_FOLLOWS = "sectionFollows";
 const SECTIONS = "sections";
 const CONFIG = "config";
+/** One document per name a section holds, so two claims to one name meet in one place. */
+const SECTION_NAMES = "sectionNames";
+/** One document per account that proposes, holding the times of its recent proposals. */
+const SECTION_PROPOSERS = "sectionProposers";
 const SECTIONS_CONFIG = "sections";
 const VERBS = ["report", "takedown", "dismiss", "taken", "move"];
 
@@ -774,14 +788,13 @@ async function readFollowing(response: Response, identity: Identity): Promise<vo
     followedTopicIds(identity.uid),
     followedSectionIds(identity.uid),
   ]);
-  const [pages, topicDocs, sectionCounts, approved, numbers] = await Promise.all([
+  const [pages, topicDocs, approved, numbers] = await Promise.all([
     Promise.all(
       chunked(followed).map((authors) =>
         db.collection(PUBLISHED).where("authorUid", "in", authors).orderBy("updatedAt", "desc").limit(MAX_FOLLOWING).get(),
       ),
     ),
     topicIds.length > 0 ? db.getAll(...topicIds.map((id) => db.collection(TOPICS).doc(id))) : Promise.resolve([]),
-    Promise.all(sectionIds.map((id) => db.collection(SECTION_FOLLOWS).where("section", "==", id).count().get())),
     approvedSections(),
     currentStats(),
   ]);
@@ -791,12 +804,11 @@ async function readFollowing(response: Response, identity: Identity): Promise<vo
     .map((doc) => toTopic(doc.id, doc.data() as StoredTopic, true));
   // In the order the tiles are drawn; one approved a moment ago elsewhere goes last until this instance knows it.
   const known = new Map(approved.map((one) => [one.id, one]));
-  const counts = new Map(sectionIds.map((id, at) => [id, sectionCounts[at].data().count]));
   const ordered = [
     ...orderSections(sectionIds.flatMap((id) => known.get(id) ?? []), new Set(), activityOf(numbers)).map((one) => one.id),
     ...sectionIds.filter((id) => !known.has(id)),
   ];
-  const sections = ordered.map((id) => ({ id, followerCount: counts.get(id) ?? 0 }));
+  const sections = ordered.map((id) => ({ id, followerCount: numbers.stats.get(id)?.followerCount ?? 0 }));
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({ authors: followedAuthors(followed, lists), topics, sections });
 }
@@ -824,6 +836,7 @@ interface StoredSection {
   proposalPicture?: string | null;
   proposalPictureUrl?: string | null;
   palette?: string[];
+  unfinished?: boolean;
   declineNote?: string | null;
   dismissedAt?: FirebaseFirestore.Timestamp | null;
   createdAt?: FirebaseFirestore.Timestamp;
@@ -854,6 +867,7 @@ function sectionRecord(id: string, data: StoredSection): SectionRecord {
     proposalPicture: data.proposalPicture ?? null,
     proposalPictureUrl: data.proposalPictureUrl ?? null,
     palette: data.palette ?? [],
+    unfinished: data.unfinished === true,
     declineNote: data.declineNote ?? null,
     dismissed: data.dismissedAt != null,
     createdAtMs: data.createdAt?.toMillis() ?? 0,
@@ -885,6 +899,7 @@ function newSectionDocument(record: SectionRecord): Record<string, unknown> {
     proposalPicture: record.proposalPicture,
     proposalPictureUrl: record.proposalPictureUrl,
     palette: record.palette,
+    unfinished: record.unfinished,
     declineNote: record.declineNote,
     dismissedAt: null,
     createdAt: Timestamp.fromMillis(record.createdAtMs),
@@ -959,6 +974,58 @@ async function proposedBy(uid: string): Promise<SectionRecord[]> {
 /** The ids of whichever of these sections new lists and topics may go into. */
 function openSectionIds(sections: readonly (SectionRecord | null)[]): Set<string> {
   return new Set(sections.filter((one): one is SectionRecord => one !== null && isOpen(one)).map((one) => one.id));
+}
+
+/**
+ * A name's reservation: one document per compared form of a name, so two
+ * sections claiming the same name at the same moment meet in one document
+ * and one of them loses. Hashed, because a name may hold characters a
+ * document id may not.
+ */
+function reservationRef(key: string): FirebaseFirestore.DocumentReference {
+  return getFirestore().collection(SECTION_NAMES).doc(createHash("sha256").update(key).digest("hex"));
+}
+
+/** Inside a transaction: which section other than `self` already holds one of these names. Reads only. */
+async function reservedBy(
+  transaction: FirebaseFirestore.Transaction,
+  names: readonly string[],
+  self: string | null,
+): Promise<string | null> {
+  const keys = [...new Set(names.map(nameKey))];
+  if (keys.length === 0) return null;
+  const docs = await transaction.getAll(...keys.map(reservationRef));
+  const reservations = docs
+    .filter((doc) => doc.exists)
+    .map((doc) => ({ key: doc.get("key") as string, sectionId: doc.get("sectionId") as string }));
+  const holderIds = [...new Set(reservations.map((one) => one.sectionId))].filter((id) => id !== self && isSectionId(id));
+  const sections = getFirestore().collection(SECTIONS);
+  const holders = holderIds.length === 0 ? [] : await transaction.getAll(...holderIds.map((id) => sections.doc(id)));
+  const known = new Map(
+    holders.filter((doc) => doc.exists).map((doc) => [doc.id, sectionRecord(doc.id, doc.data() as StoredSection)]),
+  );
+  return reservationClash(keys, reservations, known, self);
+}
+
+function reserveNames(transaction: FirebaseFirestore.Transaction, names: readonly string[], sectionId: string): void {
+  for (const key of new Set(names.map(nameKey))) {
+    transaction.set(reservationRef(key), { key, sectionId, reservedAt: FieldValue.serverTimestamp() });
+  }
+}
+
+/** Inside a transaction: the first id for this name that no document has, read rather than assumed. */
+async function freeSectionId(
+  transaction: FirebaseFirestore.Transaction,
+  name: string,
+  known: readonly string[],
+): Promise<string> {
+  const taken = new Set(known);
+  for (let attempt = 1; ; attempt++) {
+    const id = pickSectionId(name, taken, () => base36Of(randomBytes(8)));
+    if (!(await transaction.get(getFirestore().collection(SECTIONS).doc(id))).exists) return id;
+    if (attempt >= SECTION_ID_ATTEMPTS) throw new Error(`No free section id for ${id}`);
+    taken.add(id);
+  }
 }
 
 /**
@@ -1088,7 +1155,7 @@ async function readSections(response: Response, identity: Identity): Promise<voi
     currentStats(),
     followedSectionIds(identity.uid),
     staff ? readAllSections() : identity.isAnonymous ? [] : proposedBy(identity.uid),
-    readSectionsVersion(),
+    staff ? readSectionsVersion() : null,
   ]);
   // What was read fresh wins over the cache: their own section approved a
   // moment ago on another instance is theirs to see now.
@@ -1175,30 +1242,33 @@ async function checkSectionName(response: Response, query: Record<string, unknow
 }
 
 /**
- * One section, for a link or an id a client has not met. A proposal is its
- * proposer's and the moderators' to see; a merged section says where it went.
- * A hidden one still answers: its lists are still reachable by link.
+ * One section, for a link or an id a client has not met; see `answerFor` for
+ * who is told what. A hidden one still answers: its lists are still
+ * reachable by link.
  */
 async function readSection(response: Response, identity: Identity, id: string): Promise<void> {
   const found = isSectionId(id) ? await readSectionById(id) : null;
-  if (found === null) return noSuchSection(response);
-  if (found.status === "merged") {
-    return found.mergedInto === null ? noSuchSection(response) : merged(response, found.mergedInto);
-  }
+  // The moderators' role is read only when it could change the answer.
+  const everybodys =
+    found === null ||
+    found.status === "approved" ||
+    (found.status === "merged" && found.approvedAtMs !== null) ||
+    found.proposerUid === identity.uid;
+  const viewer: Viewer = { uid: identity.uid, moderator: !everybodys && (await isModeratorNow(identity)) };
+  const answer = answerFor(found, viewer);
+  if (found === null || answer === "missing") return noSuchSection(response);
+  if (answer === "merged") return merged(response, found.mergedInto as string);
   response.setHeader("Cache-Control", "no-store");
   if (found.status !== "approved") {
-    const proposer = found.proposerUid === identity.uid;
-    const moderator = !proposer && (await isModeratorNow(identity));
-    if (!proposer && !moderator) return noSuchSection(response);
     const waiting = found.status === "pending" ? await waitingCount(id) : 0;
-    response.status(200).json(sectionView(found, { uid: identity.uid, moderator }, noStats(id), false, waiting));
+    response.status(200).json(sectionView(found, viewer, noStats(id), false, waiting));
     return;
   }
   const [stats, follow] = await Promise.all([
     statsOf(id),
     getFirestore().collection(SECTION_FOLLOWS).doc(sectionFollowId(identity.uid, id)).get(),
   ]);
-  response.status(200).json(sectionView(found, { uid: identity.uid, moderator: false }, stats, follow.exists));
+  response.status(200).json(sectionView(found, viewer, stats, follow.exists));
 }
 
 function noSuchSection(response: Response): void {
@@ -1219,7 +1289,9 @@ async function followSection(response: Response, identity: Identity, id: string)
     return;
   }
   const found = isSectionId(id) ? await readSectionById(id) : null;
-  if (found?.status === "merged" && found.mergedInto !== null) return merged(response, found.mergedInto);
+  if (found !== null && answerFor(found, { uid: identity.uid, moderator: false }) === "merged") {
+    return merged(response, found.mergedInto as string);
+  }
   if (found?.status !== "approved") return noSuchSection(response);
 
   const db = getFirestore();
@@ -1291,6 +1363,9 @@ function refuseSection(response: Response, refusal: SectionRefusal): void {
     case "TOO_MANY_PENDING":
       response.status(400).json({ error: "Three of your sections are still waiting", code: refusal.code });
       return;
+    case "TOO_MANY_PROPOSALS":
+      response.status(429).json({ error: "That is enough proposals for one day", code: refusal.code });
+      return;
     case "INVALID":
       response.status(400).json({ error: refusal.detail, code: refusal.code, detail: refusal.detail });
       return;
@@ -1317,28 +1392,6 @@ function refuseSectionAction(response: Response, reason: SectionActionRefusal): 
   }
 }
 
-/**
- * Names a new section and writes it in one step: `create` refuses an id
- * somebody took a moment ago, and the next free one is tried instead.
- */
-async function createSectionDocument(
-  name: string,
-  sections: readonly SectionRecord[],
-  build: (id: string) => SectionRecord,
-): Promise<SectionRecord> {
-  const taken = new Set(sections.map((one) => one.id));
-  for (let attempt = 1; ; attempt++) {
-    const record = build(pickSectionId(name, taken, () => base36Of(randomBytes(8))));
-    try {
-      await getFirestore().collection(SECTIONS).doc(record.id).create(newSectionDocument(record));
-      return record;
-    } catch (error) {
-      if (!alreadyExists(error) || attempt >= SECTION_ID_ATTEMPTS) throw error;
-      taken.add(record.id);
-    }
-  }
-}
-
 /** Vision's colours of a picture, or none when it cannot be asked: a palette is a help, not a condition. */
 async function paletteFor(bytes: Buffer): Promise<string[]> {
   try {
@@ -1349,16 +1402,25 @@ async function paletteFor(bytes: Buffer): Promise<string[]> {
   }
 }
 
+type Created = { code: null; record: SectionRecord } | SectionRefusal;
+
 /**
  * A proposal: judged on everything but its picture first, then the picture
- * is measured, then the section is written and the picture copied out of the
+ * is measured, then one transaction checks the account's allowance and the
+ * name and writes the section; last the picture is copied out of the
  * proposer's folder before the daily sweep can take it.
  */
 async function proposeSection(response: Response, identity: Identity, body: unknown): Promise<void> {
   if (await refuseWriter(response, identity)) return;
-  const sections = await readAllSections();
+  const db = getFirestore();
+  const allowance = db.collection(SECTION_PROPOSERS).doc(identity.uid);
+  const [sections, used] = await Promise.all([readAllSections(), allowance.get()]);
   const decision = decideProposal({ body, callerUid: identity.uid, sections });
   if (!decision.ok) return refuseSection(response, decision);
+  // Asked before the download and Vision, so a day's last refusal costs nothing; the transaction asks again.
+  if (decideProposalQuota(0, recentProposals(used.get("recent"), Date.now())) !== null) {
+    return refuseSection(response, { code: "TOO_MANY_PROPOSALS" });
+  }
 
   const bytes = await readOwnPicture(identity.uid, decision.pictureId);
   const judged = judgePicture(bytes);
@@ -1367,10 +1429,23 @@ async function proposeSection(response: Response, identity: Identity, body: unkn
   const token = randomUUID();
   const bucket = bucketName();
   const palette = await paletteFor(bytes);
-  const record = await createSectionDocument(decision.name, sections, (id) => {
+  // The account's own document is read and written by every proposal it
+  // makes, so two at once are taken one after the other, never side by side.
+  const created = await db.runTransaction(async (transaction): Promise<Created> => {
+    const now = Date.now();
+    const [held, mine] = await Promise.all([
+      transaction.get(allowance),
+      transaction.get(db.collection(SECTIONS).where("proposerUid", "==", identity.uid)),
+    ]);
+    const recent = recentProposals(held.get("recent"), now);
+    const quota = decideProposalQuota(mine.docs.filter((doc) => doc.get("status") === "pending").length, recent);
+    if (quota !== null) return { code: quota };
+    const clash = await reservedBy(transaction, [decision.name], null);
+    if (clash !== null) return { code: "NAME_TAKEN", id: clash };
+    const id = await freeSectionId(transaction, decision.name, sections.map((one) => one.id));
     const path = proposalPath(id, decision.pictureId);
-    return {
-      ...newSection(id, decision.name, Date.now()),
+    const record: SectionRecord = {
+      ...newSection(id, decision.name, now),
       icon: decision.icon,
       fileUnder: decision.fileUnder,
       proposerUid: identity.uid,
@@ -1379,11 +1454,18 @@ async function proposeSection(response: Response, identity: Identity, body: unkn
       proposalPictureUrl: tokenAddressOf(bucket, path, token),
       palette,
     };
+    transaction.create(db.collection(SECTIONS).doc(id), newSectionDocument(record));
+    reserveNames(transaction, [decision.name], id);
+    transaction.set(allowance, { recent: [...recent, now], updatedAt: FieldValue.serverTimestamp() });
+    return { code: null, record };
   });
+  if (created.code !== null) return refuseSection(response, created);
+
+  const { record } = created;
   try {
     await keepForProposal(record.proposalPicture as string, bytes, CONTENT_TYPES[judged.size.format], token);
   } catch (error) {
-    await getFirestore().collection(SECTIONS).doc(record.id).delete();
+    await db.collection(SECTIONS).doc(record.id).delete();
     throw error;
   }
   claimedSectionsCache.invalidate();
@@ -1391,30 +1473,49 @@ async function proposeSection(response: Response, identity: Identity, body: unkn
 }
 
 /**
- * The proposer taking a waiting proposal back, which leaves its lists where
- * they were filed, or putting away what became of a declined or merged one.
- * A withdrawn proposal was never a section anybody saw, so nothing of it is kept.
+ * The proposer taking a waiting proposal back, or putting away what became
+ * of a declined or merged one. Decided in a transaction, like the moderators'
+ * words, so whichever comes first stands and the other is told it is too late.
  */
 async function withdrawProposal(response: Response, identity: Identity, id: string): Promise<void> {
   if (await refuseWriter(response, identity)) return;
-  const found = isSectionId(id) ? await readSectionById(id) : null;
-  if (found === null || found.builtIn || found.proposerUid !== identity.uid) return noSuchSection(response);
-  const ref = getFirestore().collection(SECTIONS).doc(id);
-  if (found.status === "pending") {
+  if (!isSectionId(id)) return noSuchSection(response);
+  const db = getFirestore();
+  const ref = db.collection(SECTIONS).doc(id);
+  const outcome = await db.runTransaction(async (transaction) => {
+    const fresh = await transaction.get(ref);
+    const section = fresh.exists ? sectionRecord(id, fresh.data() as StoredSection) : null;
+    const what = decideWithdrawal(section, identity.uid);
+    const putAway = { dismissedAt: FieldValue.serverTimestamp(), proposalPicture: null, proposalPictureUrl: null };
+    if (what === "withdraw") {
+      // Kept, as declined by its own proposer and already put away: its id
+      // stays taken, so no later section can inherit lists that still name it.
+      transaction.update(ref, {
+        ...putAway,
+        status: "declined",
+        declineNote: null,
+        decidedAt: FieldValue.serverTimestamp(),
+        decidedBy: identity.uid,
+        unfinished: true,
+      });
+    } else if (what === "dismiss") {
+      transaction.update(ref, putAway);
+    }
+    return { what, status: section?.status ?? null };
+  });
+  if (outcome.what === "missing") return noSuchSection(response);
+  if (outcome.what === "settled") {
+    response.status(409).json({ error: "That section has been decided already", code: "SETTLED" });
+    return;
+  }
+  // A declined proposal's lists stop waiting; doing it again is doing nothing.
+  if (outcome.what === "withdraw" || outcome.status === "declined") {
     await rewriteWhere(PUBLISHED, "proposedSection", id, WITHDRAWN_LISTS);
-    await ref.delete();
-    await discardProposalPicture(id);
-    claimedSectionsCache.invalidate();
-    response.status(204).send();
-    return;
+    await ref.update({ unfinished: false });
   }
-  if (found.status === "declined" || found.status === "merged") {
-    await ref.update({ dismissedAt: FieldValue.serverTimestamp(), proposalPicture: null, proposalPictureUrl: null });
-    await discardProposalPicture(id);
-    response.status(204).send();
-    return;
-  }
-  response.status(409).json({ error: "That section has been decided already", code: "SETTLED" });
+  await discardProposalPicture(id);
+  if (outcome.what === "withdraw") claimedSectionsCache.invalidate();
+  response.status(204).send();
 }
 
 /** The queue, oldest first, each with who asked, its picture, its palette and how many lists wait for it. */
@@ -1440,11 +1541,27 @@ type PreparedPicture =
   | { ok: true; bytes: Buffer; contentType: string; width: number; height: number; colours: SectionColours }
   | { ok: false; why: PictureRefusal };
 
+/** Vision's look at a picture's colours; when Vision cannot be asked, the palette it gave at proposal time. */
+async function pictureColours(bytes: Buffer, palette: readonly string[]): Promise<SectionColours> {
+  try {
+    return coloursFromPicture(await realPictureColours(bytes), NEUTRAL_COLOURS);
+  } catch (error) {
+    const fallback = coloursFromPalette(palette);
+    if (fallback === null) throw error;
+    console.warn("Vision unavailable; colours from the proposal's palette", error);
+    return fallback;
+  }
+}
+
 /**
  * A picture measured and its colours worked out, before anything about it is
  * written. A tint somebody chose stands in for Vision's look at the colours.
  */
-async function preparePicture(bytes: Buffer | null, chosenTint: string | undefined): Promise<PreparedPicture> {
+async function preparePicture(
+  bytes: Buffer | null,
+  chosenTint: string | undefined,
+  palette: readonly string[],
+): Promise<PreparedPicture> {
   const judged = judgePicture(bytes);
   if (!judged.ok || bytes === null) return { ok: false, why: judged.ok ? "missing" : judged.why };
   return {
@@ -1453,9 +1570,7 @@ async function preparePicture(bytes: Buffer | null, chosenTint: string | undefin
     contentType: CONTENT_TYPES[judged.size.format],
     width: judged.size.width,
     height: judged.size.height,
-    colours: chosenTint === undefined
-      ? coloursFromPicture(await realPictureColours(bytes), NEUTRAL_COLOURS)
-      : coloursFromChosenTint(chosenTint, false),
+    colours: chosenTint === undefined ? await pictureColours(bytes, palette) : coloursFromChosenTint(chosenTint, false),
   };
 }
 
@@ -1485,34 +1600,47 @@ async function createSection(response: Response, identity: Identity, body: unkno
   if (name === undefined) return refuseSection(response, { code: "BAD_NAME" });
 
   const sections = await readAllSections();
-  const clash = findClash(namesAfter({ name, names: {} }, edits), sections, null);
+  const names = namesAfter({ name, names: {} }, edits);
+  const clash = findClash(names, sections, null);
   if (clash !== null) return refuseSection(response, { code: "NAME_TAKEN", id: clash });
   const pictureId = edits.pictureId;
-  const picture = pictureId === undefined ? null : await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint);
+  const picture = pictureId === undefined ? null : await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint, []);
   if (picture !== null && !picture.ok) return refuseSection(response, { code: "BAD_PICTURE", why: picture.why });
 
   const now = Date.now();
   const bucket = bucketName();
   const colours = picture?.ok ? picture.colours : edits.tint !== undefined ? coloursFromChosenTint(edits.tint, false) : NEUTRAL_COLOURS;
-  const record = await createSectionDocument(name, sections, (id) => ({
-    ...newSection(id, name, now),
-    ...colours,
-    names: edits.names ?? {},
-    icon: edits.icon ?? DEFAULT_ICON,
-    rank: edits.rank ?? null,
-    picture: picture?.ok && pictureId !== undefined
-      ? { url: addressOf(bucket, sectionPicturePath(id, pictureId)), width: picture.width, height: picture.height }
-      : null,
-    status: "approved",
-    approvedAtMs: now,
-    decidedAtMs: now,
-    decidedBy: identity.uid,
-  }));
+  const db = getFirestore();
+  const created = await db.runTransaction(async (transaction): Promise<Created> => {
+    const taken = await reservedBy(transaction, names, null);
+    if (taken !== null) return { code: "NAME_TAKEN", id: taken };
+    const id = await freeSectionId(transaction, name, sections.map((one) => one.id));
+    const record: SectionRecord = {
+      ...newSection(id, name, now),
+      ...colours,
+      names: edits.names ?? {},
+      icon: edits.icon ?? DEFAULT_ICON,
+      rank: edits.rank ?? null,
+      picture: picture?.ok && pictureId !== undefined
+        ? { url: addressOf(bucket, sectionPicturePath(id, pictureId)), width: picture.width, height: picture.height }
+        : null,
+      status: "approved",
+      approvedAtMs: now,
+      decidedAtMs: now,
+      decidedBy: identity.uid,
+    };
+    transaction.create(db.collection(SECTIONS).doc(id), newSectionDocument(record));
+    reserveNames(transaction, names, id);
+    return { code: null, record };
+  });
+  if (created.code !== null) return refuseSection(response, created);
+
+  const { record } = created;
   if (picture?.ok && pictureId !== undefined) {
     try {
       await publishSectionPicture(sectionPicturePath(record.id, pictureId), picture.bytes, picture.contentType);
     } catch (error) {
-      await getFirestore().collection(SECTIONS).doc(record.id).delete();
+      await db.collection(SECTIONS).doc(record.id).delete();
       throw error;
     }
   }
@@ -1521,10 +1649,19 @@ async function createSection(response: Response, identity: Identity, body: unkno
   response.status(201).json(sectionView(record, { uid: identity.uid, moderator: true }, noStats(record.id), false));
 }
 
+type Settled =
+  | { kind: "decided"; outcome: Extract<SectionOutcome, { ok: true }> }
+  | { kind: "refused"; reason: SectionActionRefusal; status: SectionStatus | null }
+  | { kind: "taken"; id: string; status: SectionStatus | null };
+
 /**
  * A word on a section: approved or declined by the owner or a moderator,
- * merged by the owner. The lists move first and the section changes last,
- * so a failure halfway leaves it as it was and asking again finishes the job.
+ * merged by the owner. The slow part of an approval, Vision and the copy,
+ * comes first and writes nothing anybody reads; then one transaction reads
+ * the section again and writes the decision, so of two words at once one
+ * stands and the other is told it came too late. The lists move after, and
+ * the section says it is unfinished until they have: the same word again
+ * finishes the job.
  */
 async function settleSection(
   response: Response,
@@ -1538,16 +1675,20 @@ async function settleSection(
   const found = isSectionId(id) ? await readSectionById(id) : null;
   if (found === null) return noSuchSection(response);
   const source = (body ?? {}) as Record<string, unknown>;
-  const into = action === "merge" && isSectionId(source.into) ? await readSectionById(source.into) : null;
-  const outcome = decideSectionAction(action, found, into);
-  if (!outcome.ok) return refuseSectionAction(response, outcome.reason);
+  const intoId = action === "merge" && isSectionId(source.into) ? source.into : null;
+  const into = intoId === null ? null : await readSectionById(intoId);
+  const early = decideSectionAction(action, found, into);
+  if (!early.ok) return refuseSectionAction(response, early.reason);
 
   const update: Record<string, unknown> = {
-    status: outcome.status,
+    status: early.status,
     decidedAt: FieldValue.serverTimestamp(),
     decidedBy: identity.uid,
+    unfinished: true,
   };
-  if (action === "approve") {
+  let names: string[] = [];
+  let copied = false;
+  if (action === "approve" && !early.resume) {
     // A pin is part of the order, and the order is the owner's.
     if (source.rank !== undefined && !mayCall(role, "order")) {
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS", detail: "owner_only" });
@@ -1556,14 +1697,16 @@ async function settleSection(
     const read = readSectionEdits(body, ["name", "names", "icon", "rank", "tint"]);
     if (!read.ok) return refuseSection(response, read);
     if (read.edits.name !== undefined || read.edits.names !== undefined) {
-      const clash = findClash(namesAfter(found, read.edits), await readAllSections(), id);
+      names = namesAfter(found, read.edits);
+      const clash = findClash(names, await readAllSections(), id);
       if (clash !== null) return refuseSection(response, { code: "NAME_TAKEN", id: clash });
     }
     const path = found.proposalPicture;
-    const picture = await preparePicture(path === null ? null : await readStoredPicture(path), read.edits.tint);
+    const picture = await preparePicture(path === null ? null : await readStoredPicture(path), read.edits.tint, found.palette);
     if (!picture.ok || path === null) return refuseSection(response, { code: "BAD_PICTURE", why: picture.ok ? "missing" : picture.why });
     const published = sectionPicturePath(id, pictureIdOf(path));
     await publishSectionPicture(published, picture.bytes, picture.contentType);
+    copied = true;
     Object.assign(update, editFields(read.edits), picture.colours, {
       picture: { url: addressOf(bucketName(), published), width: picture.width, height: picture.height },
       approvedAt: FieldValue.serverTimestamp(),
@@ -1575,15 +1718,44 @@ async function settleSection(
   if (action === "decline") {
     update.declineNote = cleanText(source.note, MAX_DECLINE_NOTE_LENGTH);
   }
-  if (outcome.mergedInto !== null) {
-    update.mergedInto = outcome.mergedInto;
+  if (early.mergedInto !== null) {
+    update.mergedInto = early.mergedInto;
   }
 
+  const db = getFirestore();
+  const ref = db.collection(SECTIONS).doc(id);
+  const settled = await db.runTransaction(async (transaction): Promise<Settled> => {
+    const [fresh, target] = await Promise.all([
+      transaction.get(ref),
+      intoId === null ? null : transaction.get(db.collection(SECTIONS).doc(intoId)),
+    ]);
+    if (!fresh.exists) return { kind: "refused", reason: "settled", status: null };
+    const section = sectionRecord(id, fresh.data() as StoredSection);
+    const targetRecord = target?.exists ? sectionRecord(target.id, target.data() as StoredSection) : null;
+    const outcome = decideSectionAction(action, section, targetRecord);
+    if (!outcome.ok) return { kind: "refused", reason: outcome.reason, status: section.status };
+    if (outcome.resume !== early.resume) return { kind: "refused", reason: "settled", status: section.status };
+    if (outcome.resume) return { kind: "decided", outcome };
+    const clash = names.length > 0 ? await reservedBy(transaction, names, id) : null;
+    if (clash !== null) return { kind: "taken", id: clash, status: section.status };
+    transaction.update(ref, update);
+    if (names.length > 0) reserveNames(transaction, names, id);
+    return { kind: "decided", outcome };
+  });
+  if (settled.kind !== "decided") {
+    // The copy made for an approval that did not happen is nobody's; one another approval won keeps it.
+    if (copied && settled.status !== "approved") await discardSectionPictures(id);
+    if (settled.kind === "taken") return refuseSection(response, { code: "NAME_TAKEN", id: settled.id });
+    return refuseSectionAction(response, settled.reason);
+  }
+
+  const { outcome } = settled;
   await rewriteWhere(PUBLISHED, "proposedSection", id, outcome.waiting);
   if (outcome.filed !== null) await rewriteWhere(PUBLISHED, "category", id, outcome.filed);
   if (outcome.mergedInto !== null) await pointAt(id, outcome.mergedInto);
-  await getFirestore().collection(SECTIONS).doc(id).update(update);
-  if (action === "approve") await discardProposalPicture(id);
+  // A declined proposer still sees their picture until they put the notice away.
+  if (action !== "decline") await discardProposalPicture(id);
+  await ref.update({ unfinished: false });
   if (action !== "decline") await bumpSectionsVersion();
   forgetSections();
   await staffView(response, identity, id, 200);
@@ -1613,26 +1785,46 @@ async function editSection(response: Response, identity: Identity, id: string, b
     response.status(409).json({ error: "Other stays open: lists fall back to it", code: "BUILT_IN", detail: "hidden" });
     return;
   }
-  if (edits.name !== undefined || edits.names !== undefined) {
-    const clash = findClash(namesAfter(found, edits), await readAllSections(), id);
+  const names = edits.name !== undefined || edits.names !== undefined ? namesAfter(found, edits) : [];
+  if (names.length > 0) {
+    const clash = findClash(names, await readAllSections(), id);
     if (clash !== null) return refuseSection(response, { code: "NAME_TAKEN", id: clash });
   }
 
   const update = editFields(edits);
   const pictureId = edits.pictureId;
+  let copied: string | null = null;
   if (pictureId !== undefined) {
-    const picture = await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint);
+    const picture = await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint, found.palette);
     if (!picture.ok) return refuseSection(response, { code: "BAD_PICTURE", why: picture.why });
     const path = sectionPicturePath(id, pictureId);
+    const url = addressOf(bucketName(), path);
     await publishSectionPicture(path, picture.bytes, picture.contentType);
-    Object.assign(update, picture.colours, {
-      picture: { url: addressOf(bucketName(), path), width: picture.width, height: picture.height },
-    });
+    // The same file again is the picture it already has, never one to clean up.
+    copied = found.picture?.url === url ? null : path;
+    Object.assign(update, picture.colours, { picture: { url, width: picture.width, height: picture.height } });
   } else if (edits.tint !== undefined) {
     Object.assign(update, coloursFromChosenTint(edits.tint, found.builtIn));
   }
-  if (Object.keys(update).length > 0) {
-    await getFirestore().collection(SECTIONS).doc(id).update(update);
+
+  const db = getFirestore();
+  const ref = db.collection(SECTIONS).doc(id);
+  const saved = await db.runTransaction(async (transaction): Promise<"saved" | "settled" | { taken: string }> => {
+    const fresh = await transaction.get(ref);
+    if (!fresh.exists || fresh.get("status") !== "approved") return "settled";
+    const clash = names.length > 0 ? await reservedBy(transaction, names, id) : null;
+    if (clash !== null) return { taken: clash };
+    if (Object.keys(update).length > 0) transaction.update(ref, update);
+    if (names.length > 0) reserveNames(transaction, names, id);
+    return "saved";
+  });
+  if (saved !== "saved") {
+    if (copied !== null) await discardStoredPicture(copied);
+    if (saved === "settled") {
+      response.status(409).json({ error: "Only an approved section is edited", code: "SETTLED" });
+      return;
+    }
+    return refuseSection(response, { code: "NAME_TAKEN", id: saved.taken });
   }
   if (pictureId !== undefined) await discardOtherSectionPictures(id, pictureId);
   await bumpSectionsVersion();
@@ -1684,18 +1876,19 @@ async function putSectionOrder(response: Response, identity: Identity, body: unk
 
 /**
  * The owner removing a section outright, which is only for one nothing is
- * filed under, waits for, or names as its topic's place. A proposal filed
+ * filed under, waits for, or names as an approved or waiting topic's place. A proposal filed
  * under it is filed under Other instead; its followers stop following it.
  */
 async function deleteSection(response: Response, identity: Identity, id: string): Promise<void> {
   if ((await roleFor(response, identity, "delete")) === null) return;
   const found = isSectionId(id) ? await readSectionById(id) : null;
   if (found === null) return noSuchSection(response);
-  const [filed, waiting, topics] = await Promise.all([
+  const [filed, waiting, topicStatuses] = await Promise.all([
     countWhere(PUBLISHED, "category", id),
     waitingCount(id),
-    countWhere(TOPICS, "section", id),
+    getFirestore().collection(TOPICS).where("section", "==", id).select("status").get(),
   ]);
+  const topics = liveTopics(topicStatuses.docs.map((doc) => doc.get("status")));
   const decision = decideDeletion(found, { lists: filed + waiting, topics });
   if (!decision.ok) {
     if (decision.reason === "built_in") {
@@ -1726,48 +1919,64 @@ async function pointAt(from: string, into: string): Promise<void> {
   await rewriteWhere(TOPICS, "section", from, { section: into });
   await rewriteWhere(SECTIONS, "mergedInto", from, { mergedInto: into });
   await rewriteWhere(SECTIONS, "fileUnder", from, { fileUnder: into });
-  const db = getFirestore();
-  const follows = await db.collection(SECTION_FOLLOWS).where("section", "==", from).get();
+  const follows = getFirestore().collection(SECTION_FOLLOWS);
   // Two writes a follow: the new one set, so somebody already following both ends up with one.
-  for (const part of chunked(follows.docs, WRITES_PER_BATCH / 2)) {
-    const batch = db.batch();
-    part.forEach((doc) => {
-      const follower = doc.get("follower") as string;
-      batch.set(db.collection(SECTION_FOLLOWS).doc(sectionFollowId(follower, into)), {
-        follower,
-        section: into,
-        createdAt: doc.get("createdAt") ?? FieldValue.serverTimestamp(),
-      });
-      batch.delete(doc.ref);
+  await inPages(SECTION_FOLLOWS, "section", from, ["follower", "createdAt"], WRITES_PER_BATCH / 2, (batch, doc) => {
+    const follower = doc.get("follower") as string;
+    batch.set(follows.doc(sectionFollowId(follower, into)), {
+      follower,
+      section: into,
+      createdAt: doc.get("createdAt") ?? FieldValue.serverTimestamp(),
     });
+    batch.delete(doc.ref);
+  });
+}
+
+/**
+ * Every document of a collection with `field == value`, a page at a time,
+ * reading only `fields` of each, each page one batch. A merge of a big
+ * section never holds its lists in memory, and one cut short is finished by
+ * asking again: whatever was moved no longer matches.
+ */
+async function inPages(
+  collection: string,
+  field: string,
+  value: string,
+  fields: readonly string[],
+  pageSize: number,
+  write: (batch: FirebaseFirestore.WriteBatch, doc: FirebaseFirestore.QueryDocumentSnapshot) => void,
+): Promise<void> {
+  const db = getFirestore();
+  let after: string | null = null;
+  for (;;) {
+    let page = db
+      .collection(collection)
+      .where(field, "==", value)
+      .orderBy(FieldPath.documentId())
+      .select(...fields)
+      .limit(pageSize);
+    if (after !== null) page = page.startAfter(after);
+    const read = await page.get();
+    if (read.empty) return;
+    const batch = db.batch();
+    read.docs.forEach((doc) => write(batch, doc));
     await batch.commit();
+    if (read.size < pageSize) return;
+    after = read.docs[read.size - 1].id;
   }
 }
 
-/** Every document of a collection with `field == value`, changed in parts small enough for a batch. */
 async function rewriteWhere(
   collection: string,
   field: string,
   value: string,
   change: Record<string, unknown>,
 ): Promise<void> {
-  const db = getFirestore();
-  const matching = await db.collection(collection).where(field, "==", value).get();
-  for (const part of chunked(matching.docs, WRITES_PER_BATCH)) {
-    const batch = db.batch();
-    part.forEach((doc) => batch.update(doc.ref, change));
-    await batch.commit();
-  }
+  await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => batch.update(doc.ref, change));
 }
 
 async function deleteWhere(collection: string, field: string, value: string): Promise<void> {
-  const db = getFirestore();
-  const matching = await db.collection(collection).where(field, "==", value).get();
-  for (const part of chunked(matching.docs, WRITES_PER_BATCH)) {
-    const batch = db.batch();
-    part.forEach((doc) => batch.delete(doc.ref));
-    await batch.commit();
-  }
+  await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => batch.delete(doc.ref));
 }
 
 /**

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   coloursFromChosenTint,
+  coloursFromPalette,
   coloursFromPicture,
   coloursFromTint,
   DARK_BASE,
@@ -152,5 +153,15 @@ describe("paletteOf", () => {
 
   it("falls back to how much of the picture a colour covers when there is no score", () => {
     assert.deepEqual(paletteOf([colour("#2050A0", 0.2), colour("#7A4A33", 0.6)]), ["#7A4A33", "#2050A0"]);
+  });
+});
+
+describe("coloursFromPalette", () => {
+  it("derives a user section's colours from the palette's first colour, held in range", () => {
+    assert.deepEqual(coloursFromPalette(["#F2C9A8", "#2050A0"]), coloursFromChosenTint("#F2C9A8", false));
+  });
+
+  it("is nothing without a palette", () => {
+    assert.equal(coloursFromPalette([]), null);
   });
 });

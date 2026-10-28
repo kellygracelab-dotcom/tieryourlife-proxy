@@ -177,6 +177,12 @@ export function coloursFromChosenTint(tint: string, builtIn: boolean): SectionCo
   return coloursFromTint(builtIn ? tint : tintLightFrom(hexToRgb(tint)));
 }
 
+/** A user section's colours from the first colour of its stored palette, for when Vision cannot be asked again. */
+export function coloursFromPalette(palette: readonly string[]): SectionColours | null {
+  const first = palette[0];
+  return isHexColour(first) ? coloursFromChosenTint(first, false) : null;
+}
+
 /** The picture's strongest colours, at most five, each once: what a moderator picks a tint from. */
 export function paletteOf(colours: readonly WeightedColour[], size = 5): string[] {
   const strongest = [...colours].sort((left, right) => (right.score ?? right.weight) - (left.score ?? left.weight));

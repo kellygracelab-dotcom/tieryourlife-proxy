@@ -70,6 +70,14 @@ export async function discardProposalPicture(sectionId: string): Promise<void> {
     .deleteFiles({ prefix: `proposals/${sectionId}/`, force: true });
 }
 
+export async function discardStoredPicture(path: string): Promise<void> {
+  await getStorage()
+    .bucket()
+    .file(path)
+    .delete()
+    .catch(() => undefined);
+}
+
 export async function discardSectionPictures(sectionId: string): Promise<void> {
   await getStorage()
     .bucket()

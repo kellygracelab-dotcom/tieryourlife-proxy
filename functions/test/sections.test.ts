@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { mergePages, type Ranked } from "../src/follows";
 import {
+  answerFor,
   base36Of,
   BUILT_IN_SECTION_IDS,
   BUILT_IN_SECTIONS,
@@ -13,13 +14,17 @@ import {
   decideDeletion,
   decideOrder,
   decideProposal,
+  decideProposalQuota,
   decideSectionAction,
   decideSectionChoice,
+  decideWithdrawal,
   DEFAULT_ICON,
   findClash,
   followedSectionRun,
   isSectionId,
+  liveTopics,
   MAX_PENDING_SECTIONS_PER_ACCOUNT,
+  MAX_PROPOSALS_PER_DAY,
   MAX_SECTION_NAME_LENGTH,
   mayCall,
   nameKey,
@@ -31,7 +36,10 @@ import {
   pickCollage,
   pickSectionId,
   proposalAfterErasure,
+  PROPOSAL_WINDOW_MS,
   readNames,
+  recentProposals,
+  reservationClash,
   readSectionEdits,
   SECTION_CALLS,
   SECTION_ICONS,
@@ -41,6 +49,7 @@ import {
   sectionView,
   slugOf,
   TimedCache,
+  visibleText,
   type CollageCandidate,
   type SectionRecord,
 } from "../src/sections";
@@ -147,6 +156,30 @@ describe("cleanSectionName", () => {
     assert.equal(cleanSectionName("!!"), null);
     assert.equal(cleanSectionName("Вулична їжа"), "Вулична їжа");
     assert.equal(cleanSectionName(42), null);
+  });
+});
+
+describe("visible text", () => {
+  it("takes out format characters and folds compatibility forms", () => {
+    assert.equal(visibleText("Str\u200Beet\u200C \u200Dfo\uFEFFod\u2060"), "Street food");
+    assert.equal(visibleText("ｆｏｏｄ"), "food");
+  });
+
+  it("cannot be used to make a name that looks taken into a new one", () => {
+    const food = builtInRecord(BUILT_IN_SECTIONS[5]);
+    assert.equal(cleanSectionName("Fo\u200Bod"), "Food");
+    assert.equal(nameKey("F\u200Dood\uFEFF"), nameKey("Food"));
+    assert.equal(findClash(["ＦＯＯＤ"], [food], null), "food");
+    assert.equal(findClash(["F\u2060ood"], [food], null), "food");
+  });
+
+  it("counts only what can be seen towards a name's length", () => {
+    assert.equal(cleanSectionName("A\u200B\u200B\u200B"), null);
+  });
+
+  it("slugs what can be seen", () => {
+    assert.equal(slugOf("Street\u200B food"), "street-food");
+    assert.equal(slugOf("Ｓｔｒｅｅｔ ｆｏｏｄ"), "street-food");
   });
 });
 
@@ -306,6 +339,54 @@ describe("decideProposal", () => {
   });
 });
 
+describe("recentProposals and decideProposalQuota", () => {
+  const now = 10 * PROPOSAL_WINDOW_MS;
+
+  it("keeps the proposals of the last day, and only times", () => {
+    assert.deepEqual(recentProposals([now - PROPOSAL_WINDOW_MS, now - PROPOSAL_WINDOW_MS + 1, now, "x", null], now), [
+      now - PROPOSAL_WINDOW_MS + 1,
+      now,
+    ]);
+    assert.deepEqual(recentProposals(undefined, now), []);
+  });
+
+  it("allows three waiting and ten a day, however they ended", () => {
+    const day = (n: number) => Array.from({ length: n }, (_, at) => now - at);
+    assert.equal(decideProposalQuota(MAX_PENDING_SECTIONS_PER_ACCOUNT - 1, day(MAX_PROPOSALS_PER_DAY - 1)), null);
+    assert.equal(decideProposalQuota(MAX_PENDING_SECTIONS_PER_ACCOUNT, day(0)), "TOO_MANY_PENDING");
+    assert.equal(decideProposalQuota(0, day(MAX_PROPOSALS_PER_DAY)), "TOO_MANY_PROPOSALS");
+  });
+});
+
+describe("reservationClash", () => {
+  const ramen = section({ id: "ramen", name: "Ramen", status: "pending" });
+  const holders = new Map([
+    ["ramen", ramen],
+    ["gone", section({ id: "gone", name: "Noodles", status: "declined" })],
+    ["renamed", section({ id: "renamed", name: "Soba now" })],
+  ]);
+  const reservations = [
+    { key: "ramen", sectionId: "ramen" },
+    { key: "noodles", sectionId: "gone" },
+    { key: "soba", sectionId: "renamed" },
+    { key: "udon", sectionId: "deleted" },
+  ];
+
+  it("finds the waiting or approved section that holds the name", () => {
+    assert.equal(reservationClash(["RAMEN"], reservations, holders, null), "ramen");
+  });
+
+  it("lets a name go once its holder was declined, renamed away or deleted", () => {
+    assert.equal(reservationClash(["Noodles"], reservations, holders, null), null);
+    assert.equal(reservationClash(["Soba"], reservations, holders, null), null);
+    assert.equal(reservationClash(["Udon"], reservations, holders, null), null);
+  });
+
+  it("never counts a section's own reservation against it", () => {
+    assert.equal(reservationClash(["Ramen"], reservations, holders, "ramen"), null);
+  });
+});
+
 describe("readSectionEdits", () => {
   it("reads only what this call may change", () => {
     const read = readSectionEdits({ name: "Street food", rank: 2, hidden: true }, ["name"]);
@@ -342,6 +423,7 @@ describe("decideSectionAction", () => {
   it("approving moves the waiting lists in", () => {
     assert.deepEqual(decideSectionAction("approve", pending, null), {
       ok: true,
+      resume: false,
       status: "approved",
       mergedInto: null,
       waiting: { category: "street-food", proposedSection: null },
@@ -352,6 +434,7 @@ describe("decideSectionAction", () => {
   it("declining leaves the lists where they were filed, no longer waiting", () => {
     assert.deepEqual(decideSectionAction("decline", pending, null), {
       ok: true,
+      resume: false,
       status: "declined",
       mergedInto: null,
       waiting: { proposedSection: null },
@@ -367,6 +450,7 @@ describe("decideSectionAction", () => {
   it("merging moves the filed and the waiting lists to the target", () => {
     assert.deepEqual(decideSectionAction("merge", approved, food), {
       ok: true,
+      resume: false,
       status: "merged",
       mergedInto: "food",
       waiting: { category: "food", proposedSection: null },
@@ -381,6 +465,37 @@ describe("decideSectionAction", () => {
     assert.deepEqual(decideSectionAction("merge", approved, pending), { ok: false, reason: "target_not_approved" });
     const declined = section({ id: "gone", status: "declined" });
     assert.deepEqual(decideSectionAction("merge", declined, food), { ok: false, reason: "settled" });
+  });
+
+  it("finishes a decision left half done when the same word comes again", () => {
+    const approving = section({ id: "street-food", status: "approved", unfinished: true });
+    assert.deepEqual(decideSectionAction("approve", approving, null), {
+      ok: true,
+      resume: true,
+      status: "approved",
+      mergedInto: null,
+      waiting: { category: "street-food", proposedSection: null },
+      filed: null,
+    });
+    const merging = section({ id: "ramen", status: "merged", mergedInto: "food", unfinished: true });
+    assert.deepEqual(decideSectionAction("merge", merging, food), {
+      ok: true,
+      resume: true,
+      status: "merged",
+      mergedInto: "food",
+      waiting: { category: "food", proposedSection: null },
+      filed: { category: "food" },
+    });
+  });
+
+  it("tells any other word on a decided section, finished or not, that it is too late", () => {
+    const approving = section({ id: "street-food", status: "approved", unfinished: true });
+    assert.deepEqual(decideSectionAction("decline", approving, null), { ok: false, reason: "settled" });
+    assert.deepEqual(decideSectionAction("approve", section({ id: "done" }), null), { ok: false, reason: "settled" });
+    const merging = section({ id: "ramen", status: "merged", mergedInto: "food", unfinished: true });
+    assert.deepEqual(decideSectionAction("merge", merging, approved), { ok: false, reason: "settled" });
+    const withdrawn = section({ id: "gone", status: "declined", unfinished: true });
+    assert.deepEqual(decideSectionAction("approve", withdrawn, null), { ok: false, reason: "settled" });
   });
 
   it("never declines or merges a built-in away", () => {
@@ -521,6 +636,12 @@ describe("decideOrder", () => {
   });
 });
 
+describe("liveTopics", () => {
+  it("counts the approved and waiting topics, not the rejected or merged ones", () => {
+    assert.equal(liveTopics(["approved", "pending", "rejected", "merged", undefined]), 2);
+  });
+});
+
 describe("decideDeletion", () => {
   it("removes a section nothing is in", () => {
     assert.deepEqual(decideDeletion(section({ id: "ramen" }), { lists: 0, topics: 0 }), { ok: true });
@@ -567,6 +688,57 @@ describe("mayCall", () => {
 
   it("lets nobody else do any of it", () => {
     for (const call of Object.keys(SECTION_CALLS) as (keyof typeof SECTION_CALLS)[]) assert.equal(mayCall(null, call), false, call);
+  });
+});
+
+describe("decideWithdrawal", () => {
+  it("takes back a waiting proposal and puts away a declined or merged one's notice", () => {
+    assert.equal(decideWithdrawal(section({ id: "a", status: "pending", proposerUid: "me" }), "me"), "withdraw");
+    assert.equal(decideWithdrawal(section({ id: "a", status: "declined", proposerUid: "me" }), "me"), "dismiss");
+    assert.equal(decideWithdrawal(section({ id: "a", status: "merged", mergedInto: "food", proposerUid: "me" }), "me"), "dismiss");
+  });
+
+  it("is too late for an approved one", () => {
+    assert.equal(decideWithdrawal(section({ id: "a", proposerUid: "me" }), "me"), "settled");
+  });
+
+  it("finds nothing of anybody else's, of a built-in, or of a section that is gone", () => {
+    assert.equal(decideWithdrawal(section({ id: "a", status: "pending", proposerUid: "somebody" }), "me"), "missing");
+    assert.equal(decideWithdrawal(builtInRecord(BUILT_IN_SECTIONS[0]), "me"), "missing");
+    assert.equal(decideWithdrawal(null, "me"), "missing");
+  });
+});
+
+describe("answerFor", () => {
+  const stranger = { uid: "somebody", moderator: false };
+  const proposer = { uid: "me", moderator: false };
+  const staff = { uid: "mod", moderator: true };
+  const waiting = section({ id: "a", status: "pending", proposerUid: "me", approvedAtMs: null });
+  const mergedWaiting = section({ id: "b", status: "merged", mergedInto: "food", proposerUid: "me", approvedAtMs: null });
+  const mergedApproved = section({ id: "c", status: "merged", mergedInto: "food", proposerUid: "me", approvedAtMs: 5 });
+
+  it("shows an approved section to everybody", () => {
+    assert.equal(answerFor(section({ id: "ramen" }), stranger), "view");
+  });
+
+  it("shows a proposal only to its proposer and the moderators", () => {
+    assert.equal(answerFor(waiting, stranger), "missing");
+    assert.equal(answerFor(waiting, proposer), "view");
+    assert.equal(answerFor(waiting, staff), "view");
+  });
+
+  it("points everybody on from a section merged after it was approved", () => {
+    assert.equal(answerFor(mergedApproved, stranger), "merged");
+  });
+
+  it("keeps a proposal merged before approval its proposer's and the moderators'", () => {
+    assert.equal(answerFor(mergedWaiting, stranger), "missing");
+    assert.equal(answerFor(mergedWaiting, proposer), "merged");
+    assert.equal(answerFor(mergedWaiting, staff), "merged");
+  });
+
+  it("finds nothing where there is nothing", () => {
+    assert.equal(answerFor(null, staff), "missing");
   });
 });
 
@@ -622,6 +794,7 @@ describe("sectionView", () => {
     const view = sectionView({ ...pending, palette: ["#7A4A33"] }, { uid: "mod", moderator: true }, noStats("street-food"), false, 2);
     assert.equal(view.pictureUrl, pending.proposalPictureUrl);
     assert.deepEqual(view.palette, ["#7A4A33"]);
+    assert.equal(view.unfinished, false);
     assert.equal(view.proposerName, "Me");
     assert.equal(view.createdAt, 1000);
     assert.equal(view.waitingLists, 2);
