@@ -18,9 +18,14 @@ export interface PlacedCard extends Card {
   tierIndex: number | null;
 }
 
+/**
+ * The list a copy came from. An empty name and uid when that list went out
+ * without one: never null, which the installed app cannot read.
+ */
 export interface BasedOn {
   id: string;
   title: string;
+  authorUid: string;
   authorName: string;
 }
 
@@ -30,6 +35,8 @@ export interface SourceList {
   authorUid: string;
   title: string;
   authorName: string;
+  /** Published without a name, so a copy of it credits nobody by name. */
+  anonymous: boolean;
   underReview: boolean;
   items: Card[];
 }
@@ -109,7 +116,46 @@ export function decidePublication({ takenFrom, source, callerUid }: PublicationI
   if (takenFrom === null || source === null || source.underReview || source.authorUid === callerUid) {
     return { kind: "list", basedOn: null };
   }
-  return { kind: "list", basedOn: { id: source.id, title: source.title, authorName: source.authorName } };
+  return { kind: "list", basedOn: creditFor(source) };
+}
+
+/** The credit a copy gives the list it came from. */
+export function creditFor(source: Pick<SourceList, "id" | "title" | "authorUid" | "authorName" | "anonymous">): BasedOn {
+  return source.anonymous
+    ? { id: source.id, title: source.title, authorUid: "", authorName: "" }
+    : { id: source.id, title: source.title, authorUid: source.authorUid, authorName: source.authorName };
+}
+
+/** A stored credit as it goes out. One written before the author's uid travelled carries an empty one. */
+export function shownCredit(stored: unknown): BasedOn | null {
+  if (typeof stored !== "object" || stored === null) return null;
+  const credit = stored as Record<string, unknown>;
+  if (typeof credit.id !== "string") return null;
+  return {
+    id: credit.id,
+    title: typeof credit.title === "string" ? credit.title : "",
+    authorUid: typeof credit.authorUid === "string" ? credit.authorUid : "",
+    authorName: typeof credit.authorName === "string" ? credit.authorName : "",
+  };
+}
+
+/**
+ * Whether a copy's credit still says the wrong thing about its original: a
+ * name while the original is anonymous, or nobody's while it is not. Asked
+ * of every copy on every publish, so a rewrite cut short is finished by the
+ * next one.
+ */
+export function creditNeedsRewrite(credit: Pick<BasedOn, "authorUid">, originalAnonymous: boolean): boolean {
+  return originalAnonymous ? credit.authorUid !== "" : credit.authorUid === "";
+}
+
+/**
+ * A ranking somebody signed in made. The website's visitors rank into the
+ * same collection without an account, and those are theirs to show, not the
+ * app's rankings sheet.
+ */
+export function isOwnedRanking(ranking: { uid?: unknown }): boolean {
+  return typeof ranking.uid === "string" && ranking.uid.length > 0;
 }
 
 /** The reader's own ranking ahead of everyone's, flagged, the rest as they came. */

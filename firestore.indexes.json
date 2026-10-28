@@ -405,6 +405,20 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "publishedLists",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "anonymous",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

@@ -44,3 +44,9 @@ describe("indexes the section counts need", () => {
     );
   });
 });
+
+describe("indexes the owner's list of anonymous lists needs", () => {
+  it("reads the anonymous lists newest first", () => {
+    assert.ok(declared("publishedLists", [["anonymous", "ASCENDING"], ["updatedAt", "DESCENDING"]]));
+  });
+});

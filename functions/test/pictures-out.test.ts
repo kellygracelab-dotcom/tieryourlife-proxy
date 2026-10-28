@@ -45,4 +45,56 @@ describe("toSummary", () => {
 
     assert.equal(summary.coverImageUrl, "https://i/c.jpg");
   });
+
+  it("names the author of a list published with a name, and says it is not anonymous", () => {
+    const summary = toSummary("a", { ...stored, authorPhotoUrl: "https://p/face.jpg", coverImageUrl: null, previewImages: [] } as never);
+
+    assert.equal(summary.authorUid, "u");
+    assert.equal(summary.authorName, "Someone");
+    assert.equal(summary.authorPhotoUrl, "https://p/face.jpg");
+    assert.equal(summary.anonymous, false);
+  });
+
+  it("names nobody for an anonymous list", () => {
+    const summary = toSummary("a", {
+      ...stored,
+      authorPhotoUrl: "https://p/face.jpg",
+      anonymous: true,
+      coverImageUrl: null,
+      previewImages: [],
+    } as never);
+
+    assert.equal(summary.authorUid, "");
+    assert.equal(summary.authorName, "");
+    assert.equal(summary.authorPhotoUrl, null);
+    assert.equal(summary.anonymous, true);
+  });
+
+  it("credits an anonymous original by nobody", () => {
+    const summary = toSummary("a", {
+      ...stored,
+      coverImageUrl: null,
+      previewImages: [],
+      basedOn: { id: "o", title: "Original", authorUid: "", authorName: "" },
+    } as never);
+
+    assert.deepEqual(summary.basedOn, { id: "o", title: "Original", authorUid: "", authorName: "" });
+  });
+
+  // The installed app's decoder cannot read a null in basedOn; whatever is stored, none goes out.
+  it("never sends a null inside basedOn, whatever is stored", () => {
+    for (const basedOn of [
+      { id: "o", title: "Original", authorUid: "", authorName: null },
+      { id: "o", title: "Original", authorName: "Someone" },
+      { id: "o", authorUid: null, authorName: undefined },
+      { id: "o", title: null },
+    ]) {
+      const summary = toSummary("a", { ...stored, coverImageUrl: null, previewImages: [], basedOn } as never);
+      assert.ok(summary.basedOn !== null, JSON.stringify(basedOn));
+      for (const [key, value] of Object.entries(summary.basedOn ?? {})) {
+        assert.notEqual(value, null, `${key} in ${JSON.stringify(basedOn)}`);
+        assert.notEqual(value, undefined, `${key} in ${JSON.stringify(basedOn)}`);
+      }
+    }
+  });
 });

@@ -4,6 +4,7 @@
  */
 import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
 import { isSectionId } from "./sections";
+import { readAnonymous } from "./anonymous";
 
 /**
  * Twenty was low enough that an enthusiastic person would meet it, and it also
@@ -71,6 +72,11 @@ export interface PublishDraft {
   /** The pictures the author chose for the collage, in their order; empty when the cards' art decides. */
   coverImageUrls: string[];
   tierColors: string[];
+  /**
+   * Whether to publish without the author's name: true or false when the
+   * body says, null when it says nothing, which keeps what a republished list was.
+   */
+  anonymous: boolean | null;
 }
 
 export interface PublishedList {
@@ -236,6 +242,7 @@ export function decidePublish({
     coverPictureId,
     coverImageUrls,
     tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
+    anonymous: readAnonymous(source.anonymous),
   };
 
   // Weighed against the addresses our own copies will have, which are longer

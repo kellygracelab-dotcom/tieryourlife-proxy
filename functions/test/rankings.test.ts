@@ -3,10 +3,14 @@ import { describe, it } from "node:test";
 import {
   arrangementOver,
   cardIdentity,
+  creditFor,
+  creditNeedsRewrite,
   decidePublication,
+  isOwnedRanking,
   mineFirst,
   readTakenFrom,
   sameCards,
+  shownCredit,
   type Card,
   type SourceList,
 } from "../src/rankings";
@@ -20,6 +24,7 @@ function source(some: Partial<SourceList> = {}): SourceList {
     authorUid: "author-1",
     title: "Space films that hold up",
     authorName: "Artiman",
+    anonymous: false,
     underReview: false,
     items: [poster("arrival"), poster("moon"), typed("Sunshine")],
     ...some,
@@ -109,7 +114,7 @@ describe("decidePublication", () => {
     const reordered = [items[2], items[0], items[1]];
     assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source(), callerUid: "reader", items: reordered }), {
       kind: "list",
-      basedOn: { id: "list-1", title: "Space films that hold up", authorName: "Artiman" },
+      basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "author-1", authorName: "Artiman" },
     });
   });
 
@@ -119,7 +124,7 @@ describe("decidePublication", () => {
     const changed = [...items, poster("sunshine")];
     assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source(), callerUid: "reader", items: changed }), {
       kind: "list",
-      basedOn: { id: "list-1", title: "Space films that hold up", authorName: "Artiman" },
+      basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "author-1", authorName: "Artiman" },
     });
   });
 
@@ -151,5 +156,61 @@ describe("mineFirst", () => {
 
   it("leaves a page without the reader as it came", () => {
     assert.deepEqual(mineFirst([{ uid: "a" }], "me"), [{ uid: "a", mine: false }]);
+  });
+});
+
+describe("credits", () => {
+  it("credit an anonymous list by nobody, with an empty uid", () => {
+    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source({ anonymous: true }), callerUid: "reader", items: [] }), {
+      kind: "list",
+      basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: "" },
+    });
+    assert.deepEqual(creditFor({ ...source(), anonymous: true }), { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: "" });
+  });
+
+  // The installed app reads authorName as a string that is never null.
+  it("go out whole, an old one without the author's uid with an empty one, never with a null", () => {
+    assert.deepEqual(shownCredit({ id: "list-1", title: "Space films", authorName: "Artiman" }), {
+      id: "list-1",
+      title: "Space films",
+      authorUid: "",
+      authorName: "Artiman",
+    });
+    assert.deepEqual(shownCredit({ id: "list-1", title: "Space films", authorUid: "", authorName: null }), {
+      id: "list-1",
+      title: "Space films",
+      authorUid: "",
+      authorName: "",
+    });
+  });
+
+  it("are nothing when nothing is stored", () => {
+    assert.equal(shownCredit(null), null);
+    assert.equal(shownCredit(undefined), null);
+    assert.equal(shownCredit({ title: "no id" }), null);
+  });
+});
+
+describe("isOwnedRanking", () => {
+  it("is a ranking somebody signed in made", () => {
+    assert.equal(isOwnedRanking({ uid: "reader-1" }), true);
+  });
+
+  it("is not a visitor's ranking from the website, which has no account behind it", () => {
+    assert.equal(isOwnedRanking({}), false);
+    assert.equal(isOwnedRanking({ uid: "" }), false);
+    assert.equal(isOwnedRanking({ uid: null }), false);
+  });
+});
+
+describe("creditNeedsRewrite", () => {
+  it("rewrites a copy that still names an original gone anonymous", () => {
+    assert.equal(creditNeedsRewrite({ authorUid: "author-1" }, true), true);
+    assert.equal(creditNeedsRewrite({ authorUid: "" }, true), false);
+  });
+
+  it("rewrites a copy that still credits nobody once the original has its name back", () => {
+    assert.equal(creditNeedsRewrite({ authorUid: "" }, false), true);
+    assert.equal(creditNeedsRewrite({ authorUid: "author-1" }, false), false);
   });
 });

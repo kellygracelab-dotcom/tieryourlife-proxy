@@ -85,6 +85,136 @@ export interface StoredBoard {
   deletedAt: number | null;
   tiers: StoredTier[];
   items: StoredItem[];
+  /** A game of play mode under way on this board; absent when there is none. */
+  play?: Play;
+  /** The author publishes this board without their name; absent, rather than false, when they do not. */
+  anonymous?: true;
+}
+
+export const PLAY_KINDS = ["swiss", "hill", "bracket"] as const;
+export type PlayKind = (typeof PLAY_KINDS)[number];
+
+/** Play is offered for two to sixty-four cards; a bigger board picks a subset first. */
+export const MIN_PLAY_CARDS = 2;
+export const MAX_PLAY_CARDS = 64;
+export const MAX_PLAY_HISTORY = 2000;
+
+/** A game nobody has touched for a month is not coming back; it stops travelling. */
+export const PLAY_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** One answer: the two cards, by their place in `ids`, and which went on, or null for a skip. */
+export type PlayOutcome = [number, number, number | null];
+
+/**
+ * A game as the engine needs it to resume anywhere: what kind, which cards in
+ * which order, the seed, and every answer so far. See docs/play-mode-spec.md
+ * in the app.
+ */
+export interface Play {
+  kind: PlayKind;
+  count: number;
+  seed: number;
+  refine: boolean;
+  ids: string[];
+  history: PlayOutcome[];
+  round: number;
+  startedAt: number;
+}
+
+const INT32_MIN = -(2 ** 31);
+const INT32_MAX = 2 ** 31 - 1;
+
+const isInteger = (value: unknown, min: number, max: number): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+
+function playOutcome(value: unknown, count: number): PlayOutcome | null {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const [first, second, winner] = value;
+  if (!isInteger(first, 0, count - 1) || !isInteger(second, 0, count - 1) || first === second) return null;
+  if (winner !== null && winner !== first && winner !== second) return null;
+  return [first, second, winner];
+}
+
+/**
+ * A game, read strictly: every field present and of its kind, the cards two
+ * to sixty-four distinct ids with `count` saying as many, every answer naming
+ * two different cards of them and a winner that is one of the two or nobody.
+ * Anything else is no game at all, and the board is kept without it.
+ */
+export function readPlay(value: unknown): Play | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const kind = PLAY_KINDS.find((known) => known === source.kind);
+  if (!kind || typeof source.refine !== "boolean") return null;
+  if (!Array.isArray(source.ids) || source.ids.length < MIN_PLAY_CARDS || source.ids.length > MAX_PLAY_CARDS) return null;
+  const ids = source.ids.map(uid);
+  if (ids.some((id) => id === null) || new Set(ids).size !== ids.length) return null;
+  if (!isInteger(source.count, MIN_PLAY_CARDS, MAX_PLAY_CARDS) || source.count !== ids.length) return null;
+  if (!isInteger(source.seed, INT32_MIN, INT32_MAX)) return null;
+  if (!isInteger(source.round, 0, MAX_PLAY_HISTORY)) return null;
+  if (!isInteger(source.startedAt, 1, Number.MAX_SAFE_INTEGER)) return null;
+  if (!Array.isArray(source.history) || source.history.length > MAX_PLAY_HISTORY) return null;
+  const count = source.count;
+  const history = source.history.map((one) => playOutcome(one, count));
+  if (history.some((one) => one === null)) return null;
+  return {
+    kind,
+    count,
+    seed: source.seed,
+    refine: source.refine,
+    ids: ids as string[],
+    history: history as PlayOutcome[],
+    round: source.round,
+    startedAt: source.startedAt,
+  };
+}
+
+/**
+ * Firestore keeps no array inside an array, so the answers are stored flat,
+ * three numbers each, a skip's winner as -1; and with them when this
+ * service last stored the game, which is what its month is counted from.
+ */
+export interface StoredPlay extends Omit<Play, "history"> {
+  history: number[];
+  touchedAt: number;
+}
+
+/** A game kept, and when it was last written by this service. */
+export interface KeptPlay {
+  play: Play;
+  touchedAt: number;
+}
+
+/** A game as stored, stamped with the server's own time of this write. */
+export function playToDocument(play: Play, touchedAt: number): StoredPlay {
+  return {
+    ...play,
+    history: play.history.flatMap(([first, second, winner]) => [first, second, winner ?? -1]),
+    touchedAt,
+  };
+}
+
+/**
+ * A stored game read back, or nothing when what is stored is not one any
+ * more. One stored before the stamp existed counts from when it started.
+ */
+export function playFromDocument(stored: unknown): KeptPlay | null {
+  if (typeof stored !== "object" || stored === null) return null;
+  const { history: flat, touchedAt, ...rest } = stored as { history?: unknown; touchedAt?: unknown };
+  if (!Array.isArray(flat) || flat.length % 3 !== 0) return null;
+  const history: unknown[] = [];
+  for (let at = 0; at < flat.length; at += 3) {
+    history.push([flat[at], flat[at + 1], flat[at + 2] === -1 ? null : flat[at + 2]]);
+  }
+  const play = readPlay({ ...rest, history });
+  if (play === null) return null;
+  return { play, touchedAt: typeof touchedAt === "number" && Number.isFinite(touchedAt) ? touchedAt : play.startedAt };
+}
+
+/** A game still worth handing back: one written within the last month. */
+export function livePlay(kept: KeptPlay | null, nowMs: number): Play | null {
+  if (kept === null) return null;
+  return nowMs - kept.touchedAt <= PLAY_LIFETIME_MS ? kept.play : null;
 }
 
 export type StoreRejection =
@@ -151,9 +281,11 @@ export interface StoreInput {
   isAnonymous: boolean;
   /** How many boards the account already keeps, excluding the one being written. */
   boardsAlreadyKept: number;
+  /** The server's time: a game cannot have started after it. */
+  nowMs: number;
 }
 
-export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput): StoreDecision {
+export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: StoreInput): StoreDecision {
   // An anonymous identity lives in the install, so keeping its boards would be
   // a backup whose key is destroyed by the very thing it protects against.
   if (isAnonymous) {
@@ -265,9 +397,18 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
     tiers,
     items,
   };
-
+  // Added only when there is one, so a board without a game or the flag is
+  // stored and handed back exactly as it always was.
+  if (source.anonymous === true) board.anonymous = true;
   if (JSON.stringify(board).length > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
+  }
+  const play = readPlay(source.play);
+  // A game never costs the board itself: one that would push it past the
+  // ceiling is left behind, and a clock running ahead cannot start one later than now.
+  if (play !== null) {
+    const kept = { ...play, startedAt: Math.min(play.startedAt, nowMs) };
+    if (JSON.stringify({ ...board, play: kept }).length <= MAX_BOARD_BYTES) board.play = kept;
   }
 
   return { ok: true, board };

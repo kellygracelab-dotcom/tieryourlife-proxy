@@ -151,10 +151,12 @@ export interface FollowedAuthor {
  */
 export function followedAuthors(
   followed: string[],
-  lists: Array<{ authorUid: string; authorName: string; authorPhotoUrl: string | null }>,
+  lists: Array<{ authorUid: string; authorName: string; authorPhotoUrl: string | null; anonymous?: boolean }>,
 ): FollowedAuthor[] {
   const known = new Map<string, FollowedAuthor>();
   for (const list of lists) {
+    // Its name would say who wrote it; somebody who publishes only anonymously stays blank.
+    if (list.anonymous === true) continue;
     if (!known.has(list.authorUid)) {
       known.set(list.authorUid, { uid: list.authorUid, name: list.authorName, photoUrl: list.authorPhotoUrl });
     }

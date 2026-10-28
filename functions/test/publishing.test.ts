@@ -370,3 +370,16 @@ describe("the author's own arrangement", () => {
     assert.equal(tierIndexIn(1.5), null);
   });
 });
+
+describe("an anonymous list", () => {
+  it("carries what the body says about it, and nothing when it says nothing a boolean", () => {
+    const yes = publish({ anonymous: true });
+    const no = publish({ anonymous: false });
+    assert.equal(yes.ok && yes.draft.anonymous, true);
+    assert.equal(no.ok && no.draft.anonymous, false);
+    for (const anonymous of ["true", 1, undefined]) {
+      const decision = publish({ anonymous });
+      assert.equal(decision.ok && decision.draft.anonymous, null, String(anonymous));
+    }
+  });
+});

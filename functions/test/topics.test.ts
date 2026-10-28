@@ -5,12 +5,17 @@ import {
   decideAttachment,
   decideTopicAction,
   decideTopicCreation,
+  decideTopicDeletion,
+  decideTopicEdit,
   MAX_PENDING_TOPICS_PER_ACCOUNT,
   MAX_TOPIC_NAME_LENGTH,
   MAX_TOPICS_PAGE_SIZE,
   orderMine,
+  mayKnowProposer,
+  readTopicNames,
   readTopicRequest,
   similarTopics,
+  topicReservationClash,
   TOPICS_PAGE_SIZE,
   topicsPageSize,
   type KnownTopic,
@@ -328,5 +333,85 @@ describe("decideTopicCreation", () => {
     const rejected = topic({ id: "t3", name: "Ramen", nameLower: "ramen", status: "rejected" });
     const outcome = decideTopicCreation({ name: "Ramen", section: "food", openSections: open, sameName: [rejected] });
     assert.equal(outcome.ok, true);
+  });
+});
+
+describe("readTopicNames", () => {
+  it("keeps the app's locales, each a proper topic name, and drops an empty one", () => {
+    assert.deepEqual(readTopicNames({ uk: " Оскар  2025 ", de: "" }), { uk: "Оскар 2025" });
+  });
+
+  it("allows a topic's forty characters, more than a section's twenty-four", () => {
+    assert.deepEqual(readTopicNames({ en: "K".repeat(MAX_TOPIC_NAME_LENGTH) }), { en: "K".repeat(MAX_TOPIC_NAME_LENGTH) });
+    assert.equal(readTopicNames({ en: "K".repeat(MAX_TOPIC_NAME_LENGTH + 1) }), null);
+  });
+
+  it("refuses an unknown locale or something that is not a map", () => {
+    assert.equal(readTopicNames({ xx: "Oscars" }), null);
+    assert.equal(readTopicNames("Oscars"), null);
+  });
+});
+
+describe("decideTopicEdit", () => {
+  const approved = topic({ id: "a" });
+
+  it("renames, lower-casing the name for finding", () => {
+    assert.deepEqual(decideTopicEdit(approved, { name: "  Academy  Awards " }), {
+      ok: true,
+      name: "Academy Awards",
+      nameLower: "academy awards",
+    });
+  });
+
+  it("sets translations, alone or with a name", () => {
+    assert.deepEqual(decideTopicEdit(approved, { names: { uk: "Оскар" } }), { ok: true, names: { uk: "Оскар" } });
+  });
+
+  it("refuses a bad name or bad translations", () => {
+    assert.deepEqual(decideTopicEdit(approved, { name: "?" }), { ok: false, reason: "bad_name" });
+    assert.deepEqual(decideTopicEdit(approved, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name" });
+  });
+
+  it("edits a waiting topic too, and nothing rejected or merged", () => {
+    assert.equal(decideTopicEdit(topic({ id: "p", status: "pending" }), { name: "Oscars" }).ok, true);
+    assert.deepEqual(decideTopicEdit(topic({ id: "r", status: "rejected" }), { name: "Oscars" }), { ok: false, reason: "settled" });
+    assert.deepEqual(decideTopicEdit(topic({ id: "m", status: "merged" }), { name: "Oscars" }), { ok: false, reason: "settled" });
+  });
+});
+
+describe("decideTopicDeletion", () => {
+  it("removes a topic no list carries, and keeps one that lists still do", () => {
+    assert.deepEqual(decideTopicDeletion(0), { ok: true });
+    assert.deepEqual(decideTopicDeletion(1), { ok: false, reason: "not_empty" });
+  });
+});
+
+describe("topicReservationClash", () => {
+  const holder = topic({ id: "t1", name: "Oscars", nameLower: "oscars" });
+  const reservation = { key: "oscars", topicId: "t1" };
+
+  it("finds the approved or waiting topic that holds the name", () => {
+    assert.equal(topicReservationClash("oscars", reservation, holder, null), "t1");
+    assert.equal(topicReservationClash("oscars", reservation, { ...holder, status: "pending" }, null), "t1");
+  });
+
+  it("lets the name go once its holder was rejected, merged, renamed or deleted", () => {
+    assert.equal(topicReservationClash("oscars", reservation, { ...holder, status: "rejected" }, null), null);
+    assert.equal(topicReservationClash("oscars", reservation, { ...holder, status: "merged" }, null), null);
+    assert.equal(topicReservationClash("oscars", reservation, { ...holder, nameLower: "academy awards" }, null), null);
+    assert.equal(topicReservationClash("oscars", reservation, null, null), null);
+  });
+
+  it("never counts a topic's own reservation against it", () => {
+    assert.equal(topicReservationClash("oscars", reservation, holder, "t1"), null);
+  });
+});
+
+describe("mayKnowProposer", () => {
+  // A topic proposed by publishing names the author of the list, which may be anonymous.
+  it("tells the proposer and the staff who proposed a topic, and nobody else", () => {
+    assert.equal(mayKnowProposer("author-1", { uid: "author-1", staff: false }), true);
+    assert.equal(mayKnowProposer("author-1", { uid: "mod", staff: true }), true);
+    assert.equal(mayKnowProposer("author-1", { uid: "reader", staff: false }), false);
   });
 });

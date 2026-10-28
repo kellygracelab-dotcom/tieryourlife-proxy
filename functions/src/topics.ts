@@ -4,7 +4,7 @@
  * as a label everyone can see. Pure, like the rest of the deciding here;
  * `community.ts` does the reads and writes.
  */
-import { OTHER } from "./sections";
+import { OTHER, readNames } from "./sections";
 
 export const MIN_TOPIC_NAME_LENGTH = 2;
 export const MAX_TOPIC_NAME_LENGTH = 40;
@@ -38,13 +38,27 @@ export interface KnownTopic {
 export interface Topic {
   id: string;
   name: string;
+  /** Translations of the name, by the app's locales, as for sections. */
+  names: Record<string, string>;
   section: string | null;
   status: TopicStatus;
   listCount: number;
   followerCount: number;
   following: boolean;
-  createdBy: string;
+  /** Who proposed it: sent only to them and to the staff, since it can name the author of an anonymous list. */
+  createdBy?: string;
   mergedInto: string | null;
+}
+
+/** Who is reading a topic. */
+export interface TopicReader {
+  uid: string;
+  staff: boolean;
+}
+
+/** Whether the reader may be told who proposed a topic: the proposer themselves, and the staff. */
+export function mayKnowProposer(createdBy: string, reader: TopicReader): boolean {
+  return reader.staff || createdBy === reader.uid;
 }
 
 /**
@@ -276,4 +290,64 @@ export function orderMine<T extends { status: TopicStatus; createdAtMs: number }
     if (leftPending !== rightPending) return leftPending - rightPending;
     return right.createdAtMs - left.createdAtMs;
   });
+}
+
+/** A topic's translations: the app's locales, each a proper topic name; an empty one takes a translation away. */
+export function readTopicNames(value: unknown): Record<string, string> | null {
+  return readNames(value, cleanTopicName);
+}
+
+export type TopicEdit =
+  | { ok: true; name?: string; nameLower?: string; names?: Record<string, string> }
+  | { ok: false; reason: "settled" | "bad_name" };
+
+/**
+ * A moderator's edit of a topic: a new name, new translations, or both, for
+ * a topic still waiting or approved. A name already taken is the caller's to
+ * find out, against the stored topics and their reservations.
+ */
+export function decideTopicEdit(topic: Pick<KnownTopic, "status">, body: unknown): TopicEdit {
+  if (topic.status !== "pending" && topic.status !== "approved") return { ok: false, reason: "settled" };
+  const source = (body ?? {}) as Record<string, unknown>;
+  const edit: Extract<TopicEdit, { ok: true }> = { ok: true };
+  if (source.name !== undefined) {
+    const name = cleanTopicName(source.name);
+    if (name === null) return { ok: false, reason: "bad_name" };
+    edit.name = name;
+    edit.nameLower = name.toLowerCase();
+  }
+  if (source.names !== undefined) {
+    const names = readTopicNames(source.names);
+    if (names === null) return { ok: false, reason: "bad_name" };
+    edit.names = names;
+  }
+  return edit;
+}
+
+/** A topic goes only when no list carries it any more. */
+export function decideTopicDeletion(listCount: number): { ok: true } | { ok: false; reason: "not_empty" } {
+  return listCount > 0 ? { ok: false, reason: "not_empty" } : { ok: true };
+}
+
+/** A topic name held by its reservation, as for sections, by its lower-cased form. */
+export interface TopicReservation {
+  key: string;
+  topicId: string;
+}
+
+/**
+ * The topic, other than `self`, that holds this lower-cased name by
+ * reservation: only while it is approved or waiting and still goes by it. A
+ * rejected, merged, renamed or deleted topic has given the name up.
+ */
+export function topicReservationClash(
+  nameLower: string,
+  reservation: TopicReservation | null,
+  holder: KnownTopic | null,
+  self: string | null,
+): string | null {
+  if (reservation === null || holder === null || reservation.key !== nameLower) return null;
+  if (holder.id === self || holder.id !== reservation.topicId) return null;
+  const alive = holder.status === "approved" || holder.status === "pending";
+  return alive && holder.nameLower === nameLower ? holder.id : null;
 }

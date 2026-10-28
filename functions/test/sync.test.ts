@@ -53,6 +53,7 @@ function store(
 ) {
   return decideStore({
     body: body(overrides),
+    nowMs: 1_800_000_000_000,
     isAnonymous: false,
     boardsAlreadyKept: 0,
     ...extras,
