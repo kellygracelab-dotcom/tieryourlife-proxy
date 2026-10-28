@@ -4,6 +4,7 @@ import {
   cleanTopicName,
   decideAttachment,
   decideTopicAction,
+  decideTopicCreation,
   MAX_PENDING_TOPICS_PER_ACCOUNT,
   MAX_TOPIC_NAME_LENGTH,
   MAX_TOPICS_PAGE_SIZE,
@@ -201,8 +202,10 @@ describe("decideTopicAction", () => {
   const pending = topic({ id: "p", name: "Oscars 2025", nameLower: "oscars 2025", status: "pending", section: null });
   const approved = topic({ id: "a", name: "Oscars", nameLower: "oscars", section: "film_tv" });
 
+  const open = new Set(["film_tv", "street-food"]);
+
   it("approving puts the topic and every list it carries into the section", () => {
-    assert.deepEqual(decideTopicAction("approve", pending, { section: "film_tv" }), {
+    assert.deepEqual(decideTopicAction("approve", pending, { section: "film_tv", openSections: open }), {
       ok: true,
       topic: { status: "approved", section: "film_tv" },
       lists: { category: "film_tv" },
@@ -211,8 +214,19 @@ describe("decideTopicAction", () => {
   });
 
   it("approving needs a section, and a topic still waiting", () => {
-    assert.deepEqual(decideTopicAction("approve", pending, { section: "films" }), { ok: false, reason: "no_section" });
-    assert.deepEqual(decideTopicAction("approve", approved, { section: "film_tv" }), { ok: false, reason: "settled" });
+    assert.deepEqual(decideTopicAction("approve", pending, { section: "films", openSections: open }), { ok: false, reason: "no_section" });
+    assert.deepEqual(decideTopicAction("approve", approved, { section: "film_tv", openSections: open }), { ok: false, reason: "settled" });
+  });
+
+  it("approves into any open section, not only a built-in one", () => {
+    const outcome = decideTopicAction("approve", pending, { section: "street-food", openSections: open });
+    assert.equal(outcome.ok && outcome.topic.section, "street-food");
+  });
+
+  // Hidden, pending or unknown sections never reach the set; nor does anything when the caller read nothing.
+  it("refuses a section the caller did not find open", () => {
+    assert.deepEqual(decideTopicAction("approve", pending, { section: "film_tv", openSections: new Set() }), { ok: false, reason: "no_section" });
+    assert.deepEqual(decideTopicAction("approve", pending, { section: "film_tv" }), { ok: false, reason: "no_section" });
   });
 
   it("renaming changes the word on the topic and on its lists, approved or not", () => {
@@ -267,5 +281,52 @@ describe("orderMine", () => {
       { id: "new-pending", status: "pending" as const, createdAtMs: 5 },
     ];
     assert.deepEqual(orderMine(mine).map((one) => one.id), ["new-pending", "old-pending", "new-rejected", "old-approved"]);
+  });
+});
+
+describe("decideTopicCreation", () => {
+  const open = new Set(["food", "street-food"]);
+
+  it("names an approved topic in an open section, cleaned and lower-cased for finding", () => {
+    assert.deepEqual(decideTopicCreation({ name: "  Kharkiv   cafes ", section: "street-food", openSections: open, sameName: [] }), {
+      ok: true,
+      name: "Kharkiv cafes",
+      nameLower: "kharkiv cafes",
+      section: "street-food",
+    });
+  });
+
+  it("uses the same name rule as a proposed topic", () => {
+    assert.deepEqual(decideTopicCreation({ name: "?", section: "food", openSections: open, sameName: [] }), { ok: false, reason: "bad_name" });
+    assert.deepEqual(
+      decideTopicCreation({ name: "K".repeat(MAX_TOPIC_NAME_LENGTH + 1), section: "food", openSections: open, sameName: [] }),
+      { ok: false, reason: "bad_name" },
+    );
+  });
+
+  it("wants an open section: not hidden, not waiting, not unknown", () => {
+    assert.deepEqual(decideTopicCreation({ name: "Ramen", section: "secret", openSections: open, sameName: [] }), { ok: false, reason: "no_section" });
+    assert.deepEqual(decideTopicCreation({ name: "Ramen", section: undefined, openSections: open, sameName: [] }), { ok: false, reason: "no_section" });
+  });
+
+  it("refuses a name an approved or waiting topic already has, and says which", () => {
+    const approved = topic({ id: "t1", name: "Ramen", nameLower: "ramen" });
+    const waiting = topic({ id: "t2", name: "Ramen", nameLower: "ramen", status: "pending", section: null });
+    assert.deepEqual(decideTopicCreation({ name: "RAMEN", section: "food", openSections: open, sameName: [approved] }), {
+      ok: false,
+      reason: "name_taken",
+      id: "t1",
+    });
+    assert.deepEqual(decideTopicCreation({ name: "Ramen", section: "food", openSections: open, sameName: [waiting] }), {
+      ok: false,
+      reason: "name_taken",
+      id: "t2",
+    });
+  });
+
+  it("lets a rejected or merged name be used again", () => {
+    const rejected = topic({ id: "t3", name: "Ramen", nameLower: "ramen", status: "rejected" });
+    const outcome = decideTopicCreation({ name: "Ramen", section: "food", openSections: open, sameName: [rejected] });
+    assert.equal(outcome.ok, true);
   });
 });

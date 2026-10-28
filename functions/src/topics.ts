@@ -1,10 +1,10 @@
 /**
- * Topics: a word of somebody's own inside one of the nine sections. A new one
+ * Topics: a word of somebody's own inside a section. A new one
  * waits for a moderator; until then its lists sit under "other" with the topic
  * as a label everyone can see. Pure, like the rest of the deciding here;
  * `community.ts` does the reads and writes.
  */
-import { CATEGORIES, type Category } from "./publishing";
+import { OTHER } from "./sections";
 
 export const MIN_TOPIC_NAME_LENGTH = 2;
 export const MAX_TOPIC_NAME_LENGTH = 40;
@@ -19,7 +19,7 @@ export const MAX_TOPICS_PAGE_SIZE = 50;
 export const SIMILAR_TOPICS = 3;
 
 /** Where a list sits while its topic is still waiting. */
-export const HOLDING_SECTION: Category = "other";
+export const HOLDING_SECTION = OTHER;
 
 export const TOPIC_STATUSES = ["pending", "approved", "rejected", "merged"] as const;
 export type TopicStatus = (typeof TOPIC_STATUSES)[number];
@@ -30,7 +30,7 @@ export interface KnownTopic {
   name: string;
   nameLower: string;
   status: TopicStatus;
-  section: Category | null;
+  section: string | null;
   createdBy: string;
 }
 
@@ -38,7 +38,7 @@ export interface KnownTopic {
 export interface Topic {
   id: string;
   name: string;
-  section: Category | null;
+  section: string | null;
   status: TopicStatus;
   listCount: number;
   followerCount: number;
@@ -91,14 +91,14 @@ export function readTopicRequest(
 export type Attachment =
   | { kind: "none" }
   /** An approved topic carries its section; a pending one holds the list under "other". */
-  | { kind: "attach"; topic: KnownTopic; category: Category }
-  | { kind: "create"; name: string; nameLower: string; requestedSection: Category; category: Category }
+  | { kind: "attach"; topic: KnownTopic; category: string }
+  | { kind: "create"; name: string; nameLower: string; requestedSection: string; category: string }
   | { kind: "refuse"; reason: "bad_id" | "not_available" | "too_many_pending" };
 
 export interface AttachmentInput {
   request: TopicRequest;
   /** The section the author chose for the list. */
-  chosenCategory: Category;
+  chosenCategory: string;
   callerUid: string;
   /** The topic named by id, when one was. */
   byId: KnownTopic | null;
@@ -178,6 +178,8 @@ export type TopicAction = (typeof TOPIC_ACTIONS)[number];
 
 export interface TopicActionInput {
   section?: unknown;
+  /** The sections a topic may be approved into, approved and not hidden; the caller reads the one asked for. */
+  openSections?: ReadonlySet<string>;
   name?: unknown;
   into?: KnownTopic | null;
 }
@@ -204,8 +206,8 @@ export function decideTopicAction(action: TopicAction, topic: KnownTopic, input:
   switch (action) {
     case "approve": {
       if (topic.status !== "pending") return { ok: false, reason: "settled" };
-      const section = CATEGORIES.find((known) => known === input.section);
-      if (!section) return { ok: false, reason: "no_section" };
+      const section = typeof input.section === "string" && input.openSections?.has(input.section) ? input.section : null;
+      if (section === null) return { ok: false, reason: "no_section" };
       return { ok: true, topic: { status: "approved", section }, lists: { category: section }, decided: true };
     }
     case "rename": {
@@ -232,6 +234,38 @@ export function decideTopicAction(action: TopicAction, topic: KnownTopic, input:
       return { ok: true, topic: { status: "rejected" }, lists: { topicId: null, topicName: null }, decided: true };
     }
   }
+}
+
+export type TopicCreation =
+  | { ok: true; name: string; nameLower: string; section: string }
+  | { ok: false; reason: "bad_name" }
+  | { ok: false; reason: "no_section" }
+  | { ok: false; reason: "name_taken"; id: string };
+
+export interface TopicCreationInput {
+  name: unknown;
+  section: unknown;
+  /** The sections a topic may go into, approved and not hidden. */
+  openSections: ReadonlySet<string>;
+  /** Topics already going by the name asked for, whatever became of them. */
+  sameName: readonly KnownTopic[];
+}
+
+/**
+ * A moderator naming an approved topic outright: a proper name, an open
+ * section, and no topic approved or still waiting under the same name.
+ */
+export function decideTopicCreation(input: TopicCreationInput): TopicCreation {
+  const name = cleanTopicName(input.name);
+  if (name === null) return { ok: false, reason: "bad_name" };
+  const section = typeof input.section === "string" && input.openSections.has(input.section) ? input.section : null;
+  if (section === null) return { ok: false, reason: "no_section" };
+  const nameLower = name.toLowerCase();
+  const twin = input.sameName.find(
+    (one) => one.nameLower === nameLower && (one.status === "approved" || one.status === "pending"),
+  );
+  if (twin) return { ok: false, reason: "name_taken", id: twin.id };
+  return { ok: true, name, nameLower, section };
 }
 
 /** Pending first, then newest first: the queue a person has standing in it reads top to bottom. */

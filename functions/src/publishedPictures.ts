@@ -8,7 +8,7 @@ import { getStorage } from "firebase-admin/storage";
 import { decideSafe, type Likelihood, type SafeSearchVerdict, type SafetyRefusal } from "./safety";
 
 /** Where a person's own pictures live, readable by them alone. */
-function privatePath(uid: string, pictureId: string): string {
+export function privatePath(uid: string, pictureId: string): string {
   return `users/${uid}/pictures/${pictureId}`;
 }
 
@@ -22,7 +22,7 @@ export function publishedPath(listId: string, pictureId: string): string {
  * the folder being world-readable is what makes it work — no signed URL to
  * expire, and nothing to renew.
  */
-function addressOf(bucket: string, path: string): string {
+export function addressOf(bucket: string, path: string): string {
   return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media`;
 }
 

@@ -84,12 +84,19 @@ describe("decidePublish", () => {
     assert.equal(decision.ok && decision.draft.titleLower, "every a24 film");
   });
 
-  it("refuses a category that is not one of the eight", () => {
-    const madeUp = publish({ category: "waifus" });
-    const missing = publish({ category: undefined });
+  // Whether the id names a section the author may use is decided against the
+  // stored sections (decideSectionChoice); here it only has to be one.
+  it("refuses a category that could not be a section id", () => {
+    for (const category of [undefined, "", "Food", "street food", "../other", 42, "x"]) {
+      const decision = publish({ category });
+      assert.equal(decision.ok === false && decision.reason, "invalid", String(category));
+    }
+  });
 
-    assert.equal(madeUp.ok === false && madeUp.reason, "invalid");
-    assert.equal(missing.ok === false && missing.reason, "invalid");
+  it("carries any section id through, for the stored sections to judge", () => {
+    const decision = publish({ category: "street-food" });
+
+    assert.equal(decision.ok && decision.draft.category, "street-food");
   });
 
   it("keeps an https cover and drops a local one", () => {

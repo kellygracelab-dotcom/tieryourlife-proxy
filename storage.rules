@@ -43,6 +43,13 @@ service firebase.storage {
       allow read: if true;
     }
 
+    // An approved section's picture, drawn on its tile for everybody. Copied
+    // here by the function that approved it; a proposal's picture waits in a
+    // folder no rule opens and is shown only by an unguessable address.
+    match /sections/{sectionId}/{pictureId} {
+      allow read: if true;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }
