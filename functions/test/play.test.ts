@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { toFullBoard } from "../src/boards";
 import {
   decideStore,
@@ -314,5 +316,70 @@ describe("a board published without its author's name", () => {
         items: decision.board.items,
       }),
     );
+  });
+});
+
+describe("a game's scope", () => {
+  const tiers = (n: number) => Array.from({ length: n }, (_, at) => `tier-${at}`);
+
+  it("keeps the tiers a game was drawn from, one to sixty-four of them", () => {
+    assert.deepEqual(readPlay(play({ scope: ["tier-1"] }))?.scope, ["tier-1"]);
+    assert.deepEqual(readPlay(play({ scope: tiers(MAX_PLAY_CARDS) }))?.scope, tiers(MAX_PLAY_CARDS));
+  });
+
+  it("is the whole board when there is none", () => {
+    const game = readPlay(play()) as Play;
+    assert.equal("scope" in game, false);
+    assert.equal("keepTier" in game, false);
+    assert.equal("scope" in (readPlay(play({ scope: null })) as Play), false);
+  });
+
+  it("drops the whole game for a scope that is not one", () => {
+    for (const scope of [[], tiers(MAX_PLAY_CARDS + 1), ["tier-1", "tier-1"], ["tier-1", ""], "tier-1", [7]]) {
+      assert.equal(readPlay(play({ scope })), null, JSON.stringify(scope));
+    }
+  });
+
+  it("keeps the result in its tier only for a game drawn from exactly one tier, and only as true", () => {
+    assert.equal(readPlay(play({ scope: ["tier-1"], keepTier: true }))?.keepTier, true);
+    assert.equal("keepTier" in (readPlay(play({ scope: ["tier-1", "tier-2"], keepTier: true })) as Play), false);
+    assert.equal("keepTier" in (readPlay(play({ keepTier: true })) as Play), false);
+    assert.equal("keepTier" in (readPlay(play({ scope: ["tier-1"], keepTier: false })) as Play), false);
+    assert.equal("keepTier" in (readPlay(play({ scope: ["tier-1"], keepTier: "true" })) as Play), false);
+  });
+
+  it("is stored with the game and read back", () => {
+    const game = readPlay(play({ scope: ["tier-1"], keepTier: true })) as Play;
+    assert.deepEqual(playFromDocument(playToDocument(game, NOW)), { play: game, touchedAt: NOW });
+  });
+
+  it("leaves a game without one stored exactly as before", () => {
+    const stored = playToDocument(readPlay(play()) as Play, NOW);
+    assert.deepEqual(Object.keys(stored), ["kind", "count", "seed", "refine", "ids", "history", "round", "startedAt", "touchedAt"]);
+  });
+});
+
+describe("the shared example game", () => {
+  // The same game the app and the website keep in their own suites, in the shared format.
+  const example = JSON.parse(readFileSync(join(__dirname, "..", "..", "test", "shared-play-example.json"), "utf-8"));
+
+  it("is read whole", () => {
+    assert.deepEqual(readPlay(example), example);
+  });
+
+  it("is stored and read back equal, all but the stamp", () => {
+    const stored = playToDocument(readPlay(example) as Play, example.startedAt + 1000);
+    assert.ok(stored.history.every((one) => typeof one === "number"));
+    const kept = playFromDocument(JSON.parse(JSON.stringify(stored)));
+    assert.deepEqual(kept?.play, example);
+  });
+
+  it("comes back to a device unchanged, through a stored board", () => {
+    const decision = store(board({ play: example }));
+    assert.equal(decision.ok, true);
+    if (!decision.ok || !decision.board.play) return;
+    const { play: game, ...rest } = decision.board;
+    const document = { ...rest, revision: 1, deviceName: null, deleted: false, play: playToDocument(game, example.startedAt) };
+    assert.deepEqual(toFullBoard("b1", document, example.startedAt + 1000).play, example);
   });
 });

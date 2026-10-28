@@ -1,0 +1,12 @@
+{
+  "kind": "swiss",
+  "count": 4,
+  "seed": 7,
+  "refine": false,
+  "ids": ["a", "b", "c", "d"],
+  "history": [[0, 1, 0], [2, 3, null]],
+  "round": 1,
+  "startedAt": 1793146000000,
+  "scope": ["t-s"],
+  "keepTier": true
+}

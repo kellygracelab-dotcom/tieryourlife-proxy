@@ -119,6 +119,10 @@ export interface Play {
   history: PlayOutcome[];
   round: number;
   startedAt: number;
+  /** The tiers the cards were drawn from, by uid; absent when the game is over the whole board. */
+  scope?: string[];
+  /** The result goes back into the one tier it came from rather than across the board; only ever true. */
+  keepTier?: true;
 }
 
 const INT32_MIN = -(2 ** 31);
@@ -157,6 +161,8 @@ export function readPlay(value: unknown): Play | null {
   const count = source.count;
   const history = source.history.map((one) => playOutcome(one, count));
   if (history.some((one) => one === null)) return null;
+  const scope = playScope(source);
+  if (scope === null) return null;
   return {
     kind,
     count,
@@ -166,7 +172,23 @@ export function readPlay(value: unknown): Play | null {
     history: history as PlayOutcome[],
     round: source.round,
     startedAt: source.startedAt,
+    ...scope,
   };
+}
+
+/**
+ * A game's scope, read as strictly as the rest: one to sixty-four distinct
+ * tier uids, or none at all for the whole board. Keeping the result in its
+ * tier only means something for a game drawn from exactly one tier, so it is
+ * kept only then, and only as true. Null when the scope is there and wrong.
+ */
+function playScope(source: Record<string, unknown>): Pick<Play, "scope" | "keepTier"> | null {
+  if (source.scope === undefined || source.scope === null) return {};
+  if (!Array.isArray(source.scope) || source.scope.length < 1 || source.scope.length > MAX_PLAY_CARDS) return null;
+  const tiers = source.scope.map(uid);
+  if (tiers.some((tier) => tier === null) || new Set(tiers).size !== tiers.length) return null;
+  const scope = tiers as string[];
+  return source.keepTier === true && scope.length === 1 ? { scope, keepTier: true } : { scope };
 }
 
 /**
