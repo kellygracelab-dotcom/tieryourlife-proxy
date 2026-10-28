@@ -2,6 +2,7 @@ import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { discardPublished } from "./publishedPictures";
+import { proposalAfterErasure, type SectionStatus } from "./sections";
 
 const ACCOUNTS = "accounts";
 const PUBLISHED = "publishedLists";
@@ -11,6 +12,7 @@ const TAKES = "takes";
 const SECTION_FOLLOWS = "sectionFollows";
 const TOPIC_FOLLOWS = "topicFollows";
 const TOPICS = "topics";
+const SECTIONS = "sections";
 
 /** Firestore's own ceiling for one batch. */
 const BATCH = 500;
@@ -65,6 +67,18 @@ export async function eraseAccount(uid: string): Promise<void> {
   }
   for (const follows of COUNTED_FOLLOWS) {
     await removeCounted(follows, uid);
+  }
+
+  // The sections they proposed: one nobody approved goes with them, with its
+  // picture; an approved one stays, without their name on it.
+  const proposed = await db.collection(SECTIONS).where("proposerUid", "==", uid).get();
+  for (const doc of proposed.docs) {
+    if (proposalAfterErasure(doc.get("status") as SectionStatus) === "remove") {
+      await getStorage().bucket().deleteFiles({ prefix: `proposals/${doc.id}/`, force: true });
+      await doc.ref.delete();
+    } else {
+      await doc.ref.update({ proposerUid: null, proposerName: null });
+    }
   }
 
   // Their boards, then the account document the balance lives on.

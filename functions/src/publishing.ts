@@ -3,6 +3,7 @@
  * the adapter in `community.ts` turns these decisions into Firestore writes.
  */
 import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
+import { isSectionId } from "./sections";
 
 /**
  * Twenty was low enough that an enthusiastic person would meet it, and it also
@@ -25,23 +26,6 @@ export const REPORT_PAGE_SIZE = 50;
 export const MAX_PREVIEW_IMAGES = 6;
 export const MAX_TIER_COLORS = 5;
 
-/**
- * Nine of them, fixed. A free-text category would splinter the feed into
- * synonyms nobody can browse.
- */
-export const CATEGORIES = [
-  "anime",
-  "film_tv",
-  "games",
-  "music",
-  "books",
-  "food",
-  "sport",
-  "people",
-  "other",
-] as const;
-
-export type Category = (typeof CATEGORIES)[number];
 
 export interface PublishedTier {
   label: string;
@@ -78,7 +62,8 @@ export interface DraftItem {
 export interface PublishDraft {
   title: string;
   titleLower: string;
-  category: Category;
+  /** A section id as written; whether it names a section the author may use is decided against the stored ones. */
+  category: string;
   tiers: PublishedTier[];
   items: DraftItem[];
   coverImageUrl: string | null;
@@ -92,7 +77,7 @@ export interface PublishedList {
   title: string;
   /** Lower-cased title, so the feed can be searched by prefix. */
   titleLower: string;
-  category: Category;
+  category: string;
   tiers: PublishedTier[];
   items: PublishedItem[];
   /** Author's own cover, only ever an https URL. */
@@ -181,7 +166,7 @@ export function decidePublish({
     return { ok: false, reason: "invalid", detail: "A list needs a title" };
   }
 
-  const category = CATEGORIES.find((known) => known === source.category);
+  const category = isSectionId(source.category) ? source.category : null;
   if (!category) {
     return { ok: false, reason: "invalid", detail: "A list needs a category" };
   }
