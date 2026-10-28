@@ -372,11 +372,14 @@ describe("the author's own arrangement", () => {
 });
 
 describe("an anonymous list", () => {
-  it("is asked for with anonymous: true, and only so", () => {
-    assert.equal(publish({ anonymous: true }).ok && (publish({ anonymous: true }) as { draft: { anonymous: boolean } }).draft.anonymous, true);
-    for (const anonymous of [false, "true", 1, undefined]) {
+  it("carries what the body says about it, and nothing when it says nothing a boolean", () => {
+    const yes = publish({ anonymous: true });
+    const no = publish({ anonymous: false });
+    assert.equal(yes.ok && yes.draft.anonymous, true);
+    assert.equal(no.ok && no.draft.anonymous, false);
+    for (const anonymous of ["true", 1, undefined]) {
       const decision = publish({ anonymous });
-      assert.equal(decision.ok && decision.draft.anonymous, false, String(anonymous));
+      assert.equal(decision.ok && decision.draft.anonymous, null, String(anonymous));
     }
   });
 });

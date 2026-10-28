@@ -72,8 +72,11 @@ export interface PublishDraft {
   /** The pictures the author chose for the collage, in their order; empty when the cards' art decides. */
   coverImageUrls: string[];
   tierColors: string[];
-  /** Published without the author's name on it; asked for again on every publish, so it can be switched. */
-  anonymous: boolean;
+  /**
+   * Whether to publish without the author's name: true or false when the
+   * body says, null when it says nothing, which keeps what a republished list was.
+   */
+  anonymous: boolean | null;
 }
 
 export interface PublishedList {

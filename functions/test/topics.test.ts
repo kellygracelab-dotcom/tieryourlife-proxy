@@ -11,6 +11,7 @@ import {
   MAX_TOPIC_NAME_LENGTH,
   MAX_TOPICS_PAGE_SIZE,
   orderMine,
+  mayKnowProposer,
   readTopicNames,
   readTopicRequest,
   similarTopics,
@@ -403,5 +404,14 @@ describe("topicReservationClash", () => {
 
   it("never counts a topic's own reservation against it", () => {
     assert.equal(topicReservationClash("oscars", reservation, holder, "t1"), null);
+  });
+});
+
+describe("mayKnowProposer", () => {
+  // A topic proposed by publishing names the author of the list, which may be anonymous.
+  it("tells the proposer and the staff who proposed a topic, and nobody else", () => {
+    assert.equal(mayKnowProposer("author-1", { uid: "author-1", staff: false }), true);
+    assert.equal(mayKnowProposer("author-1", { uid: "mod", staff: true }), true);
+    assert.equal(mayKnowProposer("author-1", { uid: "reader", staff: false }), false);
   });
 });

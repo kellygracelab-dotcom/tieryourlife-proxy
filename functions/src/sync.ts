@@ -169,34 +169,52 @@ export function readPlay(value: unknown): Play | null {
   };
 }
 
-/** A game still worth handing back: one started within the last month. */
-export function livePlay(play: Play | null | undefined, nowMs: number): Play | null {
-  if (!play) return null;
-  return nowMs - play.startedAt <= PLAY_LIFETIME_MS ? play : null;
-}
-
 /**
  * Firestore keeps no array inside an array, so the answers are stored flat,
- * three numbers each, a skip's winner as -1.
+ * three numbers each, a skip's winner as -1; and with them when this
+ * service last stored the game, which is what its month is counted from.
  */
 export interface StoredPlay extends Omit<Play, "history"> {
   history: number[];
+  touchedAt: number;
 }
 
-export function playToDocument(play: Play): StoredPlay {
-  return { ...play, history: play.history.flatMap(([first, second, winner]) => [first, second, winner ?? -1]) };
+/** A game kept, and when it was last written by this service. */
+export interface KeptPlay {
+  play: Play;
+  touchedAt: number;
 }
 
-/** A stored game read back, or nothing when what is stored is not one any more. */
-export function playFromDocument(stored: unknown): Play | null {
+/** A game as stored, stamped with the server's own time of this write. */
+export function playToDocument(play: Play, touchedAt: number): StoredPlay {
+  return {
+    ...play,
+    history: play.history.flatMap(([first, second, winner]) => [first, second, winner ?? -1]),
+    touchedAt,
+  };
+}
+
+/**
+ * A stored game read back, or nothing when what is stored is not one any
+ * more. One stored before the stamp existed counts from when it started.
+ */
+export function playFromDocument(stored: unknown): KeptPlay | null {
   if (typeof stored !== "object" || stored === null) return null;
-  const flat = (stored as { history?: unknown }).history;
+  const { history: flat, touchedAt, ...rest } = stored as { history?: unknown; touchedAt?: unknown };
   if (!Array.isArray(flat) || flat.length % 3 !== 0) return null;
   const history: unknown[] = [];
   for (let at = 0; at < flat.length; at += 3) {
     history.push([flat[at], flat[at + 1], flat[at + 2] === -1 ? null : flat[at + 2]]);
   }
-  return readPlay({ ...(stored as object), history });
+  const play = readPlay({ ...rest, history });
+  if (play === null) return null;
+  return { play, touchedAt: typeof touchedAt === "number" && Number.isFinite(touchedAt) ? touchedAt : play.startedAt };
+}
+
+/** A game still worth handing back: one written within the last month. */
+export function livePlay(kept: KeptPlay | null, nowMs: number): Play | null {
+  if (kept === null) return null;
+  return nowMs - kept.touchedAt <= PLAY_LIFETIME_MS ? kept.play : null;
 }
 
 export type StoreRejection =
@@ -263,9 +281,11 @@ export interface StoreInput {
   isAnonymous: boolean;
   /** How many boards the account already keeps, excluding the one being written. */
   boardsAlreadyKept: number;
+  /** The server's time: a game cannot have started after it. */
+  nowMs: number;
 }
 
-export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput): StoreDecision {
+export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: StoreInput): StoreDecision {
   // An anonymous identity lives in the install, so keeping its boards would be
   // a backup whose key is destroyed by the very thing it protects against.
   if (isAnonymous) {
@@ -377,14 +397,18 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept }: StoreInput
     tiers,
     items,
   };
-  // Added only when there is a game, so a board without one is stored and
-  // handed back exactly as it always was.
-  const play = readPlay(source.play);
-  if (play !== null) board.play = play;
+  // Added only when there is one, so a board without a game or the flag is
+  // stored and handed back exactly as it always was.
   if (source.anonymous === true) board.anonymous = true;
-
   if (JSON.stringify(board).length > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
+  }
+  const play = readPlay(source.play);
+  // A game never costs the board itself: one that would push it past the
+  // ceiling is left behind, and a clock running ahead cannot start one later than now.
+  if (play !== null) {
+    const kept = { ...play, startedAt: Math.min(play.startedAt, nowMs) };
+    if (JSON.stringify({ ...board, play: kept }).length <= MAX_BOARD_BYTES) board.play = kept;
   }
 
   return { ok: true, board };

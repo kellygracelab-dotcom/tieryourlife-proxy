@@ -87,6 +87,19 @@ export function changedFields(
   return { before: before === null ? null : was, after: now };
 }
 
+/** The log lines about one person, by the document they were made about. */
+export function auditTargetsOf(uid: string): string[] {
+  return [`roles/${uid}`, `bans/${uid}`];
+}
+
+/** One side of a log line without the person's name in it. */
+export function withoutNames(side: unknown): Record<string, unknown> | null {
+  if (typeof side !== "object" || side === null) return null;
+  const kept = { ...(side as Record<string, unknown>) };
+  delete kept.name;
+  return kept;
+}
+
 export function auditEntry(
   who: string,
   role: string,

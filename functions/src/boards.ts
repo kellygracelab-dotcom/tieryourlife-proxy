@@ -249,8 +249,10 @@ async function write(
     : (await boardsOf(identity.uid).where("deleted", "==", false).count().get()).data().count;
   const existing = await ref.get();
 
+  const now = Date.now();
   const decision = decideStore({
     body,
+    nowMs: now,
     isAnonymous: identity.isAnonymous,
     // A board that is already here is not another board.
     boardsAlreadyKept: existing.exists ? kept - 1 : kept,
@@ -286,7 +288,7 @@ async function write(
   const { play, ...board } = decision.board;
   await ref.set({
     ...board,
-    ...(play === undefined ? {} : { play: playToDocument(play) }),
+    ...(play === undefined ? {} : { play: playToDocument(play, now) }),
     revision,
     deviceName: cleanDeviceName(source.deviceName),
     deleted: false,

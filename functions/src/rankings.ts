@@ -18,12 +18,15 @@ export interface PlacedCard extends Card {
   tierIndex: number | null;
 }
 
-/** The list a copy came from. Nobody's name, and an empty uid, when that list went out without one. */
+/**
+ * The list a copy came from. An empty name and uid when that list went out
+ * without one: never null, which the installed app cannot read.
+ */
 export interface BasedOn {
   id: string;
   title: string;
   authorUid: string;
-  authorName: string | null;
+  authorName: string;
 }
 
 /** The list a board was saved from, as much of it as the decision needs. */
@@ -119,7 +122,7 @@ export function decidePublication({ takenFrom, source, callerUid }: PublicationI
 /** The credit a copy gives the list it came from. */
 export function creditFor(source: Pick<SourceList, "id" | "title" | "authorUid" | "authorName" | "anonymous">): BasedOn {
   return source.anonymous
-    ? { id: source.id, title: source.title, authorUid: "", authorName: null }
+    ? { id: source.id, title: source.title, authorUid: "", authorName: "" }
     : { id: source.id, title: source.title, authorUid: source.authorUid, authorName: source.authorName };
 }
 
@@ -132,8 +135,18 @@ export function shownCredit(stored: unknown): BasedOn | null {
     id: credit.id,
     title: typeof credit.title === "string" ? credit.title : "",
     authorUid: typeof credit.authorUid === "string" ? credit.authorUid : "",
-    authorName: typeof credit.authorName === "string" ? credit.authorName : null,
+    authorName: typeof credit.authorName === "string" ? credit.authorName : "",
   };
+}
+
+/**
+ * Whether a copy's credit still says the wrong thing about its original: a
+ * name while the original is anonymous, or nobody's while it is not. Asked
+ * of every copy on every publish, so a rewrite cut short is finished by the
+ * next one.
+ */
+export function creditNeedsRewrite(credit: Pick<BasedOn, "authorUid">, originalAnonymous: boolean): boolean {
+  return originalAnonymous ? credit.authorUid !== "" : credit.authorUid === "";
 }
 
 /**

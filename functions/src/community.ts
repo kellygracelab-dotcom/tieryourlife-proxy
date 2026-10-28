@@ -16,7 +16,7 @@ import {
   type WordingConcern,
 } from "./wording";
 import { isPictureId } from "./safety";
-import { fillVisible, isAnonymous, ownAuthor, shownAuthor } from "./anonymous";
+import { anonymityAfter, fillVisible, isAnonymous, ownAuthor, shownAuthor } from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
@@ -51,6 +51,7 @@ import {
 } from "./publishing";
 import {
   arrangementOver,
+  creditNeedsRewrite,
   decidePublication,
   isOwnedRanking,
   mineFirst,
@@ -162,6 +163,7 @@ import {
   decideTopicDeletion,
   decideTopicEdit,
   isTopicId,
+  mayKnowProposer,
   orderMine,
   readTopicRequest,
   similarTopics,
@@ -173,6 +175,7 @@ import {
   type KnownTopic,
   type Topic,
   type TopicAction,
+  type TopicReader,
   type TopicRequest,
   type TopicStatus,
 } from "./topics";
@@ -420,7 +423,8 @@ function knownTopic(id: string, data: StoredTopic): KnownTopic {
   };
 }
 
-function toTopic(id: string, data: StoredTopic, following: boolean): Topic {
+/** A topic as one reader is told it; see `mayKnowProposer` for who learns who proposed it. */
+function toTopic(id: string, data: StoredTopic, following: boolean, reader: TopicReader): Topic {
   return {
     id,
     name: data.name,
@@ -430,7 +434,7 @@ function toTopic(id: string, data: StoredTopic, following: boolean): Topic {
     listCount: data.listCount ?? 0,
     followerCount: data.followerCount ?? 0,
     following,
-    createdBy: data.createdBy,
+    ...(mayKnowProposer(data.createdBy, reader) ? { createdBy: data.createdBy } : {}),
     mergedInto: data.mergedInto ?? null,
   };
 }
@@ -694,7 +698,7 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList)),
-    nextCursor: page.more ? page.rows[page.rows.length - 1].id : null,
+    nextCursor: page.next?.id ?? null,
   });
 }
 
@@ -849,7 +853,7 @@ async function readFollowing(response: Response, identity: Identity): Promise<vo
   const lists = pages.flatMap((page) => page.docs.map((doc) => doc.data() as StoredList));
   const topics = topicDocs
     .filter((doc) => doc.exists)
-    .map((doc) => toTopic(doc.id, doc.data() as StoredTopic, true));
+    .map((doc) => toTopic(doc.id, doc.data() as StoredTopic, true, { uid: identity.uid, staff: false }));
   // In the order the tiles are drawn; one approved a moment ago elsewhere goes last until this instance knows it.
   const known = new Map(approved.map((one) => [one.id, one]));
   const ordered = [
@@ -2082,7 +2086,7 @@ async function inPages(
   value: string,
   fields: readonly string[],
   pageSize: number,
-  write: (batch: FirebaseFirestore.WriteBatch, doc: FirebaseFirestore.QueryDocumentSnapshot) => void,
+  write: (batch: FirebaseFirestore.WriteBatch, doc: FirebaseFirestore.QueryDocumentSnapshot) => boolean | void,
 ): Promise<void> {
   const db = getFirestore();
   let after: string | null = null;
@@ -2097,8 +2101,9 @@ async function inPages(
     const read = await page.get();
     if (read.empty) return;
     const batch = db.batch();
-    read.docs.forEach((doc) => write(batch, doc));
-    await batch.commit();
+    // A row the writer passes over, by answering false, costs no write.
+    const writes = read.docs.filter((doc) => write(batch, doc) !== false).length;
+    if (writes > 0) await batch.commit();
     if (read.size < pageSize) return;
     after = read.docs[read.size - 1].id;
   }
@@ -2110,11 +2115,15 @@ async function rewriteWhere(
   value: string,
   change: Record<string, unknown>,
 ): Promise<void> {
-  await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => batch.update(doc.ref, change));
+  await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => {
+    batch.update(doc.ref, change);
+  });
 }
 
 async function deleteWhere(collection: string, field: string, value: string): Promise<void> {
-  await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => batch.delete(doc.ref));
+  await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => {
+    batch.delete(doc.ref);
+  });
 }
 
 /**
@@ -2568,7 +2577,7 @@ async function publish(
     previewImages: list.previewImages,
     tierColors: list.tierColors,
     basedOn: publication.basedOn,
-    anonymous: decision.draft.anonymous,
+    anonymous: anonymityAfter(decision.draft.anonymous, previous),
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
@@ -2576,62 +2585,82 @@ async function publish(
     reviewed: false,
   };
 
-  const batch = db.batch();
-  // The topics' counts of lists follow the list: off the one it leaves, onto
-  // the one it joins, and a new topic starts at one.
-  const previousTopic = previous?.topicId ?? null;
-  if (previousTopic !== null && previousTopic !== topicId) {
-    batch.update(db.collection(TOPICS).doc(previousTopic), { listCount: FieldValue.increment(-1) });
-  }
-  if (topicRef !== null && attachment.kind === "create") {
-    batch.set(topicRef, {
-      name: attachment.name,
-      nameLower: attachment.nameLower,
-      section: null,
-      status: "pending",
-      requestedSection: attachment.requestedSection,
-      createdBy: identity.uid,
-      proposerName: identity.name ?? "Anonymous",
-      createdAt: FieldValue.serverTimestamp(),
-      decidedAt: null,
-      decidedBy: null,
-      listCount: 1,
-      followerCount: 0,
-      mergedInto: null,
-    });
-  } else if (topicId !== null && topicId !== previousTopic) {
-    batch.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
-  }
+  // One transaction, so a new topic's name is reserved with the topic as a
+  // moderator's is, and two claims to one name meet in one document. A name
+  // somebody else's topic already holds stays theirs; this one waits beside
+  // it, as waiting twins always have, for a moderator to merge.
+  await db.runTransaction(async (transaction) => {
+    const reserve = topicRef !== null && attachment.kind === "create"
+      ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
+      : false;
+    // The topics' counts of lists follow the list: off the one it leaves, onto
+    // the one it joins, and a new topic starts at one.
+    const previousTopic = previous?.topicId ?? null;
+    if (previousTopic !== null && previousTopic !== topicId) {
+      transaction.update(db.collection(TOPICS).doc(previousTopic), { listCount: FieldValue.increment(-1) });
+    }
+    if (topicRef !== null && attachment.kind === "create") {
+      transaction.set(topicRef, {
+        name: attachment.name,
+        nameLower: attachment.nameLower,
+        names: {},
+        section: null,
+        status: "pending",
+        requestedSection: attachment.requestedSection,
+        createdBy: identity.uid,
+        proposerName: identity.name ?? "Anonymous",
+        createdAt: FieldValue.serverTimestamp(),
+        decidedAt: null,
+        decidedBy: null,
+        listCount: 1,
+        followerCount: 0,
+        mergedInto: null,
+      });
+      if (reserve) reserveTopicName(transaction, attachment.nameLower, topicRef.id);
+    } else if (topicId !== null && topicId !== previousTopic) {
+      transaction.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
+    }
+    if (existingId) {
+      transaction.set(collection.doc(existingId), document, { merge: true });
+    } else {
+      // Only on a new list: republishing merges, and a count written here would
+      // reset it. Taking is about the list, not the snapshot.
+      transaction.set(collection.doc(target), {
+        ...document,
+        publishedAt: FieldValue.serverTimestamp(),
+        takeCount: 0,
+        rankingCount: 0,
+      });
+    }
+  });
+  await noteWordingConcern(target, document.title, identity, concern);
 
   if (existingId) {
-    batch.set(collection.doc(existingId), document, { merge: true });
-    await batch.commit();
-    await noteWordingConcern(existingId, document.title, identity, concern);
-    // Copies credit the list by its author's name, or by nobody's; switching
-    // switches what every copy says.
-    if (previous !== null && isAnonymous(previous) !== document.anonymous) {
-      await rewriteWhere(PUBLISHED, "basedOn.id", existingId, document.anonymous
-        ? { "basedOn.authorUid": "", "basedOn.authorName": null }
-        : { "basedOn.authorUid": identity.uid, "basedOn.authorName": document.authorName });
-    }
+    await syncCredits(existingId, document.anonymous, identity.uid, document.authorName);
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
     await discardUnusedPublished(existingId, [...addresses.keys()]);
     response.status(200).json({ id: existingId, topicId });
     return;
   }
-
-  // Only on a new list: republishing merges, and a count written here would
-  // reset it. Taking is about the list, not the snapshot.
-  batch.set(collection.doc(target), {
-    ...document,
-    publishedAt: FieldValue.serverTimestamp(),
-    takeCount: 0,
-    rankingCount: 0,
-  });
-  await batch.commit();
-  await noteWordingConcern(target, document.title, identity, concern);
   response.status(201).json({ id: target, topicId });
+}
+
+/**
+ * Every copy credits this list as it now is: by nobody while it is
+ * anonymous, by its author while it is not. Asked of every copy on every
+ * republish, so a rewrite cut short by a timeout is finished by the next one.
+ */
+async function syncCredits(listId: string, anonymous: boolean, authorUid: string, authorName: string): Promise<void> {
+  const credit = anonymous
+    ? { "basedOn.authorUid": "", "basedOn.authorName": "" }
+    : { "basedOn.authorUid": authorUid, "basedOn.authorName": authorName };
+  await inPages(PUBLISHED, "basedOn.id", listId, ["basedOn"], WRITES_PER_BATCH, (batch, doc) => {
+    const stored = shownCredit(doc.get("basedOn"));
+    if (stored === null || !creditNeedsRewrite(stored, anonymous)) return false;
+    batch.update(doc.ref, credit);
+    return true;
+  });
 }
 
 /** What the deciding needs to know about the list a board was saved from. */
@@ -2740,10 +2769,13 @@ async function readRankings(response: Response, identity: Identity, listId: stri
     return isOwnedRanking(data) && data.uid !== identity.uid;
   };
   const [page, mine] = await Promise.all([
+    // Carries on past a long run of visitors' rankings rather than ending
+    // there: a visitor's ranking's id says nothing about anybody.
     fillVisible(
       async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(RANKINGS_PAGE_SIZE).get()).docs,
       shown,
       RANKINGS_PAGE_SIZE,
+      { resumeFromHidden: true },
     ),
     after === null ? collection.doc(`${listId}_${identity.uid}`).get() : null,
   ]);
@@ -2752,7 +2784,7 @@ async function readRankings(response: Response, identity: Identity, listId: stri
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     rankings: mineFirst(withMine, identity.uid),
-    nextCursor: page.more ? page.rows[page.rows.length - 1].id : null,
+    nextCursor: page.next?.id ?? null,
   });
 }
 
@@ -3072,7 +3104,7 @@ async function readTopics(response: Response, identity: Identity, filters: Topic
   const mine = new Set(followed);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    topics: snapshot.docs.map((doc) => toTopic(doc.id, doc.data() as StoredTopic, mine.has(doc.id))),
+    topics: snapshot.docs.map((doc) => toTopic(doc.id, doc.data() as StoredTopic, mine.has(doc.id), { uid: identity.uid, staff: false })),
   });
 }
 
@@ -3089,7 +3121,7 @@ async function readMyTopics(response: Response, identity: Identity): Promise<voi
       return {
         status: data.status,
         createdAtMs: data.createdAt?.toMillis() ?? 0,
-        topic: toTopic(doc.id, data, mine.has(doc.id)),
+        topic: toTopic(doc.id, data, mine.has(doc.id), { uid: identity.uid, staff: false }),
       };
     }),
   ).map((one) => one.topic);
@@ -3130,10 +3162,10 @@ async function readPendingTopics(response: Response, identity: Identity): Promis
           ).docs.map((doc) => ({ doc, known: knownTopic(doc.id, doc.data() as StoredTopic) }));
       const similar = similarTopics(pending, candidates.map((one) => one.known)).map((known) => {
         const found = candidates.find((one) => one.known.id === known.id)!;
-        return toTopic(found.doc.id, found.doc.data() as StoredTopic, false);
+        return toTopic(found.doc.id, found.doc.data() as StoredTopic, false, { uid: identity.uid, staff: true });
       });
       return {
-        ...toTopic(id, data, false),
+        ...toTopic(id, data, false, { uid: identity.uid, staff: true }),
         proposerName: data.proposerName,
         requestedSection: data.requestedSection ?? null,
         similar,
@@ -3160,7 +3192,7 @@ async function readTopic(response: Response, identity: Identity, topicId: string
     return;
   }
   response.setHeader("Cache-Control", "no-store");
-  response.status(200).json(toTopic(doc.id, doc.data() as StoredTopic, follow.exists));
+  response.status(200).json(toTopic(doc.id, doc.data() as StoredTopic, follow.exists, { uid: identity.uid, staff: false }));
 }
 
 /**
@@ -3299,7 +3331,7 @@ async function settleTopic(
     ref.get(),
     db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId)).get(),
   ]);
-  response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists));
+  response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists, { uid: identity.uid, staff: true }));
 }
 
 /** A topic name's reservation: hashed, because a name may hold characters a document id may not. */
@@ -3395,7 +3427,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   });
   if ("taken" in created) return topicNameRefused(response, created.taken);
   const fresh = await db.collection(TOPICS).doc(created.id).get();
-  response.status(201).json(toTopic(created.id, fresh.data() as StoredTopic, false));
+  response.status(201).json(toTopic(created.id, fresh.data() as StoredTopic, false, { uid: identity.uid, staff: true }));
 }
 
 function topicNameRefused(response: Response, id: string): void {
@@ -3469,7 +3501,7 @@ async function editTopic(response: Response, identity: Identity, topicId: string
     ref.get(),
     db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId)).get(),
   ]);
-  response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists));
+  response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists, { uid: identity.uid, staff: true }));
 }
 
 /** The owner removing a topic no list carries any more; whoever followed it stops. */
@@ -3615,7 +3647,7 @@ async function routeModerators(
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
       return;
     }
-    return await readModerators(response);
+    return await readModerators(response, role);
   }
   if (role !== "owner") {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
@@ -3650,8 +3682,11 @@ async function accountsOf(uids: string[]): Promise<Map<string, Person>> {
   return found;
 }
 
-/** The moderators, each with what they were appointed under and what their account says now. */
-async function readModerators(response: Response): Promise<void> {
+/**
+ * The moderators, each with what they were appointed under and what their
+ * account says now. Their addresses go to the owner alone.
+ */
+async function readModerators(response: Response, role: Role): Promise<void> {
   const snapshot = await getFirestore().collection(ROLES).where("moderator", "==", true).get();
   const accounts = await accountsOf(snapshot.docs.map((doc) => doc.id));
   response.setHeader("Cache-Control", "no-store");
@@ -3662,7 +3697,7 @@ async function readModerators(response: Response): Promise<void> {
         uid: doc.id,
         name: (doc.get("name") as string | undefined) || account?.name || "",
         photoUrl: (doc.get("photoUrl") as string | null | undefined) ?? account?.photoUrl ?? null,
-        email: account?.email || null,
+        ...(role === "owner" ? { email: account?.email || null } : {}),
         appointedAt: (doc.get("appointedAt") as FirebaseFirestore.Timestamp | undefined)?.toMillis() ?? 0,
       };
     }),

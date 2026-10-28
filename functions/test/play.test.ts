@@ -4,6 +4,7 @@ import { toFullBoard } from "../src/boards";
 import {
   decideStore,
   livePlay,
+  MAX_BOARD_BYTES,
   MAX_PLAY_CARDS,
   MAX_PLAY_HISTORY,
   PLAY_LIFETIME_MS,
@@ -42,7 +43,7 @@ function board(extra: Record<string, unknown> = {}) {
   };
 }
 
-const store = (body: unknown) => decideStore({ body, isAnonymous: false, boardsAlreadyKept: 0 });
+const store = (body: unknown) => decideStore({ body, isAnonymous: false, boardsAlreadyKept: 0, nowMs: NOW });
 
 describe("readPlay", () => {
   it("reads a game whole", () => {
@@ -94,30 +95,78 @@ describe("readPlay", () => {
 });
 
 describe("livePlay", () => {
-  it("hands back a game started within the last month, and not one older", () => {
-    const fresh = readPlay(play({ startedAt: NOW - PLAY_LIFETIME_MS })) as Play;
-    const stale = readPlay(play({ startedAt: NOW - PLAY_LIFETIME_MS - 1 })) as Play;
-    assert.equal(livePlay(fresh, NOW), fresh);
-    assert.equal(livePlay(stale, NOW), null);
-    assert.equal(livePlay(undefined, NOW), null);
+  // Counted from the last time this service stored it, not from when it started: a month-long game that is still being played lives.
+  it("hands back a game written within the last month, and not one written longer ago", () => {
+    const game = readPlay(play({ startedAt: NOW - 3 * PLAY_LIFETIME_MS })) as Play;
+    assert.equal(livePlay({ play: game, touchedAt: NOW - PLAY_LIFETIME_MS }, NOW), game);
+    assert.equal(livePlay({ play: game, touchedAt: NOW - PLAY_LIFETIME_MS - 1 }, NOW), null);
+    assert.equal(livePlay(null, NOW), null);
   });
 });
 
 describe("a game in storage", () => {
-  it("keeps its answers flat, since Firestore keeps no array inside an array", () => {
-    const stored = playToDocument(readPlay(play()) as Play);
+  it("keeps its answers flat, since Firestore keeps no array inside an array, with the time it was stored", () => {
+    const stored = playToDocument(readPlay(play()) as Play, NOW);
     assert.deepEqual(stored.history, [0, 1, 1, 2, 3, -1]);
     assert.ok(stored.history.every((one) => typeof one === "number"));
+    assert.equal(stored.touchedAt, NOW);
   });
 
-  it("reads back as it went in", () => {
+  it("reads back as it went in, with when it was stored", () => {
     const game = readPlay(play()) as Play;
-    assert.deepEqual(playFromDocument(playToDocument(game)), game);
+    assert.deepEqual(playFromDocument(playToDocument(game, NOW)), { play: game, touchedAt: NOW });
+  });
+
+  it("counts a game stored before the stamp existed from when it started", () => {
+    const game = readPlay(play()) as Play;
+    const { touchedAt: _none, ...older } = playToDocument(game, NOW);
+    assert.deepEqual(playFromDocument(older), { play: game, touchedAt: game.startedAt });
   });
 
   it("is nothing when what is stored is not a game any more", () => {
     assert.equal(playFromDocument(undefined), null);
-    assert.equal(playFromDocument({ ...playToDocument(readPlay(play()) as Play), history: [0, 1] }), null);
+    assert.equal(playFromDocument({ ...playToDocument(readPlay(play()) as Play, NOW), history: [0, 1] }), null);
+  });
+});
+
+describe("decideStore and the clock", () => {
+  it("never keeps a game started after now", () => {
+    const decision = store(board({ play: play({ startedAt: NOW + 60_000 }) }));
+    assert.equal(decision.ok && decision.board.play?.startedAt, NOW);
+  });
+
+  it("keeps a game started before now as it is", () => {
+    const decision = store(board({ play: play({ startedAt: NOW - 1000 }) }));
+    assert.equal(decision.ok && decision.board.play?.startedAt, NOW - 1000);
+  });
+});
+
+describe("decideStore and the weight of a game", () => {
+  // A board just under the ceiling, so its game is what would tip it over.
+  function heavyBoard(spare: number) {
+    const base = board({ items: [] });
+    const items: unknown[] = [];
+    // Weighed as stored, which is what the ceiling is about; long addresses fill it quickly.
+    const weight = () => {
+      const decision = store({ ...base, items });
+      return decision.ok ? JSON.stringify(decision.board).length : Infinity;
+    };
+    for (let at = 0; weight() < MAX_BOARD_BYTES - spare - 2500; at++) {
+      items.push({ uid: `item-${at}`, tierUid: "tier-1", position: at, title: "Card", imageUrl: `https://img.test/${"x".repeat(1800)}/${at}` });
+    }
+    return { ...base, items };
+  }
+
+  it("leaves a game behind rather than the board when the two are too heavy together", () => {
+    const answers = Array.from({ length: MAX_PLAY_HISTORY }, () => [0, 1, 0]);
+    const decision = store({ ...heavyBoard(500), play: play({ history: answers }) });
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && "play" in decision.board, false);
+  });
+
+  it("keeps a game that fits", () => {
+    const decision = store({ ...heavyBoard(20_000), play: play() });
+    assert.equal(decision.ok && decision.board.play?.kind, "swiss");
   });
 });
 
@@ -198,12 +247,17 @@ describe("toFullBoard", () => {
 
   it("hands back a game under way with its answers as pairs and a winner again", () => {
     const game = readPlay(play()) as Play;
-    assert.deepEqual(toFullBoard("b1", { ...stored, play: playToDocument(game) }, NOW).play, game);
+    assert.deepEqual(toFullBoard("b1", { ...stored, play: playToDocument(game, NOW - 1000) }, NOW).play, game);
   });
 
-  it("leaves out a game a month old, as if there were none", () => {
-    const old = readPlay(play({ startedAt: NOW - PLAY_LIFETIME_MS - 1 })) as Play;
-    assert.equal("play" in toFullBoard("b1", { ...stored, play: playToDocument(old) }, NOW), false);
+  it("leaves out a game nobody stored for a month, as if there were none", () => {
+    const game = readPlay(play()) as Play;
+    assert.equal("play" in toFullBoard("b1", { ...stored, play: playToDocument(game, NOW - PLAY_LIFETIME_MS - 1) }, NOW), false);
+  });
+
+  it("never hands the stamp back to the device", () => {
+    const game = readPlay(play()) as Play;
+    assert.equal("touchedAt" in (toFullBoard("b1", { ...stored, play: playToDocument(game, NOW) }, NOW).play as object), false);
   });
 });
 

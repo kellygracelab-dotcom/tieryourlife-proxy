@@ -75,9 +75,26 @@ describe("toSummary", () => {
       ...stored,
       coverImageUrl: null,
       previewImages: [],
-      basedOn: { id: "o", title: "Original", authorUid: "", authorName: null },
+      basedOn: { id: "o", title: "Original", authorUid: "", authorName: "" },
     } as never);
 
-    assert.deepEqual(summary.basedOn, { id: "o", title: "Original", authorUid: "", authorName: null });
+    assert.deepEqual(summary.basedOn, { id: "o", title: "Original", authorUid: "", authorName: "" });
+  });
+
+  // The installed app's decoder cannot read a null in basedOn; whatever is stored, none goes out.
+  it("never sends a null inside basedOn, whatever is stored", () => {
+    for (const basedOn of [
+      { id: "o", title: "Original", authorUid: "", authorName: null },
+      { id: "o", title: "Original", authorName: "Someone" },
+      { id: "o", authorUid: null, authorName: undefined },
+      { id: "o", title: null },
+    ]) {
+      const summary = toSummary("a", { ...stored, coverImageUrl: null, previewImages: [], basedOn } as never);
+      assert.ok(summary.basedOn !== null, JSON.stringify(basedOn));
+      for (const [key, value] of Object.entries(summary.basedOn ?? {})) {
+        assert.notEqual(value, null, `${key} in ${JSON.stringify(basedOn)}`);
+        assert.notEqual(value, undefined, `${key} in ${JSON.stringify(basedOn)}`);
+      }
+    }
   });
 });

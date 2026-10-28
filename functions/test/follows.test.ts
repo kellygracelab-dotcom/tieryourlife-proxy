@@ -178,3 +178,18 @@ describe("followedAuthors", () => {
     assert.deepEqual(followedAuthors([], lists), []);
   });
 });
+
+describe("followedAuthors and anonymous lists", () => {
+  it("never takes a name or a face from an anonymous list", () => {
+    const lists = [
+      { authorUid: "a", authorName: "Hidden name", authorPhotoUrl: "https://p/hidden.jpg", anonymous: true },
+      { authorUid: "a", authorName: "Public name", authorPhotoUrl: null },
+    ];
+    assert.deepEqual(followedAuthors(["a"], lists), [{ uid: "a", name: "Public name", photoUrl: null }]);
+  });
+
+  it("leaves blank somebody who publishes only anonymously", () => {
+    const lists = [{ authorUid: "a", authorName: "Hidden name", authorPhotoUrl: "https://p/hidden.jpg", anonymous: true }];
+    assert.deepEqual(followedAuthors(["a"], lists), [{ uid: "a", name: "", photoUrl: null }]);
+  });
+});

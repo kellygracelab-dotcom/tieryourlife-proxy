@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { FieldValue } from "firebase-admin/firestore";
-import { AUDIT_ACTIONS, auditEntry, changedFields } from "../src/audit";
+import { AUDIT_ACTIONS, auditEntry, auditTargetsOf, changedFields, withoutNames } from "../src/audit";
 
 describe("AUDIT_ACTIONS", () => {
   it("names every kind of decision the owner and the moderators make", () => {
@@ -80,5 +80,17 @@ describe("auditEntry", () => {
       before: { status: "pending" },
       after: { status: "approved" },
     });
+  });
+});
+
+describe("erasing a person from the log", () => {
+  it("finds the lines made about them as a moderator and as somebody banned", () => {
+    assert.deepEqual(auditTargetsOf("u1"), ["roles/u1", "bans/u1"]);
+  });
+
+  it("takes their name out of a side and keeps everything else, the uid bans need included", () => {
+    assert.deepEqual(withoutNames({ moderator: true, name: "Danylo" }), { moderator: true });
+    assert.deepEqual(withoutNames({ until: null, reason: "spam" }), { until: null, reason: "spam" });
+    assert.equal(withoutNames(null), null);
   });
 });

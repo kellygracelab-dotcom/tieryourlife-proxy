@@ -45,8 +45,20 @@ export interface Topic {
   listCount: number;
   followerCount: number;
   following: boolean;
-  createdBy: string;
+  /** Who proposed it: sent only to them and to the staff, since it can name the author of an anonymous list. */
+  createdBy?: string;
   mergedInto: string | null;
+}
+
+/** Who is reading a topic. */
+export interface TopicReader {
+  uid: string;
+  staff: boolean;
+}
+
+/** Whether the reader may be told who proposed a topic: the proposer themselves, and the staff. */
+export function mayKnowProposer(createdBy: string, reader: TopicReader): boolean {
+  return reader.staff || createdBy === reader.uid;
 }
 
 /**

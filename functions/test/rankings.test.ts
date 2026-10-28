@@ -4,6 +4,7 @@ import {
   arrangementOver,
   cardIdentity,
   creditFor,
+  creditNeedsRewrite,
   decidePublication,
   isOwnedRanking,
   mineFirst,
@@ -162,12 +163,13 @@ describe("credits", () => {
   it("credit an anonymous list by nobody, with an empty uid", () => {
     assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source({ anonymous: true }), callerUid: "reader", items: [] }), {
       kind: "list",
-      basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: null },
+      basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: "" },
     });
-    assert.deepEqual(creditFor({ ...source(), anonymous: true }), { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: null });
+    assert.deepEqual(creditFor({ ...source(), anonymous: true }), { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: "" });
   });
 
-  it("go out whole, an old one without the author's uid with an empty one", () => {
+  // The installed app reads authorName as a string that is never null.
+  it("go out whole, an old one without the author's uid with an empty one, never with a null", () => {
     assert.deepEqual(shownCredit({ id: "list-1", title: "Space films", authorName: "Artiman" }), {
       id: "list-1",
       title: "Space films",
@@ -178,7 +180,7 @@ describe("credits", () => {
       id: "list-1",
       title: "Space films",
       authorUid: "",
-      authorName: null,
+      authorName: "",
     });
   });
 
@@ -198,5 +200,17 @@ describe("isOwnedRanking", () => {
     assert.equal(isOwnedRanking({}), false);
     assert.equal(isOwnedRanking({ uid: "" }), false);
     assert.equal(isOwnedRanking({ uid: null }), false);
+  });
+});
+
+describe("creditNeedsRewrite", () => {
+  it("rewrites a copy that still names an original gone anonymous", () => {
+    assert.equal(creditNeedsRewrite({ authorUid: "author-1" }, true), true);
+    assert.equal(creditNeedsRewrite({ authorUid: "" }, true), false);
+  });
+
+  it("rewrites a copy that still credits nobody once the original has its name back", () => {
+    assert.equal(creditNeedsRewrite({ authorUid: "" }, false), true);
+    assert.equal(creditNeedsRewrite({ authorUid: "author-1" }, false), false);
   });
 });

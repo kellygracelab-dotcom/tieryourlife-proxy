@@ -3,6 +3,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { discardPublished } from "./publishedPictures";
 import { proposalAfterErasure, type SectionStatus } from "./sections";
+import { auditTargetsOf, withoutNames } from "./audit";
 
 const ACCOUNTS = "accounts";
 const PUBLISHED = "publishedLists";
@@ -14,6 +15,7 @@ const TOPIC_FOLLOWS = "topicFollows";
 const TOPICS = "topics";
 const SECTIONS = "sections";
 const SECTION_PROPOSERS = "sectionProposers";
+const AUDIT_LOG = "auditLog";
 
 /** Firestore's own ceiling for one batch. */
 const BATCH = 500;
@@ -84,6 +86,11 @@ export async function eraseAccount(uid: string): Promise<void> {
   }
   await db.collection(SECTION_PROPOSERS).doc(uid).delete();
 
+  // Other people's copies of their lists now credit nobody, and the log keeps
+  // their uid, which bans are kept by, without their name.
+  await blankCredits(uid);
+  await stripAuditNames(uid);
+
   // Their boards, then the account document the balance lives on.
   await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("boards"));
   await db.collection(ACCOUNTS).doc(uid).delete();
@@ -95,6 +102,38 @@ export async function eraseAccount(uid: string): Promise<void> {
 
   // Last, and only once the rest is gone.
   await getAuth().deleteUser(uid);
+}
+
+/** Copies that credited them by uid and name credit nobody; each one rewritten leaves the query. */
+async function blankCredits(uid: string): Promise<void> {
+  const db = getFirestore();
+  for (;;) {
+    const page = await db.collection(PUBLISHED).where("basedOn.authorUid", "==", uid).select().limit(BATCH).get();
+    if (page.empty) {
+      return;
+    }
+    const batch = db.batch();
+    page.docs.forEach((doc) => batch.update(doc.ref, { "basedOn.authorUid": "", "basedOn.authorName": "" }));
+    await batch.commit();
+    if (page.size < BATCH) {
+      return;
+    }
+  }
+}
+
+/** The log's lines about them, with the uid kept and the name taken out of both sides. */
+async function stripAuditNames(uid: string): Promise<void> {
+  const db = getFirestore();
+  for (const target of auditTargetsOf(uid)) {
+    const entries = await db.collection(AUDIT_LOG).where("target", "==", target).select("before", "after").get();
+    for (let at = 0; at < entries.docs.length; at += BATCH) {
+      const batch = db.batch();
+      entries.docs.slice(at, at + BATCH).forEach((doc) => {
+        batch.update(doc.ref, { before: withoutNames(doc.get("before")), after: withoutNames(doc.get("after")) });
+      });
+      await batch.commit();
+    }
+  }
 }
 
 async function removeWhere(
