@@ -2849,7 +2849,8 @@ function refuseAttachment(response: Response, reason: "bad_id" | "not_available"
 async function resolveSectionChoice(identity: Identity, asked: string, keeping: string | null): Promise<SectionChoice> {
   const first = await readSectionsById([asked]);
   const section = first.get(asked);
-  const next = section?.status === "pending" ? section.fileUnder : section?.status === "merged" ? section.mergedInto : null;
+  const filed = section?.status === "pending" || section?.status === "declined";
+  const next = filed ? section.fileUnder : section?.status === "merged" ? section.mergedInto : null;
   const known = next ? new Map([...first, ...(await readSectionsById([next]))]) : first;
   return decideSectionChoice(asked, known, identity.uid, keeping);
 }

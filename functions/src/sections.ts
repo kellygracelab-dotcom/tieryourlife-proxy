@@ -706,8 +706,10 @@ export type SectionChoice = { ok: true; category: string; proposedSection: strin
  * Where a published list goes. An open section takes it, and a list being
  * republished keeps its own section even once that is hidden; the
  * publisher's own proposal holds it in the section the proposal is filed
- * under until a moderator decides; a merged id is followed to where it went,
- * so a phone with an old list of sections still publishes somewhere real.
+ * under until a moderator decides, and once it is declined or withdrawn the
+ * list simply stays there, since a board on a phone still names the proposal
+ * long after; a merged id is followed to where it went, so a phone with an
+ * old list of sections still publishes somewhere real.
  */
 export function decideSectionChoice(
   asked: string,
@@ -719,9 +721,15 @@ export function decideSectionChoice(
   if (!section) return { ok: false };
   const kept = section.id === keeping && section.status === "approved";
   if (isOpen(section) || kept) return { ok: true, category: section.id, proposedSection: null };
-  if (section.status === "pending" && section.proposerUid === callerUid) {
+  const ownProposal = section.proposerUid !== null && section.proposerUid === callerUid;
+  if (ownProposal && (section.status === "pending" || section.status === "declined")) {
     const holder = section.fileUnder === null ? undefined : known.get(section.fileUnder);
-    return { ok: true, category: holder && isOpen(holder) ? holder.id : OTHER, proposedSection: section.id };
+    return {
+      ok: true,
+      category: holder && isOpen(holder) ? holder.id : OTHER,
+      // Only a proposal still waiting has anywhere to move the list to.
+      proposedSection: section.status === "pending" ? section.id : null,
+    };
   }
   if (section.status === "merged" && section.mergedInto !== null) {
     const target = known.get(section.mergedInto);

@@ -520,6 +520,11 @@ describe("decideSectionChoice", () => {
       section({ id: "noodles", status: "merged", mergedInto: "ramen" }),
       section({ id: "into-hidden", status: "merged", mergedInto: "secret" }),
       section({ id: "nope", status: "declined", proposerUid: "me" }),
+      section({ id: "declined-mine", status: "declined", fileUnder: "food", proposerUid: "me" }),
+      section({ id: "withdrawn-mine", status: "declined", fileUnder: "games", proposerUid: "me", withdrawn: true, dismissed: true }),
+      section({ id: "declined-hidden-holder", status: "declined", fileUnder: "secret", proposerUid: "me" }),
+      section({ id: "declined-theirs", status: "declined", fileUnder: "food", proposerUid: "somebody" }),
+      section({ id: "merged-mine", status: "merged", mergedInto: "ramen", fileUnder: "food", proposerUid: "me" }),
     ].map((one) => [one.id, one]),
   );
   const choose = (id: string) => decideSectionChoice(id, known, "me");
@@ -546,8 +551,26 @@ describe("decideSectionChoice", () => {
     assert.deepEqual(decideSectionChoice("secret", known, "me", "ramen"), { ok: false });
   });
 
-  it("refuses a hidden section, somebody else's proposal, a declined one and an unknown id", () => {
-    for (const id of ["secret", "theirs", "nope", "into-hidden", "cooking"]) assert.deepEqual(choose(id), { ok: false }, id);
+  it("refuses a hidden section, somebody else's proposal, waiting or declined, and an unknown id", () => {
+    for (const id of ["secret", "theirs", "declined-theirs", "into-hidden", "cooking"]) assert.deepEqual(choose(id), { ok: false }, id);
+  });
+
+  // A board on the proposer's phone still names the proposal after it was turned down.
+  it("files a list for the author's own declined proposal where the proposal was filed, waiting for nothing", () => {
+    assert.deepEqual(choose("declined-mine"), { ok: true, category: "food", proposedSection: null });
+  });
+
+  it("does the same for a proposal the author withdrew", () => {
+    assert.deepEqual(choose("withdrawn-mine"), { ok: true, category: "games", proposedSection: null });
+  });
+
+  it("files it under Other when the declined proposal had nowhere open to file it", () => {
+    assert.deepEqual(choose("nope"), { ok: true, category: "other", proposedSection: null });
+    assert.deepEqual(choose("declined-hidden-holder"), { ok: true, category: "other", proposedSection: null });
+  });
+
+  it("follows the author's own merged proposal to where it went, not to where it was filed", () => {
+    assert.deepEqual(choose("merged-mine"), { ok: true, category: "ramen", proposedSection: null });
   });
 });
 
