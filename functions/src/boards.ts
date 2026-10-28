@@ -10,8 +10,12 @@ import {
   cleanDeviceName,
   decideStore,
   decideWrite,
+  livePlay,
+  playFromDocument,
+  playToDocument,
   type StoreRejection,
   type StoredBoard,
+  type StoredPlay,
 } from "./sync";
 
 /**
@@ -31,7 +35,9 @@ const BOARDS = "boards";
 /** Not a board: the whole account, and everything this service holds about it. */
 const ACCOUNT = "account";
 
-interface BoardDocument extends Partial<StoredBoard> {
+interface BoardDocument extends Partial<Omit<StoredBoard, "play">> {
+  /** A game under way, its answers stored flat; see `playToDocument`. */
+  play?: StoredPlay;
   /** Bumped by this file on every accepted write. Never sent by a device. */
   revision: number;
   updatedAt?: Timestamp;
@@ -64,7 +70,9 @@ function boardsOf(uid: string): FirebaseFirestore.CollectionReference {
   return getFirestore().collection(ACCOUNTS).doc(uid).collection(BOARDS);
 }
 
-function toFullBoard(id: string, data: BoardDocument) {
+/** The board as a device receives it. A game a month old or more is left out, as if there were none. */
+export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Date.now()) {
+  const play = livePlay(playFromDocument(data.play), nowMs);
   return {
     uid: id,
     revision: data.revision,
@@ -82,6 +90,7 @@ function toFullBoard(id: string, data: BoardDocument) {
     deletedAt: data.deletedAt ?? null,
     tiers: data.tiers ?? [],
     items: data.items ?? [],
+    ...(play === null ? {} : { play }),
   };
 }
 
@@ -273,8 +282,10 @@ async function write(
   }
 
   const revision = (stored?.revision ?? 0) + 1;
+  const { play, ...board } = decision.board;
   await ref.set({
-    ...decision.board,
+    ...board,
+    ...(play === undefined ? {} : { play: playToDocument(play) }),
     revision,
     deviceName: cleanDeviceName(source.deviceName),
     deleted: false,

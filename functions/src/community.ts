@@ -1,6 +1,7 @@
 import { defineString } from "firebase-functions/params";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
 import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { requireAppCheck } from "./appCheck";
@@ -15,6 +16,9 @@ import {
   type WordingConcern,
 } from "./wording";
 import { isPictureId } from "./safety";
+import { fillVisible, isAnonymous, ownAuthor, shownAuthor } from "./anonymous";
+import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
+import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
   chunked,
   cursorOf,
@@ -48,9 +52,11 @@ import {
 import {
   arrangementOver,
   decidePublication,
+  isOwnedRanking,
   mineFirst,
   RANKINGS_PAGE_SIZE,
   readTakenFrom,
+  shownCredit,
   type BasedOn,
   type Card,
   type PlacedCard,
@@ -59,6 +65,7 @@ import {
 import {
   ACTIVITY_WINDOW_MS,
   answerFor,
+  APPROVED_EDIT_FIELDS,
   base36Of,
   BUILT_IN_SECTION_IDS,
   BUILT_IN_SECTIONS,
@@ -81,6 +88,8 @@ import {
   liveTopics,
   MAX_DECLINE_NOTE_LENGTH,
   mayCall,
+  notYetEditable,
+  PENDING_EDIT_FIELDS,
   namesAfter,
   nameKey,
   NEUTRAL_COLOURS,
@@ -93,6 +102,7 @@ import {
   pickSectionId,
   readSectionEdits,
   recentProposals,
+  releasedNames,
   reservationClash,
   SECTION_ACTIONS,
   SECTION_STATS_TTL_MS,
@@ -149,11 +159,14 @@ import {
   decideAttachment,
   decideTopicAction,
   decideTopicCreation,
+  decideTopicDeletion,
+  decideTopicEdit,
   isTopicId,
   orderMine,
   readTopicRequest,
   similarTopics,
   SIMILAR_TOPICS,
+  topicReservationClash,
   topicsPageSize,
   TOPIC_ACTIONS,
   type Attachment,
@@ -181,6 +194,10 @@ const SECTION_NAMES = "sectionNames";
 /** One document per account that proposes, holding the times of its recent proposals. */
 const SECTION_PROPOSERS = "sectionProposers";
 const SECTIONS_CONFIG = "sections";
+/** One line per decision the owner or a moderator made. */
+const AUDIT_LOG = "auditLog";
+/** One document per lower-cased topic name, so two claims to one name meet in one place. */
+const TOPIC_NAMES = "topicNames";
 const VERBS = ["report", "takedown", "dismiss", "taken", "move"];
 
 /** Paths that are not about one list: topics and the people who may decide them. */
@@ -192,6 +209,14 @@ const PROPOSALS_PATH = "proposals";
 const QUEUE_PATH = "queue";
 const ORDER_PATH = "order";
 const NAME_CHECK_PATH = "name-check";
+const ADMIN_PATH = "admin";
+const CANDIDATES_PATH = "candidates";
+
+/** How many accounts the candidate index holds at most; past that, appointing needs the uid. */
+const MAX_INDEXED_ACCOUNTS = 10_000;
+
+/** How long the candidate index is kept before Auth is listed again. */
+const PEOPLE_TTL_MS = 5 * 60 * 1000;
 
 /** How many proposals the moderators' queue reads at once. */
 const SECTION_QUEUE_READ = 200;
@@ -308,6 +333,8 @@ interface StoredList {
   rankingCount?: number;
   /** The list this one was made from, when a reader changed the cards rather than only placing them. */
   basedOn?: BasedOn | null;
+  /** Published without the author's name; the author is still stored, for owning it. */
+  anonymous?: boolean;
 }
 
 interface StoredRanking {
@@ -344,13 +371,12 @@ export function webPicture(value: unknown): string | null {
   return typeof value === "string" && value.startsWith("https://") ? value : null;
 }
 
+/** A list as everybody is told it: an anonymous one by nobody, and so is a copy's credit to one. */
 export function toSummary(id: string, data: StoredList) {
   return {
     id,
     title: data.title,
-    authorUid: data.authorUid,
-    authorName: data.authorName,
-    authorPhotoUrl: data.authorPhotoUrl ?? null,
+    ...shownAuthor(data),
     category: data.category ?? "other",
     itemCount: data.itemCount,
     coverImageUrl: webPicture(data.coverImageUrl),
@@ -361,7 +387,7 @@ export function toSummary(id: string, data: StoredList) {
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     takeCount: data.takeCount ?? 0,
     rankingCount: data.rankingCount ?? 0,
-    basedOn: data.basedOn ?? null,
+    basedOn: shownCredit(data.basedOn),
   };
 }
 
@@ -380,6 +406,7 @@ interface StoredTopic {
   listCount?: number;
   followerCount?: number;
   mergedInto?: string | null;
+  names?: Record<string, string>;
 }
 
 function knownTopic(id: string, data: StoredTopic): KnownTopic {
@@ -397,6 +424,7 @@ function toTopic(id: string, data: StoredTopic, following: boolean): Topic {
   return {
     id,
     name: data.name,
+    names: data.names ?? {},
     section: data.section ?? null,
     status: data.status,
     listCount: data.listCount ?? 0,
@@ -439,6 +467,7 @@ export const lists = onRequest(
     const listingReports = !verb && id === "reports";
     const listingMine = !verb && id === "mine";
     const listingFollowing = !verb && id === "following";
+    const listingAnonymous = !verb && id === "anonymous";
     const query = request.query as Record<string, unknown>;
 
     try {
@@ -447,7 +476,10 @@ export const lists = onRequest(
         return await routeTopics(request.method, segments.slice(1), query, request.body, response, identity);
       }
       if (segments[0] === MODERATORS_PATH) {
-        return await routeModerators(request.method, segments[1] ?? "", request.body, response, identity);
+        return await routeModerators(request.method, segments.slice(1), query, request.body, response, identity);
+      }
+      if (segments[0] === ADMIN_PATH) {
+        return await routeAdmin(request.method, segments.slice(1), response, identity);
       }
       if (segments[0] === SECTIONS_PATH) {
         return await routeSections(request.method, segments.slice(1), query, request.body, response, identity);
@@ -466,6 +498,9 @@ export const lists = onRequest(
           }
           if (listingFollowing) {
             return await readFollowing(response, identity);
+          }
+          if (listingAnonymous) {
+            return await readAnonymousLists(response, identity, singleParam(request.query.after));
           }
           if (aboutAnAuthor) {
             return authorUid
@@ -641,18 +676,25 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
     ordered = ordered.startAfter(previous);
   }
 
-  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
   // Filtered here rather than in the query: a `where` would need a composite
-  // index for every combination of category, author and ordering, and a page
-  // one short is invisible to somebody scrolling an endless feed.
-  const lists = snapshot.docs
-    .filter((doc) => (doc.data() as StoredList).underReview !== true)
-    .map((doc) => toSummary(doc.id, doc.data() as StoredList));
+  // index for every combination of category, author and ordering, and lists
+  // stored before `anonymous` existed lack the field an equality would need.
+  // An anonymous list stays off its author's page, where the page's name
+  // would be its author's; everywhere else it goes out by nobody.
+  const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
+    const data = doc.data() as StoredList;
+    return data.underReview !== true && !(filters.author !== null && isAnonymous(data));
+  };
+  const page = await fillVisible(
+    async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
+    shown,
+    FEED_PAGE_SIZE,
+  );
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    lists,
-    nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
+    lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList)),
+    nextCursor: page.more ? page.rows[page.rows.length - 1].id : null,
   });
 }
 
@@ -728,13 +770,19 @@ async function followedRun(
     ordered = ordered.startAfter(value, cursor.id);
   }
 
-  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
-  return snapshot.docs
-    .filter((doc) => {
-      const data = doc.data() as StoredList;
-      const inCategory = filters.category === null || field !== "topicId" || data.category === filters.category;
-      return data.underReview !== true && inCategory;
-    })
+  // An anonymous list never reaches anybody for following its author; by a
+  // topic or a section it still may, by nobody.
+  const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
+    const data = doc.data() as StoredList;
+    const inCategory = filters.category === null || field !== "topicId" || data.category === filters.category;
+    return data.underReview !== true && inCategory && !(field === "authorUid" && isAnonymous(data));
+  };
+  const page = await fillVisible(
+    async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
+    shown,
+    FEED_PAGE_SIZE,
+  );
+  return page.rows
     .map((doc) => {
       const data = doc.data() as StoredList;
       return {
@@ -839,6 +887,8 @@ interface StoredSection {
   unfinished?: boolean;
   declineNote?: string | null;
   dismissedAt?: FirebaseFirestore.Timestamp | null;
+  withdrawn?: boolean;
+  tintChosen?: boolean;
   createdAt?: FirebaseFirestore.Timestamp;
   approvedAt?: FirebaseFirestore.Timestamp | null;
   decidedAt?: FirebaseFirestore.Timestamp | null;
@@ -870,6 +920,8 @@ function sectionRecord(id: string, data: StoredSection): SectionRecord {
     unfinished: data.unfinished === true,
     declineNote: data.declineNote ?? null,
     dismissed: data.dismissedAt != null,
+    withdrawn: data.withdrawn === true,
+    tintChosen: data.tintChosen === true,
     createdAtMs: data.createdAt?.toMillis() ?? 0,
     approvedAtMs: data.approvedAt?.toMillis() ?? null,
     decidedAtMs: data.decidedAt?.toMillis() ?? null,
@@ -902,6 +954,8 @@ function newSectionDocument(record: SectionRecord): Record<string, unknown> {
     unfinished: record.unfinished,
     declineNote: record.declineNote,
     dismissedAt: null,
+    withdrawn: record.withdrawn,
+    tintChosen: record.tintChosen,
     createdAt: Timestamp.fromMillis(record.createdAtMs),
     approvedAt: timestampOf(record.approvedAtMs),
     decidedAt: timestampOf(record.decidedAtMs),
@@ -1497,6 +1551,7 @@ async function withdrawProposal(response: Response, identity: Identity, id: stri
         decidedAt: FieldValue.serverTimestamp(),
         decidedBy: identity.uid,
         unfinished: true,
+        withdrawn: true,
       });
     } else if (what === "dismiss") {
       transaction.update(ref, putAway);
@@ -1592,7 +1647,8 @@ async function staffView(response: Response, identity: Identity, id: string, sta
 
 /** The owner making an approved section outright, with a picture from their own folder if they like. */
 async function createSection(response: Response, identity: Identity, body: unknown): Promise<void> {
-  if ((await roleFor(response, identity, "create")) === null) return;
+  const role = await roleFor(response, identity, "create");
+  if (role === null) return;
   const read = readSectionEdits(body, ["name", "names", "icon", "rank", "pictureId", "tint"]);
   if (!read.ok) return refuseSection(response, read);
   const { edits } = read;
@@ -1631,6 +1687,8 @@ async function createSection(response: Response, identity: Identity, body: unkno
     };
     transaction.create(db.collection(SECTIONS).doc(id), newSectionDocument(record));
     reserveNames(transaction, names, id);
+    const created = { name: record.name, names: record.names, icon: record.icon, rank: record.rank, status: record.status };
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "section.create", `${SECTIONS}/${id}`, null, created));
     return { code: null, record };
   });
   if (created.code !== null) return refuseSection(response, created);
@@ -1702,7 +1760,8 @@ async function settleSection(
       if (clash !== null) return refuseSection(response, { code: "NAME_TAKEN", id: clash });
     }
     const path = found.proposalPicture;
-    const picture = await preparePicture(path === null ? null : await readStoredPicture(path), read.edits.tint, found.palette);
+    const chosen = read.edits.tint ?? (found.tintChosen ? found.tint.light : undefined);
+    const picture = await preparePicture(path === null ? null : await readStoredPicture(path), chosen, found.palette);
     if (!picture.ok || path === null) return refuseSection(response, { code: "BAD_PICTURE", why: picture.ok ? "missing" : picture.why });
     const published = sectionPicturePath(id, pictureIdOf(path));
     await publishSectionPicture(published, picture.bytes, picture.contentType);
@@ -1740,6 +1799,8 @@ async function settleSection(
     if (clash !== null) return { kind: "taken", id: clash, status: section.status };
     transaction.update(ref, update);
     if (names.length > 0) reserveNames(transaction, names, id);
+    const change = changedFields(section as unknown as Record<string, unknown>, update);
+    auditInTransaction(transaction, auditEntry(identity.uid, role, `section.${action}` as AuditAction, `${SECTIONS}/${id}`, change.before, change.after));
     return { kind: "decided", outcome };
   });
   if (settled.kind !== "decided") {
@@ -1762,19 +1823,30 @@ async function settleSection(
 }
 
 /**
- * The owner's edit of an approved section. A new picture brings new colours,
- * unless the same call names a tint, which wins; a built-in's tint is taken
- * as given rather than held in range.
+ * The owner's edit of a section. An approved one may change anything: a new
+ * picture brings new colours unless the same call names a tint, which wins,
+ * and a built-in's tint is taken as given. A proposal still waiting may have
+ * its name, translations, icon, picture and tint changed and stays waiting:
+ * its picture is replaced in the private folder and its palette looked at
+ * again, a tint chosen for it is kept for approval, and its place and
+ * visibility wait for approval (400 INVALID).
  */
 async function editSection(response: Response, identity: Identity, id: string, body: unknown): Promise<void> {
-  if ((await roleFor(response, identity, "edit")) === null) return;
+  const role = await roleFor(response, identity, "edit");
+  if (role === null) return;
   const found = isSectionId(id) ? await readSectionById(id) : null;
   if (found === null) return noSuchSection(response);
-  if (found.status !== "approved") {
-    response.status(409).json({ error: "Only an approved section is edited", code: "SETTLED" });
+  if (found.status !== "approved" && found.status !== "pending") {
+    response.status(409).json({ error: "Only an approved or waiting section is edited", code: "SETTLED" });
     return;
   }
-  const read = readSectionEdits(body, ["name", "names", "icon", "rank", "hidden", "pictureId", "tint"]);
+  const waiting = found.status === "pending";
+  const notYet = notYetEditable(found.status, body);
+  if (notYet !== null) {
+    response.status(400).json({ error: "A waiting section gets its place when it is approved", code: "INVALID", detail: notYet });
+    return;
+  }
+  const read = readSectionEdits(body, waiting ? PENDING_EDIT_FIELDS : APPROVED_EDIT_FIELDS);
   if (!read.ok) return refuseSection(response, read);
   const { edits } = read;
   if (edits.pictureId !== undefined && found.builtIn) {
@@ -1793,8 +1865,26 @@ async function editSection(response: Response, identity: Identity, id: string, b
 
   const update = editFields(edits);
   const pictureId = edits.pictureId;
+  // A file this edit writes, removed again if the edit does not land; and the one it makes old, removed if it does.
   let copied: string | null = null;
-  if (pictureId !== undefined) {
+  let replaced: string | null = null;
+  if (pictureId !== undefined && waiting) {
+    const bytes = await readOwnPicture(identity.uid, pictureId);
+    const judged = judgePicture(bytes);
+    if (!judged.ok || bytes === null) return refuseSection(response, { code: "BAD_PICTURE", why: judged.ok ? "missing" : judged.why });
+    const path = proposalPath(id, pictureId);
+    const same = path === found.proposalPicture;
+    // The same file written again keeps its address, so a refused edit leaves the stored one working.
+    const token = (same ? tokenOf(found.proposalPictureUrl) : null) ?? randomUUID();
+    await keepForProposal(path, bytes, CONTENT_TYPES[judged.size.format], token);
+    copied = same ? null : path;
+    replaced = same ? null : found.proposalPicture;
+    Object.assign(update, {
+      proposalPicture: path,
+      proposalPictureUrl: tokenAddressOf(bucketName(), path, token),
+      palette: await paletteFor(bytes),
+    });
+  } else if (pictureId !== undefined) {
     const picture = await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint, found.palette);
     if (!picture.ok) return refuseSection(response, { code: "BAD_PICTURE", why: picture.why });
     const path = sectionPicturePath(id, pictureId);
@@ -1803,33 +1893,68 @@ async function editSection(response: Response, identity: Identity, id: string, b
     // The same file again is the picture it already has, never one to clean up.
     copied = found.picture?.url === url ? null : path;
     Object.assign(update, picture.colours, { picture: { url, width: picture.width, height: picture.height } });
-  } else if (edits.tint !== undefined) {
+  }
+  if (edits.tint !== undefined && (waiting || pictureId === undefined)) {
     Object.assign(update, coloursFromChosenTint(edits.tint, found.builtIn));
+    if (waiting) update.tintChosen = true;
   }
 
   const db = getFirestore();
   const ref = db.collection(SECTIONS).doc(id);
   const saved = await db.runTransaction(async (transaction): Promise<"saved" | "settled" | { taken: string }> => {
     const fresh = await transaction.get(ref);
-    if (!fresh.exists || fresh.get("status") !== "approved") return "settled";
+    if (!fresh.exists || fresh.get("status") !== found.status) return "settled";
+    const current = sectionRecord(id, fresh.data() as StoredSection);
     const clash = names.length > 0 ? await reservedBy(transaction, names, id) : null;
     if (clash !== null) return { taken: clash };
+    const stale = names.length > 0 ? await ownReservations(transaction, releasedNames(namesAfter(current, {}), names), id) : [];
     if (Object.keys(update).length > 0) transaction.update(ref, update);
     if (names.length > 0) reserveNames(transaction, names, id);
+    stale.forEach((one) => transaction.delete(one));
+    const change = changedFields(current as unknown as Record<string, unknown>, update);
+    if (change.after !== null) {
+      auditInTransaction(transaction, auditEntry(identity.uid, role, "section.edit", `${SECTIONS}/${id}`, change.before, change.after));
+    }
     return "saved";
   });
   if (saved !== "saved") {
     if (copied !== null) await discardStoredPicture(copied);
     if (saved === "settled") {
-      response.status(409).json({ error: "Only an approved section is edited", code: "SETTLED" });
+      response.status(409).json({ error: "That section was decided meanwhile", code: "SETTLED" });
       return;
     }
     return refuseSection(response, { code: "NAME_TAKEN", id: saved.taken });
   }
-  if (pictureId !== undefined) await discardOtherSectionPictures(id, pictureId);
-  await bumpSectionsVersion();
-  forgetSections();
+  if (waiting) {
+    if (replaced !== null) await discardStoredPicture(replaced);
+    claimedSectionsCache.invalidate();
+  } else {
+    if (pictureId !== undefined) await discardOtherSectionPictures(id, pictureId);
+    await bumpSectionsVersion();
+    forgetSections();
+  }
   await staffView(response, identity, id, 200);
+}
+
+/** The download token a stored address carries, if it carries one. */
+function tokenOf(address: string | null): string | null {
+  if (address === null) return null;
+  try {
+    return new URL(address).searchParams.get("token");
+  } catch {
+    return null;
+  }
+}
+
+/** Inside a transaction: the reservations of these name keys that this section itself holds. Reads only. */
+async function ownReservations(
+  transaction: FirebaseFirestore.Transaction,
+  keys: readonly string[],
+  sectionId: string,
+): Promise<FirebaseFirestore.DocumentReference[]> {
+  if (keys.length === 0) return [];
+  const docs = await transaction.getAll(...keys.map(reservationRef));
+  return docs.filter((doc) => doc.exists && doc.get("sectionId") === sectionId).map((doc) => doc.ref);
 }
 
 /**
@@ -1837,7 +1962,8 @@ async function editSection(response: Response, identity: Identity, id: string, b
  * transaction with the version it was drawn from, which moves on with it.
  */
 async function putSectionOrder(response: Response, identity: Identity, body: unknown): Promise<void> {
-  if ((await roleFor(response, identity, "order")) === null) return;
+  const role = await roleFor(response, identity, "order");
+  if (role === null) return;
   const source = (body ?? {}) as { ids?: unknown; hidden?: unknown; version?: unknown };
   if (!Number.isSafeInteger(source.version)) {
     response.status(400).json({ error: "Which version was this order drawn from?", code: "BAD_ORDER", detail: "version" });
@@ -1851,9 +1977,17 @@ async function putSectionOrder(response: Response, identity: Identity, body: unk
     const [stored, all] = await Promise.all([transaction.get(config), transaction.get(db.collection(SECTIONS))]);
     const version = (stored.get("version") as number | undefined) ?? 0;
     if (source.version !== version) return { kind: "conflict" as const, version };
-    const decision = decideOrder(source, all.docs.map((doc) => sectionRecord(doc.id, doc.data() as StoredSection)));
+    const records = all.docs.map((doc) => sectionRecord(doc.id, doc.data() as StoredSection));
+    const decision = decideOrder(source, records);
     if (!decision.ok) return { kind: "bad" as const };
     decision.changes.forEach((one) => transaction.update(db.collection(SECTIONS).doc(one.id), one.fields));
+    // Only the sections whose place or visibility moved, each with what it was and what it is.
+    const was = new Map(records.map((one) => [one.id, one]));
+    const before = Object.fromEntries(
+      decision.changes.map((one) => [one.id, Object.fromEntries(Object.keys(one.fields).map((key) => [key, was.get(one.id)?.[key as "rank" | "hidden"] ?? null]))]),
+    );
+    const after = Object.fromEntries(decision.changes.map((one) => [one.id, one.fields]));
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "section.order", `${CONFIG}/${SECTIONS_CONFIG}`, before, after));
     transaction.set(config, { version: version + 1, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     return { kind: "saved" as const };
   });
@@ -1880,7 +2014,8 @@ async function putSectionOrder(response: Response, identity: Identity, body: unk
  * under it is filed under Other instead; its followers stop following it.
  */
 async function deleteSection(response: Response, identity: Identity, id: string): Promise<void> {
-  if ((await roleFor(response, identity, "delete")) === null) return;
+  const role = await roleFor(response, identity, "delete");
+  if (role === null) return;
   const found = isSectionId(id) ? await readSectionById(id) : null;
   if (found === null) return noSuchSection(response);
   const [filed, waiting, topicStatuses] = await Promise.all([
@@ -1906,7 +2041,10 @@ async function deleteSection(response: Response, identity: Identity, id: string)
   }
   await rewriteWhere(SECTIONS, "fileUnder", id, { fileUnder: OTHER });
   await deleteWhere(SECTION_FOLLOWS, "section", id);
-  await getFirestore().collection(SECTIONS).doc(id).delete();
+  const batch = getFirestore().batch();
+  batch.delete(getFirestore().collection(SECTIONS).doc(id));
+  auditInBatch(batch, auditEntry(identity.uid, role, "section.delete", `${SECTIONS}/${id}`, { name: found.name, status: found.status }, null));
+  await batch.commit();
   await discardSectionPictures(id);
   await discardProposalPicture(id);
   await bumpSectionsVersion();
@@ -2017,7 +2155,7 @@ async function readSuggestedAuthors(response: Response, identity: Identity): Pro
   const authors = new Map<string, { uid: string; name: string; photoUrl: string | null; takeCount: number }>();
   for (const doc of popular.docs) {
     const data = doc.data() as StoredList;
-    if (data.underReview === true || skip.has(data.authorUid) || authors.has(data.authorUid)) {
+    if (data.underReview === true || isAnonymous(data) || skip.has(data.authorUid) || authors.has(data.authorUid)) {
       continue;
     }
     authors.set(data.authorUid, {
@@ -2137,7 +2275,12 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
       const data = doc.data() as StoredList;
       const proposal = proposals.get(data.proposedSection ?? "");
       const waiting = proposal?.status === "pending" ? proposal : null;
-      return { ...toSummary(doc.id, data), proposedSection: waiting?.id ?? null, proposedSectionName: waiting?.name ?? null };
+      return {
+        ...toSummary(doc.id, data),
+        ...ownAuthor(data),
+        proposedSection: waiting?.id ?? null,
+        proposedSectionName: waiting?.name ?? null,
+      };
     }),
   });
 }
@@ -2211,7 +2354,8 @@ async function settleReports(
   takeDown: boolean,
   banLength: BanLength | null,
 ): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
+  const role = await roleOf(identity);
+  if (role === null) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -2231,7 +2375,11 @@ async function settleReports(
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
   const batch = db.batch();
   filed.docs.forEach((doc) => batch.delete(doc.ref));
+  const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
+  const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
   if (takeDown) {
+    auditInBatch(batch, auditEntry(identity.uid, role, "report.takedown", `${PUBLISHED}/${listId}`,
+      { ...standing, reports: filed.size }, { removed: true }));
     batch.delete(db.collection(PUBLISHED).doc(listId));
     if (topicId !== null) {
       batch.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(-1) });
@@ -2239,9 +2387,14 @@ async function settleReports(
     // Only with a takedown. Putting a list back and banning its author in one
     // gesture would be two opposite judgements at once.
     if (banLength !== null && authorUid !== null) {
-      batch.set(db.collection(BANS).doc(authorUid), banFrom(banLength, Date.now(), reasonForBan));
+      const ban = banFrom(banLength, Date.now(), reasonForBan);
+      batch.set(db.collection(BANS).doc(authorUid), ban);
+      auditInBatch(batch, auditEntry(identity.uid, role, "ban.set", `${BANS}/${authorUid}`, null, { ...ban, length: banLength }));
     }
   } else {
+    const change = changedFields(standing, { underReview: false, reviewed: true });
+    auditInBatch(batch, auditEntry(identity.uid, role, "report.dismiss", `${PUBLISHED}/${listId}`,
+      { ...change.before, reports: filed.size }, change.after));
     // Back into the feed, and marked so that the next three complaints cannot
     // take it out again. Somebody looked; that is what looking is for.
     batch.set(
@@ -2415,6 +2568,7 @@ async function publish(
     previewImages: list.previewImages,
     tierColors: list.tierColors,
     basedOn: publication.basedOn,
+    anonymous: decision.draft.anonymous,
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
@@ -2453,6 +2607,13 @@ async function publish(
     batch.set(collection.doc(existingId), document, { merge: true });
     await batch.commit();
     await noteWordingConcern(existingId, document.title, identity, concern);
+    // Copies credit the list by its author's name, or by nobody's; switching
+    // switches what every copy says.
+    if (previous !== null && isAnonymous(previous) !== document.anonymous) {
+      await rewriteWhere(PUBLISHED, "basedOn.id", existingId, document.anonymous
+        ? { "basedOn.authorUid": "", "basedOn.authorName": null }
+        : { "basedOn.authorUid": identity.uid, "basedOn.authorName": document.authorName });
+    }
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
     await discardUnusedPublished(existingId, [...addresses.keys()]);
@@ -2487,6 +2648,7 @@ async function resolvePublication(identity: Identity, takenFrom: string | null, 
         authorUid: data.authorUid,
         title: data.title,
         authorName: data.authorName,
+        anonymous: isAnonymous(data),
         underReview: data.underReview === true,
         items: (data.items as Card[]) ?? [],
       };
@@ -2570,19 +2732,27 @@ async function readRankings(response: Response, identity: Identity, listId: stri
     }
     ordered = ordered.startAfter(previous);
   }
+  // Left out before the page is counted, so neither takes a place in it: the
+  // website's visitors' rankings, which have no account behind them, and the
+  // reader's own, which leads the first page and would repeat on a later one.
+  const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
+    const data = doc.data() as StoredRanking;
+    return isOwnedRanking(data) && data.uid !== identity.uid;
+  };
   const [page, mine] = await Promise.all([
-    ordered.limit(RANKINGS_PAGE_SIZE).get(),
+    fillVisible(
+      async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(RANKINGS_PAGE_SIZE).get()).docs,
+      shown,
+      RANKINGS_PAGE_SIZE,
+    ),
     after === null ? collection.doc(`${listId}_${identity.uid}`).get() : null,
   ]);
-  const rankings = page.docs
-    // Their own never sits in a page: it leads the first one and would repeat on a later one.
-    .filter((doc) => (doc.data() as StoredRanking).uid !== identity.uid)
-    .map((doc) => toRanking(doc.data() as StoredRanking));
+  const rankings = page.rows.map((doc) => toRanking(doc.data() as StoredRanking));
   const withMine = mine?.exists ? [toRanking(mine.data() as StoredRanking), ...rankings] : rankings;
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     rankings: mineFirst(withMine, identity.uid),
-    nextCursor: nextCursor(page.docs.map((doc) => doc.id), RANKINGS_PAGE_SIZE),
+    nextCursor: page.more ? page.rows[page.rows.length - 1].id : null,
   });
 }
 
@@ -2862,11 +3032,17 @@ async function routeTopics(
   }
   if (method === "POST" && first !== "") {
     if (second === "follow") return await followTopic(response, identity, first);
+    // Renaming is an edit like any other, and goes through the same checks.
+    if (second === "rename") return await editTopic(response, identity, first, { name: (body as { name?: unknown } | null)?.name });
     const action = TOPIC_ACTIONS.find((known) => known === second);
     if (action) return await settleTopic(response, identity, first, action, body);
   }
-  if (method === "DELETE" && first !== "" && second === "follow") {
-    return await unfollowTopic(response, identity, first);
+  if (method === "PATCH" && first !== "" && second === "") {
+    return await editTopic(response, identity, first, body);
+  }
+  if (method === "DELETE" && first !== "") {
+    if (second === "follow") return await unfollowTopic(response, identity, first);
+    if (second === "") return await deleteTopic(response, identity, first);
   }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
 }
@@ -3051,9 +3227,9 @@ async function unfollowTopic(response: Response, identity: Identity, topicId: st
 }
 
 /**
- * A moderator's word on a topic: approved into a section, renamed, merged into
- * another, or rejected. The lists carrying it are rewritten in the same
- * breath, in parts small enough for a batch.
+ * A word on a topic: approved into a section or rejected by the owner or a
+ * moderator, merged into another by the owner alone. The lists carrying it
+ * are rewritten a page at a time; the topic changes with its line in the log.
  */
 async function settleTopic(
   response: Response,
@@ -3062,8 +3238,9 @@ async function settleTopic(
   action: TopicAction,
   body: unknown,
 ): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
-    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+  const role = await roleOf(identity);
+  if (role === null || (action === "merge" && role !== "owner")) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
     return;
   }
   if (!isTopicId(topicId)) {
@@ -3077,7 +3254,8 @@ async function settleTopic(
     response.status(404).json({ error: "No such topic", code: "NOT_FOUND" });
     return;
   }
-  const topic = knownTopic(topicId, snapshot.data() as StoredTopic);
+  const stored = snapshot.data() as StoredTopic;
+  const topic = knownTopic(topicId, stored);
 
   const source = (body ?? {}) as Record<string, unknown>;
   let into: KnownTopic | null = null;
@@ -3095,26 +3273,27 @@ async function settleTopic(
     return;
   }
 
-  const carrying = await db.collection(PUBLISHED).where("topicId", "==", topicId).get();
-  for (const part of chunked(carrying.docs, WRITES_PER_BATCH)) {
-    const batch = db.batch();
-    part.forEach((doc) => batch.update(doc.ref, outcome.lists));
-    await batch.commit();
-  }
+  const moved = await countWhere(PUBLISHED, "topicId", topicId);
+  await rewriteWhere(PUBLISHED, "topicId", topicId, outcome.lists);
 
   const update: Record<string, unknown> = { ...outcome.topic };
   if (outcome.decided) {
     update.decidedAt = FieldValue.serverTimestamp();
     update.decidedBy = identity.uid;
   }
+  const batch = db.batch();
   if (action === "merge" && into !== null) {
     update.listCount = 0;
-    await db.collection(TOPICS).doc(into.id).update({ listCount: FieldValue.increment(carrying.size) });
+    batch.update(db.collection(TOPICS).doc(into.id), { listCount: FieldValue.increment(moved) });
   }
   if (action === "reject") {
     update.listCount = 0;
   }
-  await ref.update(update);
+  batch.update(ref, update);
+  const what: AuditAction = action === "rename" ? "topic.edit" : (`topic.${action}` as AuditAction);
+  const change = changedFields(stored as unknown as Record<string, unknown>, update);
+  auditInBatch(batch, auditEntry(identity.uid, role, what, `${TOPICS}/${topicId}`, change.before, change.after));
+  await batch.commit();
 
   const [fresh, follow] = await Promise.all([
     ref.get(),
@@ -3123,12 +3302,39 @@ async function settleTopic(
   response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists));
 }
 
+/** A topic name's reservation: hashed, because a name may hold characters a document id may not. */
+function topicReservationRef(nameLower: string): FirebaseFirestore.DocumentReference {
+  return getFirestore().collection(TOPIC_NAMES).doc(createHash("sha256").update(nameLower).digest("hex"));
+}
+
+/** Inside a transaction: the topic other than `self` holding this name by its reservation. Reads only. */
+async function topicNameTaken(
+  transaction: FirebaseFirestore.Transaction,
+  nameLower: string,
+  self: string | null,
+): Promise<string | null> {
+  const held = await transaction.get(topicReservationRef(nameLower));
+  if (!held.exists) return null;
+  const reservation = { key: held.get("key") as string, topicId: held.get("topicId") as string };
+  if (!isTopicId(reservation.topicId)) return null;
+  const holder = await transaction.get(getFirestore().collection(TOPICS).doc(reservation.topicId));
+  const known = holder.exists ? knownTopic(holder.id, holder.data() as StoredTopic) : null;
+  return topicReservationClash(nameLower, reservation, known, self);
+}
+
+function reserveTopicName(transaction: FirebaseFirestore.Transaction, nameLower: string, topicId: string): void {
+  transaction.set(topicReservationRef(nameLower), { key: nameLower, topicId, reservedAt: FieldValue.serverTimestamp() });
+}
+
 /**
- * A moderator naming an approved topic outright, in an open section, under a
- * name no other topic approved or waiting already has.
+ * The owner or a moderator naming an approved topic outright, in an open
+ * section, under a name no other topic approved or waiting already has:
+ * checked against the stored topics first, then in the same transaction as
+ * the write against the names reserved, so two at once cannot both land.
  */
 async function createTopic(response: Response, identity: Identity, body: unknown): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
+  const role = await roleOf(identity);
+  if (role === null) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -3149,34 +3355,153 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   if (!decision.ok) {
     switch (decision.reason) {
       case "bad_name":
-        response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID" });
+        response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID", detail: "name" });
         return;
       case "no_section":
-        response.status(400).json({ error: "Which section?", code: "INVALID" });
+        response.status(400).json({ error: "Which section?", code: "INVALID", detail: "section" });
         return;
       case "name_taken":
-        response.status(409).json({ error: "There is a topic by that name already", code: "NAME_TAKEN", id: decision.id });
+        topicNameRefused(response, decision.id);
         return;
     }
   }
-  const ref = db.collection(TOPICS).doc();
-  await ref.set({
-    name: decision.name,
-    nameLower: decision.nameLower,
-    section: decision.section,
-    status: "approved",
-    requestedSection: decision.section,
-    createdBy: identity.uid,
-    proposerName: identity.name ?? "Anonymous",
-    createdAt: FieldValue.serverTimestamp(),
-    decidedAt: FieldValue.serverTimestamp(),
-    decidedBy: identity.uid,
-    listCount: 0,
-    followerCount: 0,
-    mergedInto: null,
+  const created = await db.runTransaction(async (transaction): Promise<{ taken: string } | { id: string }> => {
+    const taken = await topicNameTaken(transaction, decision.nameLower, null);
+    if (taken !== null) return { taken };
+    const ref = db.collection(TOPICS).doc();
+    transaction.set(ref, {
+      name: decision.name,
+      nameLower: decision.nameLower,
+      names: {},
+      section: decision.section,
+      status: "approved",
+      requestedSection: decision.section,
+      createdBy: identity.uid,
+      proposerName: identity.name ?? "Anonymous",
+      createdAt: FieldValue.serverTimestamp(),
+      decidedAt: FieldValue.serverTimestamp(),
+      decidedBy: identity.uid,
+      listCount: 0,
+      followerCount: 0,
+      mergedInto: null,
+    });
+    reserveTopicName(transaction, decision.nameLower, ref.id);
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "topic.create", `${TOPICS}/${ref.id}`, null, {
+      name: decision.name,
+      section: decision.section,
+      status: "approved",
+    }));
+    return { id: ref.id };
   });
-  const fresh = await ref.get();
-  response.status(201).json(toTopic(ref.id, fresh.data() as StoredTopic, false));
+  if ("taken" in created) return topicNameRefused(response, created.taken);
+  const fresh = await db.collection(TOPICS).doc(created.id).get();
+  response.status(201).json(toTopic(created.id, fresh.data() as StoredTopic, false));
+}
+
+function topicNameRefused(response: Response, id: string): void {
+  response.status(409).json({ error: "There is a topic by that name already", code: "NAME_TAKEN", detail: id, id });
+}
+
+/**
+ * The owner's or a moderator's edit of a topic: its name, its translations,
+ * or both. A new name goes through the same checks as a new topic, and the
+ * lists carrying the topic take the new name with them.
+ */
+async function editTopic(response: Response, identity: Identity, topicId: string, body: unknown): Promise<void> {
+  const role = await roleOf(identity);
+  if (role === null) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  if (!isTopicId(topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  const db = getFirestore();
+  const ref = db.collection(TOPICS).doc(topicId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "No such topic", code: "NOT_FOUND" });
+    return;
+  }
+  const stored = snapshot.data() as StoredTopic;
+  const topic = knownTopic(topicId, stored);
+  const edit = decideTopicEdit(topic, body);
+  if (!edit.ok) return refuseTopicAction(response, edit.reason);
+
+  const nameLower = edit.nameLower;
+  const renaming = nameLower !== undefined && nameLower !== topic.nameLower;
+  if (renaming) {
+    const same = await db.collection(TOPICS).where("nameLower", "==", nameLower).get();
+    const twin = same.docs
+      .map((doc) => knownTopic(doc.id, doc.data() as StoredTopic))
+      .find((one) => one.id !== topicId && (one.status === "approved" || one.status === "pending"));
+    if (twin) return topicNameRefused(response, twin.id);
+  }
+  const update: Record<string, unknown> = {};
+  if (edit.name !== undefined) {
+    update.name = edit.name;
+    update.nameLower = edit.nameLower;
+  }
+  if (edit.names !== undefined) update.names = edit.names;
+
+  const saved = await db.runTransaction(async (transaction): Promise<"saved" | "settled" | { taken: string }> => {
+    const fresh = await transaction.get(ref);
+    const status = fresh.get("status");
+    if (!fresh.exists || (status !== "approved" && status !== "pending")) return "settled";
+    const taken = renaming ? await topicNameTaken(transaction, nameLower, topicId) : null;
+    if (taken !== null) return { taken };
+    if (Object.keys(update).length > 0) transaction.update(ref, update);
+    if (renaming) reserveTopicName(transaction, nameLower, topicId);
+    const change = changedFields(stored as unknown as Record<string, unknown>, update);
+    if (change.after !== null) {
+      auditInTransaction(transaction, auditEntry(identity.uid, role, "topic.edit", `${TOPICS}/${topicId}`, change.before, change.after));
+    }
+    return "saved";
+  });
+  if (saved === "settled") return refuseTopicAction(response, "settled");
+  if (saved !== "saved") return topicNameRefused(response, saved.taken);
+  if (edit.name !== undefined && edit.name !== topic.name) {
+    await rewriteWhere(PUBLISHED, "topicId", topicId, { topicName: edit.name });
+  }
+
+  const [fresh, follow] = await Promise.all([
+    ref.get(),
+    db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId)).get(),
+  ]);
+  response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists));
+}
+
+/** The owner removing a topic no list carries any more; whoever followed it stops. */
+async function deleteTopic(response: Response, identity: Identity, topicId: string): Promise<void> {
+  const role = await roleOf(identity);
+  if (role !== "owner") {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
+    return;
+  }
+  if (!isTopicId(topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  const db = getFirestore();
+  const ref = db.collection(TOPICS).doc(topicId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) {
+    response.status(404).json({ error: "No such topic", code: "NOT_FOUND" });
+    return;
+  }
+  const lists = await countWhere(PUBLISHED, "topicId", topicId);
+  if (!decideTopicDeletion(lists).ok) {
+    response.status(409).json({ error: "Lists still carry that topic", code: "NOT_EMPTY", detail: "lists", lists });
+    return;
+  }
+  await deleteWhere(TOPIC_FOLLOWS, "topicId", topicId);
+  const stored = snapshot.data() as StoredTopic;
+  const batch = db.batch();
+  batch.delete(ref);
+  auditInBatch(batch, auditEntry(identity.uid, role, "topic.delete", `${TOPICS}/${topicId}`, { name: stored.name, status: stored.status }, null));
+  await batch.commit();
+  response.status(204).send();
 }
 
 function refuseTopicAction(
@@ -3210,7 +3535,8 @@ function refuseTopicAction(
  * a section, which keeps the list's topic only while the two still agree.
  */
 async function moveList(response: Response, identity: Identity, listId: string, body: unknown): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
+  const role = await roleOf(identity);
+  if (role === null) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -3257,6 +3583,8 @@ async function moveList(response: Response, identity: Identity, listId: string, 
 
   const batch = db.batch();
   batch.update(ref, update);
+  const change = changedFields(stored as unknown as Record<string, unknown>, update);
+  auditInBatch(batch, auditEntry(identity.uid, role, "list.move", `${PUBLISHED}/${listId}`, change.before, change.after));
   if (from !== null && from !== update.topicId) {
     batch.update(db.collection(TOPICS).doc(from), { listCount: FieldValue.increment(-1) });
   }
@@ -3268,62 +3596,232 @@ async function moveList(response: Response, identity: Identity, listId: string, 
 }
 
 /**
- * Who may decide topics and complaints besides the configured person. Only
- * that person appoints or removes: a moderator who could make moderators
- * would make the role mean nothing.
+ * Who may decide besides the owner. The owner and the moderators may see who
+ * they are; only the owner appoints, removes, or looks for somebody to
+ * appoint: a moderator who could make moderators would make the role mean nothing.
  */
 async function routeModerators(
   method: string,
-  uid: string,
+  rest: string[],
+  query: Record<string, unknown>,
   body: unknown,
   response: Response,
   identity: Identity,
 ): Promise<void> {
-  if (!isModerator(identity)) {
-    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+  const [first = "", second = ""] = rest;
+  const role = await roleOf(identity);
+  if (method === "GET" && first === "") {
+    if (role === null) {
+      response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+      return;
+    }
+    return await readModerators(response);
+  }
+  if (role !== "owner") {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
     return;
   }
-  const roles = getFirestore().collection(ROLES);
-  if (method === "GET" && uid === "") {
-    const snapshot = await roles.where("moderator", "==", true).get();
-    response.setHeader("Cache-Control", "no-store");
-    response.status(200).json({
-      moderators: snapshot.docs.map((doc) => ({
-        uid: doc.id,
-        name: (doc.get("name") as string | undefined) ?? "",
-        photoUrl: (doc.get("photoUrl") as string | null | undefined) ?? null,
-        appointedAt: (doc.get("appointedAt") as FirebaseFirestore.Timestamp | undefined)?.toMillis() ?? 0,
-      })),
-    });
-    return;
+  if (method === "GET" && first === CANDIDATES_PATH && second === "") {
+    return await readCandidates(response, query.q);
   }
-  if (!isUid(uid)) {
+  if (rest.length !== 1 || !isUid(first)) {
     response.status(400).json({ error: "Which person?", code: "INVALID" });
     return;
   }
-  if (method === "POST") {
-    if (uid === identity.uid) {
-      response.status(409).json({ error: "You already decide here", code: "YOURSELF" });
+  if (method === "POST") return await appoint(response, identity, first, body);
+  if (method === "DELETE") return await removeModerator(response, identity, first);
+  response.status(405).json({ error: "Use GET, POST or DELETE" });
+}
+
+/** Names, addresses and faces from Auth, a hundred accounts a call; an account Auth no longer has is left out. */
+async function accountsOf(uids: string[]): Promise<Map<string, Person>> {
+  const found = new Map<string, Person>();
+  for (const part of chunked(uids, 100)) {
+    const result = await getAuth().getUsers(part.map((uid) => ({ uid })));
+    for (const user of result.users) {
+      found.set(user.uid, {
+        uid: user.uid,
+        name: user.displayName ?? "",
+        email: (user.email ?? "").toLowerCase(),
+        photoUrl: user.photoURL?.startsWith("https://") ? user.photoURL : null,
+      });
+    }
+  }
+  return found;
+}
+
+/** The moderators, each with what they were appointed under and what their account says now. */
+async function readModerators(response: Response): Promise<void> {
+  const snapshot = await getFirestore().collection(ROLES).where("moderator", "==", true).get();
+  const accounts = await accountsOf(snapshot.docs.map((doc) => doc.id));
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    moderators: snapshot.docs.map((doc) => {
+      const account = accounts.get(doc.id);
+      return {
+        uid: doc.id,
+        name: (doc.get("name") as string | undefined) || account?.name || "",
+        photoUrl: (doc.get("photoUrl") as string | null | undefined) ?? account?.photoUrl ?? null,
+        email: account?.email || null,
+        appointedAt: (doc.get("appointedAt") as FirebaseFirestore.Timestamp | undefined)?.toMillis() ?? 0,
+      };
+    }),
+  });
+}
+
+/**
+ * Every account somebody could be appointed from. Auth can be listed but not
+ * searched, so the list is kept a few minutes rather than read per keystroke,
+ * and stops at ten thousand accounts read.
+ */
+const peopleIndex = new TimedCache<Person[]>(PEOPLE_TTL_MS);
+
+async function loadPeople(): Promise<Person[]> {
+  const people: Person[] = [];
+  let listed = 0;
+  let pageToken: string | undefined;
+  do {
+    const page = await getAuth().listUsers(1000, pageToken);
+    listed += page.users.length;
+    for (const user of page.users) {
+      const person = personOf(user);
+      if (person !== null) people.push(person);
+    }
+    pageToken = page.pageToken;
+  } while (pageToken !== undefined && listed < MAX_INDEXED_ACCOUNTS);
+  return people;
+}
+
+/** People to appoint, by the start of their name or address; fewer than two characters ask nothing. */
+async function readCandidates(response: Response, typed: unknown): Promise<void> {
+  const wanted = typeof typed === "string" ? typed.trim() : "";
+  const people = wanted.length < MIN_QUERY_LENGTH ? [] : matchPeople(await peopleIndex.get(loadPeople), wanted);
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ people });
+}
+
+/**
+ * The owner appointing somebody: only an account signed in with a real
+ * provider, since a mistyped uid would otherwise appoint nobody without a
+ * word. The name and face come from the account unless the owner gives them.
+ */
+async function appoint(response: Response, identity: Identity, uid: string, body: unknown): Promise<void> {
+  if (uid === identity.uid) {
+    response.status(409).json({ error: "You already decide here", code: "YOURSELF" });
+    return;
+  }
+  let person: Person | null;
+  try {
+    person = personOf(await getAuth().getUser(uid));
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code !== "auth/user-not-found") throw error;
+    response.status(404).json({ error: "No such account", code: "NOT_FOUND" });
+    return;
+  }
+  if (person === null) {
+    response.status(400).json({ error: "Only a signed-in account can decide here", code: "INVALID", detail: "uid" });
+    return;
+  }
+  const source = (body ?? {}) as Record<string, unknown>;
+  const name = cleanText(source.name, MAX_TITLE_LENGTH) ?? person.name;
+  const photoUrl = typeof source.photoUrl === "string" && source.photoUrl.startsWith("https://") ? source.photoUrl : person.photoUrl;
+  const db = getFirestore();
+  const ref = db.collection(ROLES).doc(uid);
+  const was = await ref.get();
+  const batch = db.batch();
+  batch.set(ref, {
+    moderator: true,
+    appointedBy: identity.uid,
+    appointedAt: FieldValue.serverTimestamp(),
+    name,
+    photoUrl,
+  });
+  auditInBatch(batch, auditEntry(identity.uid, "owner", "moderator.appoint", `${ROLES}/${uid}`,
+    { moderator: was.exists && was.get("moderator") === true }, { moderator: true, name }));
+  await batch.commit();
+  response.status(200).json({ uid, moderator: true });
+}
+
+async function removeModerator(response: Response, identity: Identity, uid: string): Promise<void> {
+  const db = getFirestore();
+  const ref = db.collection(ROLES).doc(uid);
+  const was = await ref.get();
+  const batch = db.batch();
+  batch.delete(ref);
+  if (was.exists) {
+    auditInBatch(batch, auditEntry(identity.uid, "owner", "moderator.remove", `${ROLES}/${uid}`,
+      { moderator: was.get("moderator") === true, name: (was.get("name") as string | undefined) ?? "" }, { moderator: false }));
+  }
+  await batch.commit();
+  response.status(204).send();
+}
+
+/** Paths under lists/admin: for now, how much is waiting for the owner and the moderators. */
+async function routeAdmin(method: string, rest: string[], response: Response, identity: Identity): Promise<void> {
+  if (method === "GET" && rest.length === 1 && rest[0] === "counts") {
+    return await readAdminCounts(response, identity);
+  }
+  response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+/**
+ * Open reports, every one the queue would show, and section proposals
+ * waiting: counted, never read.
+ */
+async function readAdminCounts(response: Response, identity: Identity): Promise<void> {
+  if (!(await isModeratorNow(identity))) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  const db = getFirestore();
+  const [reports, proposals] = await Promise.all([
+    db.collection(REPORTS).count().get(),
+    db.collection(SECTIONS).where("status", "==", "pending").count().get(),
+  ]);
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ reports: reports.data().count, proposals: proposals.data().count });
+}
+
+/**
+ * Every list published without its author's name, newest first, each with
+ * who published it. The owner's alone to read: it undoes the very thing
+ * those authors asked for.
+ */
+async function readAnonymousLists(response: Response, identity: Identity, after: string | null): Promise<void> {
+  const role = await roleOf(identity);
+  if (role !== "owner") {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
+    return;
+  }
+  const collection = getFirestore().collection(PUBLISHED);
+  let ordered = collection.where("anonymous", "==", true).orderBy("updatedAt", "desc");
+  if (after) {
+    const previous = await collection.doc(after).get();
+    if (!previous.exists) {
+      response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
       return;
     }
-    const source = (body ?? {}) as Record<string, unknown>;
-    const photoUrl = typeof source.photoUrl === "string" && source.photoUrl.startsWith("https://") ? source.photoUrl : null;
-    await roles.doc(uid).set({
-      moderator: true,
-      appointedBy: identity.uid,
-      appointedAt: FieldValue.serverTimestamp(),
-      name: cleanText(source.name, MAX_TITLE_LENGTH) ?? "",
-      photoUrl,
-    });
-    response.status(200).json({ uid, moderator: true });
-    return;
+    ordered = ordered.startAfter(previous);
   }
-  if (method === "DELETE") {
-    await roles.doc(uid).delete();
-    response.status(204).send();
-    return;
-  }
-  response.status(405).json({ error: "Use GET, POST or DELETE" });
+  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    lists: snapshot.docs.map((doc) => {
+      const data = doc.data() as StoredList;
+      return { ...toSummary(doc.id, data), publishedBy: { uid: data.authorUid, name: data.authorName } };
+    }),
+    nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
+  });
+}
+
+/** One line in the log, written by the batch that carries the change itself. */
+function auditInBatch(batch: FirebaseFirestore.WriteBatch, entry: AuditEntry): void {
+  batch.set(getFirestore().collection(AUDIT_LOG).doc(), { ...entry, at: FieldValue.serverTimestamp() });
+}
+
+/** One line in the log, written by the transaction that carries the change itself. */
+function auditInTransaction(transaction: FirebaseFirestore.Transaction, entry: AuditEntry): void {
+  transaction.set(getFirestore().collection(AUDIT_LOG).doc(), { ...entry, at: FieldValue.serverTimestamp() });
 }
 
 function cleanText(value: unknown, maxLength: number): string | null {

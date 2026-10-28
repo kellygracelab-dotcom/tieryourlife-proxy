@@ -249,6 +249,10 @@ export interface SectionRecord {
   declineNote: string | null;
   /** The proposer has read the decline or the merge, so it no longer comes back to them. */
   dismissed: boolean;
+  /** Taken back by its own proposer rather than declined by a moderator. */
+  withdrawn: boolean;
+  /** The owner chose this waiting section's tint, so approval keeps it rather than asking Vision. */
+  tintChosen: boolean;
   /** The proposal picture's main colours, strongest first, for the moderator choosing a tint. */
   palette: string[];
   /** A decision is written but the lists it moves are not all moved yet; asking again finishes it. */
@@ -279,6 +283,8 @@ export function builtInRecord(builtIn: BuiltInSection): SectionRecord {
     proposalPictureUrl: null,
     declineNote: null,
     dismissed: false,
+    withdrawn: false,
+    tintChosen: false,
     palette: [],
     unfinished: false,
     createdAtMs: 0,
@@ -310,6 +316,8 @@ export function newSection(id: string, name: string, nowMs: number): SectionReco
     proposalPictureUrl: null,
     declineNote: null,
     dismissed: false,
+    withdrawn: false,
+    tintChosen: false,
     palette: [],
     unfinished: false,
     createdAtMs: nowMs,
@@ -350,13 +358,16 @@ export function nameKey(name: string): string {
  * A moderator's translations: only the app's locales, each a proper name.
  * An empty one is dropped, which is how a translation is taken away.
  */
-export function readNames(value: unknown): Record<string, string> | null {
+export function readNames(
+  value: unknown,
+  clean: (raw: unknown) => string | null = cleanSectionName,
+): Record<string, string> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const names: Record<string, string> = {};
   for (const [locale, raw] of Object.entries(value as Record<string, unknown>)) {
     if (!(SECTION_LOCALES as readonly string[]).includes(locale)) return null;
     if (raw === null || (typeof raw === "string" && raw.trim() === "")) continue;
-    const name = cleanSectionName(raw);
+    const name = clean(raw);
     if (name === null) return null;
     names[locale] = name;
   }
@@ -521,6 +532,27 @@ export function readSectionEdits(
     edits.tint = source.tint.toUpperCase();
   }
   return { ok: true, edits };
+}
+
+/** What the owner may change on an approved section. */
+export const APPROVED_EDIT_FIELDS: readonly EditField[] = ["name", "names", "icon", "rank", "hidden", "pictureId", "tint"];
+
+/** What the owner may change on a proposal still waiting: how it reads and looks. Its place and visibility come with approval. */
+export const PENDING_EDIT_FIELDS: readonly EditField[] = ["name", "names", "icon", "pictureId", "tint"];
+
+/** A field sent for a waiting section that only an approved one has, if any. */
+export function notYetEditable(status: SectionStatus, body: unknown): "rank" | "hidden" | null {
+  if (status !== "pending") return null;
+  const source = (body ?? {}) as Record<string, unknown>;
+  if (source.rank !== undefined) return "rank";
+  if (source.hidden !== undefined) return "hidden";
+  return null;
+}
+
+/** The compared forms of the names a section stops going by, whose reservations it can let go. */
+export function releasedNames(before: readonly string[], after: readonly string[]): string[] {
+  const kept = new Set(after.map(nameKey));
+  return [...new Set(before.map(nameKey))].filter((key) => !kept.has(key));
 }
 
 /** Every name a section would go by after these edits, for comparing with the others. */
@@ -869,6 +901,7 @@ export interface SectionView {
   mergedInto?: string | null;
   palette?: string[];
   unfinished?: boolean;
+  withdrawn?: boolean;
   createdAt?: number;
   decidedAt?: number | null;
   decidedBy?: string | null;
@@ -931,6 +964,7 @@ export function sectionView(
     view.mergedInto = section.mergedInto;
     view.palette = section.palette;
     view.unfinished = section.unfinished;
+    view.withdrawn = section.withdrawn;
     view.createdAt = section.createdAtMs;
     view.decidedAt = section.decidedAtMs;
     view.decidedBy = section.decidedBy;

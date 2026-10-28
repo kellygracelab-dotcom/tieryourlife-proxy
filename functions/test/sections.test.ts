@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { mergePages, type Ranked } from "../src/follows";
 import {
   answerFor,
+  APPROVED_EDIT_FIELDS,
   base36Of,
   BUILT_IN_SECTION_IDS,
   BUILT_IN_SECTIONS,
@@ -29,6 +30,8 @@ import {
   mayCall,
   nameKey,
   NEUTRAL_COLOURS,
+  notYetEditable,
+  PENDING_EDIT_FIELDS,
   newSection,
   noStats,
   orderSections,
@@ -39,6 +42,7 @@ import {
   PROPOSAL_WINDOW_MS,
   readNames,
   recentProposals,
+  releasedNames,
   reservationClash,
   readSectionEdits,
   SECTION_CALLS,
@@ -1021,5 +1025,41 @@ describe("TimedCache", () => {
     release();
     assert.equal(await stale, 1);
     assert.equal(await cache.get(async () => 2), 2);
+  });
+});
+
+describe("editing a waiting section", () => {
+  it("may change how it reads and looks, never its place or visibility", () => {
+    assert.deepEqual([...PENDING_EDIT_FIELDS], ["name", "names", "icon", "pictureId", "tint"]);
+    assert.deepEqual([...APPROVED_EDIT_FIELDS], ["name", "names", "icon", "rank", "hidden", "pictureId", "tint"]);
+  });
+
+  it("names the field that has to wait for approval", () => {
+    assert.equal(notYetEditable("pending", { name: "Ramen", rank: 2 }), "rank");
+    assert.equal(notYetEditable("pending", { hidden: false }), "hidden");
+    assert.equal(notYetEditable("pending", { name: "Ramen", tint: "#7A4A33" }), null);
+    assert.equal(notYetEditable("approved", { rank: 2, hidden: true }), null);
+  });
+
+  it("only takes what the owner may change on it, whatever else is sent", () => {
+    assert.deepEqual(readSectionEdits({ name: "Ramen", rank: 2, hidden: true, tint: "#7a4a33" }, PENDING_EDIT_FIELDS), {
+      ok: true,
+      edits: { name: "Ramen", tint: "#7A4A33" },
+    });
+  });
+});
+
+describe("releasedNames", () => {
+  it("is the compared forms of the names a section stops going by", () => {
+    assert.deepEqual(releasedNames(["Ramen", "Рамен"], ["Noodles", "рамен"]), ["ramen"]);
+    assert.deepEqual(releasedNames(["Ramen"], ["RAMEN"]), []);
+  });
+});
+
+describe("a withdrawn proposal", () => {
+  it("says so to the moderators, rather than leaving them to read it from who decided", () => {
+    const withdrawn = section({ id: "w", status: "declined", proposerUid: "me", decidedBy: "me", withdrawn: true, dismissed: true });
+    assert.equal(sectionView(withdrawn, { uid: "mod", moderator: true }, noStats("w"), false).withdrawn, true);
+    assert.equal("withdrawn" in sectionView(section({ id: "x" }), { uid: "somebody", moderator: false }, noStats("x"), false), false);
   });
 });

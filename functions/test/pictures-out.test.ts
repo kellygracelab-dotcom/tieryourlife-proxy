@@ -45,4 +45,39 @@ describe("toSummary", () => {
 
     assert.equal(summary.coverImageUrl, "https://i/c.jpg");
   });
+
+  it("names the author of a list published with a name, and says it is not anonymous", () => {
+    const summary = toSummary("a", { ...stored, authorPhotoUrl: "https://p/face.jpg", coverImageUrl: null, previewImages: [] } as never);
+
+    assert.equal(summary.authorUid, "u");
+    assert.equal(summary.authorName, "Someone");
+    assert.equal(summary.authorPhotoUrl, "https://p/face.jpg");
+    assert.equal(summary.anonymous, false);
+  });
+
+  it("names nobody for an anonymous list", () => {
+    const summary = toSummary("a", {
+      ...stored,
+      authorPhotoUrl: "https://p/face.jpg",
+      anonymous: true,
+      coverImageUrl: null,
+      previewImages: [],
+    } as never);
+
+    assert.equal(summary.authorUid, "");
+    assert.equal(summary.authorName, "");
+    assert.equal(summary.authorPhotoUrl, null);
+    assert.equal(summary.anonymous, true);
+  });
+
+  it("credits an anonymous original by nobody", () => {
+    const summary = toSummary("a", {
+      ...stored,
+      coverImageUrl: null,
+      previewImages: [],
+      basedOn: { id: "o", title: "Original", authorUid: "", authorName: null },
+    } as never);
+
+    assert.deepEqual(summary.basedOn, { id: "o", title: "Original", authorUid: "", authorName: null });
+  });
 });
