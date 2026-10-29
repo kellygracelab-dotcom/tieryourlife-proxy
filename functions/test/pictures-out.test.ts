@@ -97,4 +97,30 @@ describe("toSummary", () => {
       }
     }
   });
+
+  describe("mine", () => {
+    const anonymous = { ...stored, anonymous: true, coverImageUrl: null, previewImages: [] } as never;
+
+    it("tells the owner their own anonymous list is theirs, while still naming nobody", () => {
+      const summary = toSummary("a", anonymous, { uid: "u", isAnonymous: false });
+      assert.equal(summary.mine, true);
+      assert.equal(summary.authorUid, "");
+      assert.equal(summary.authorName, "");
+    });
+
+    it("carries no mine at all for anybody else", () => {
+      assert.equal("mine" in toSummary("a", anonymous, { uid: "someone-else", isAnonymous: false }), false);
+      assert.equal("mine" in toSummary("a", anonymous), false);
+    });
+
+    it("carries no mine for a guest, even one holding the author's uid", () => {
+      assert.equal("mine" in toSummary("a", anonymous, { uid: "u", isAnonymous: true }), false);
+    });
+
+    it("marks the owner's list with their name on it too", () => {
+      const named = { ...stored, coverImageUrl: null, previewImages: [] } as never;
+      assert.equal(toSummary("a", named, { uid: "u", isAnonymous: false }).mine, true);
+      assert.equal("mine" in toSummary("a", named, { uid: "other", isAnonymous: false }), false);
+    });
+  });
 });

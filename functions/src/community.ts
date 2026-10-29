@@ -16,7 +16,7 @@ import {
   type WordingConcern,
 } from "./wording";
 import { isPictureId } from "./safety";
-import { anonymityAfter, fillVisible, isAnonymous, ownAuthor, shownAuthor } from "./anonymous";
+import { anonymityAfter, fillVisible, isAnonymous, mineFor, ownAuthor, shownAuthor, type ListReader } from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
@@ -374,12 +374,16 @@ export function webPicture(value: unknown): string | null {
   return typeof value === "string" && value.startsWith("https://") ? value : null;
 }
 
-/** A list as everybody is told it: an anonymous one by nobody, and so is a copy's credit to one. */
-export function toSummary(id: string, data: StoredList) {
+/**
+ * A list as one reader is told it: an anonymous one by nobody, and so is a
+ * copy's credit to one; and `mine` when the reader is the one who published it.
+ */
+export function toSummary(id: string, data: StoredList, reader: ListReader | null = null) {
   return {
     id,
     title: data.title,
     ...shownAuthor(data),
+    ...mineFor(data, reader),
     category: data.category ?? "other",
     itemCount: data.itemCount,
     coverImageUrl: webPicture(data.coverImageUrl),
@@ -697,7 +701,7 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList)),
+    lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList, identity)),
     nextCursor: page.next?.id ?? null,
   });
 }
@@ -726,9 +730,9 @@ async function readFollowingFeed(response: Response, identity: Identity, filters
   // reached more than one way comes out once.
   const sectionRun = followedSectionRun(sections, filters.category);
   const runs = await Promise.all([
-    ...chunked(authors).map((run) => followedRun("authorUid", run, filters, cursor)),
-    ...chunked(topics).map((run) => followedRun("topicId", run, filters, cursor)),
-    ...chunked(sectionRun).map((run) => followedRun("category", run, filters, cursor)),
+    ...chunked(authors).map((run) => followedRun("authorUid", run, filters, cursor, identity)),
+    ...chunked(topics).map((run) => followedRun("topicId", run, filters, cursor, identity)),
+    ...chunked(sectionRun).map((run) => followedRun("category", run, filters, cursor, identity)),
   ]);
   const page = mergePages(runs, filters.sort, FEED_PAGE_SIZE);
 
@@ -756,6 +760,7 @@ async function followedRun(
   values: string[],
   filters: FeedFilters,
   cursor: Cursor | null,
+  reader: ListReader,
 ): Promise<FeedRow[]> {
   let query: FirebaseFirestore.Query = getFirestore()
     .collection(PUBLISHED)
@@ -793,7 +798,7 @@ async function followedRun(
         id: doc.id,
         updatedAt: data.updatedAt?.toMillis() ?? 0,
         takeCount: data.takeCount ?? 0,
-        summary: toSummary(doc.id, data),
+        summary: toSummary(doc.id, data, reader),
       };
     });
 }
@@ -2285,7 +2290,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
       const proposal = proposals.get(data.proposedSection ?? "");
       const waiting = proposal?.status === "pending" ? proposal : null;
       return {
-        ...toSummary(doc.id, data),
+        ...toSummary(doc.id, data, identity),
         ...ownAuthor(data),
         proposedSection: waiting?.id ?? null,
         proposedSectionName: waiting?.name ?? null,
@@ -2435,7 +2440,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
   }
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    ...toSummary(doc.id, data),
+    ...toSummary(doc.id, data, identity),
     tiers: data.tiers,
     items: data.items,
   });
@@ -3844,7 +3849,7 @@ async function readAnonymousLists(response: Response, identity: Identity, after:
   response.status(200).json({
     lists: snapshot.docs.map((doc) => {
       const data = doc.data() as StoredList;
-      return { ...toSummary(doc.id, data), publishedBy: { uid: data.authorUid, name: data.authorName } };
+      return { ...toSummary(doc.id, data, identity), publishedBy: { uid: data.authorUid, name: data.authorName } };
     }),
     nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
   });
