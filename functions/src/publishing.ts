@@ -135,6 +135,11 @@ export function chosenPictures(value: unknown): string[] {
   return [...new Set(urls)].slice(0, MAX_PREVIEW_IMAGES);
 }
 
+/** A tier's label: collapsed, trimmed, not empty, at most a title long. The rankings sheet's labels follow it too. */
+export function cleanTierLabel(value: unknown): string | null {
+  return cleanText(value, MAX_TITLE_LENGTH);
+}
+
 function cleanText(value: unknown, maxLength: number): string | null {
   if (typeof value !== "string") return null;
   const collapsed = value.replace(/\s+/g, " ").trim();
@@ -188,7 +193,7 @@ export function decidePublish({
   const tiers: PublishedTier[] = [];
   for (const raw of rawTiers) {
     const tier = raw as Record<string, unknown>;
-    const label = cleanText(tier.label, MAX_TITLE_LENGTH);
+    const label = cleanTierLabel(tier.label);
     const colorLight = typeof tier.colorLight === "string" ? tier.colorLight : "";
     const colorDark = typeof tier.colorDark === "string" ? tier.colorDark : "";
     if (!label || !HEX_COLOR.test(colorLight) || !HEX_COLOR.test(colorDark)) {
