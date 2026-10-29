@@ -55,7 +55,10 @@ import {
   decidePublication,
   isOwnedRanking,
   mineFirst,
+  rankingRefusal,
+  rankingWrite,
   RANKINGS_PAGE_SIZE,
+  readRankingBody,
   readTakenFrom,
   shownCredit,
   type BasedOn,
@@ -493,7 +496,7 @@ export const lists = onRequest(
         return await routeSections(request.method, segments.slice(1), query, request.body, response, identity);
       }
       if (segments[1] === RANKINGS_PATH && segments[0]) {
-        return await routeRankings(request.method, segments[0], segments[2] ?? "", query, response, identity);
+        return await routeRankings(request.method, segments[0], segments[2] ?? "", query, request.body, response, identity);
       }
 
       switch (request.method) {
@@ -2730,16 +2733,79 @@ async function routeRankings(
   listId: string,
   rest: string,
   query: Record<string, unknown>,
+  body: unknown,
   response: Response,
   identity: Identity,
 ): Promise<void> {
   if (method === "GET" && rest === "") {
     return await readRankings(response, identity, listId, singleParam(query.after));
   }
+  if (method === "PUT" && rest === "mine") {
+    return await putMyRanking(response, identity, listId, body);
+  }
   if (method === "DELETE" && rest === "mine") {
     return await deleteMyRanking(response, identity, listId);
   }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+type RankingOutcome = { refused: "not_signed_in" | "banned" | "missing" | "own_list" } | { invalid: string } | { created: boolean };
+
+/**
+ * A reader putting their own placing of somebody's list in its rankings
+ * sheet, or replacing it. Everything is judged again inside the transaction
+ * that writes it, against the list as it is then, and the list's count goes
+ * up once, for a ranking that was not there before.
+ */
+async function putMyRanking(response: Response, identity: Identity, listId: string, body: unknown): Promise<void> {
+  const ban = identity.isAnonymous ? null : await readBan(identity.uid);
+  const caller = { uid: identity.uid, isAnonymous: identity.isAnonymous, banned: isBanned(ban, Date.now()) };
+  const db = getFirestore();
+  const list = readTakenFrom(listId) === null ? null : db.collection(PUBLISHED).doc(listId);
+  const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  const outcome = await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
+    const [source, existing] = list === null ? [null, null] : await Promise.all([transaction.get(list), transaction.get(ranking)]);
+    const data = source?.exists ? (source.data() as StoredList) : null;
+    const refused = rankingRefusal(caller, data === null ? null : { authorUid: data.authorUid, underReview: data.underReview === true });
+    if (refused !== null || data === null || list === null) return { refused: refused ?? "missing" };
+    const read = readRankingBody(body, (data.items ?? []).length);
+    if (!read.ok) return { invalid: read.detail };
+    const write = rankingWrite(existing?.exists === true);
+    transaction.set(ranking, {
+      listId,
+      uid: identity.uid,
+      authorName: identity.name ?? "Anonymous",
+      authorPhotoUrl: identity.picture,
+      arrangement: read.arrangement,
+      tierLabels: read.tierLabels,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    if (write.countChange > 0) transaction.update(list, { rankingCount: FieldValue.increment(write.countChange) });
+    return { created: write.created };
+  });
+
+  if ("refused" in outcome) {
+    switch (outcome.refused) {
+      case "not_signed_in":
+        response.status(403).json({ error: "Sign in to rank", code: "NOT_SIGNED_IN" });
+        return;
+      case "banned":
+        response.status(403).json({ error: "You cannot rank at the moment", ...noticeFor(ban as Ban) });
+        return;
+      case "missing":
+        response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+        return;
+      case "own_list":
+        response.status(409).json({ error: "That list is yours", code: "OWN_LIST" });
+        return;
+    }
+  }
+  if ("invalid" in outcome) {
+    response.status(400).json({ error: "That placing does not fit the list", code: "INVALID", detail: outcome.invalid });
+    return;
+  }
+  const fresh = await ranking.get();
+  response.status(200).json({ ...toRanking(fresh.data() as StoredRanking), created: outcome.created });
 }
 
 function toRanking(data: StoredRanking) {

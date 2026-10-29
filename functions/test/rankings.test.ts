@@ -8,6 +8,9 @@ import {
   decidePublication,
   isOwnedRanking,
   mineFirst,
+  rankingRefusal,
+  rankingWrite,
+  readRankingBody,
   readTakenFrom,
   sameCards,
   shownCredit,
@@ -212,5 +215,74 @@ describe("creditNeedsRewrite", () => {
   it("rewrites a copy that still credits nobody once the original has its name back", () => {
     assert.equal(creditNeedsRewrite({ authorUid: "" }, false), true);
     assert.equal(creditNeedsRewrite({ authorUid: "author-1" }, false), false);
+  });
+});
+
+describe("readRankingBody", () => {
+  const labels = ["S", "A", "B"];
+
+  it("takes one tier or null per card of the list, in its order", () => {
+    assert.deepEqual(readRankingBody({ arrangement: [0, null, 2], tierLabels: labels }, 3), {
+      ok: true,
+      arrangement: [0, null, 2],
+      tierLabels: labels,
+    });
+  });
+
+  it("cleans the labels the way a tier's are cleaned", () => {
+    const read = readRankingBody({ arrangement: [0], tierLabels: ["  Must   watch "] }, 1);
+    assert.deepEqual(read.ok && read.tierLabels, ["Must watch"]);
+  });
+
+  it("refuses a placing that does not fit the list", () => {
+    for (const arrangement of [[0, 1], [0, 1, 2, 0], [0, 3, null], [0, -1, null], [0, 1.5, null], [0, "1", null], "0,1,2", undefined]) {
+      assert.deepEqual(readRankingBody({ arrangement, tierLabels: labels }, 3), { ok: false, detail: "arrangement" }, JSON.stringify(arrangement));
+    }
+  });
+
+  it("refuses labels that are none, too many, or not labels", () => {
+    const twentyOne = Array.from({ length: 21 }, (_, at) => `T${at}`);
+    for (const tierLabels of [[], twentyOne, ["S", "  "], ["S", 7], "S"]) {
+      assert.deepEqual(readRankingBody({ arrangement: [null], tierLabels }, 1), { ok: false, detail: "tierLabels" }, JSON.stringify(tierLabels));
+    }
+  });
+
+  it("allows twenty tiers, and a card in the last of them", () => {
+    const twenty = Array.from({ length: 20 }, (_, at) => `T${at}`);
+    assert.equal(readRankingBody({ arrangement: [19], tierLabels: twenty }, 1).ok, true);
+  });
+});
+
+describe("rankingRefusal", () => {
+  const reader = { uid: "reader", isAnonymous: false, banned: false };
+  const list = { authorUid: "author-1", underReview: false };
+
+  it("lets somebody signed in rank somebody else's list", () => {
+    assert.equal(rankingRefusal(reader, list), null);
+  });
+
+  it("refuses a guest, and somebody banned", () => {
+    assert.equal(rankingRefusal({ ...reader, isAnonymous: true }, list), "not_signed_in");
+    assert.equal(rankingRefusal({ ...reader, banned: true }, list), "banned");
+  });
+
+  it("finds no list that is gone or under review", () => {
+    assert.equal(rankingRefusal(reader, null), "missing");
+    assert.equal(rankingRefusal(reader, { ...list, underReview: true }), "missing");
+  });
+
+  // An anonymous list goes out by nobody; whose it is comes from what is stored.
+  it("refuses the list's own author, by the stored author", () => {
+    assert.equal(rankingRefusal({ ...reader, uid: "author-1" }, list), "own_list");
+  });
+});
+
+describe("rankingWrite", () => {
+  it("counts a new ranking once", () => {
+    assert.deepEqual(rankingWrite(false), { created: true, countChange: 1 });
+  });
+
+  it("counts nothing for a ranking being replaced", () => {
+    assert.deepEqual(rankingWrite(true), { created: false, countChange: 0 });
   });
 });

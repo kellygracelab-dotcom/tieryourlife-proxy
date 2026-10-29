@@ -5,6 +5,8 @@
  * the rest of the deciding here; `community.ts` does the reads and writes.
  */
 
+import { cleanTierLabel, MAX_TIERS_PER_LIST } from "./publishing";
+
 export const RANKINGS_PAGE_SIZE = 30;
 
 /** A card as the deciding here needs to see it: a name and, maybe, a picture. */
@@ -163,4 +165,61 @@ export function mineFirst<T extends { uid: string }>(rankings: T[], uid: string)
   const mine = rankings.filter((one) => one.uid === uid).map((one) => ({ ...one, mine: true }));
   const others = rankings.filter((one) => one.uid !== uid).map((one) => ({ ...one, mine: false }));
   return [...mine, ...others];
+}
+
+export type RankingBody =
+  | { ok: true; arrangement: (number | null)[]; tierLabels: string[] }
+  | { ok: false; detail: string };
+
+/**
+ * A reader's placing of a list, as they send it: one to twenty tier labels,
+ * each a proper label, and one entry per card of the list, in the list's own
+ * order, naming one of those tiers by its place or null for a card left
+ * unranked. The same shape a stored ranking has.
+ */
+export function readRankingBody(body: unknown, itemCount: number): RankingBody {
+  const source = (body ?? {}) as Record<string, unknown>;
+  if (!Array.isArray(source.tierLabels) || source.tierLabels.length < 1 || source.tierLabels.length > MAX_TIERS_PER_LIST) {
+    return { ok: false, detail: "tierLabels" };
+  }
+  const tierLabels = source.tierLabels.map(cleanTierLabel);
+  if (tierLabels.some((label) => label === null)) return { ok: false, detail: "tierLabels" };
+  if (!Array.isArray(source.arrangement) || source.arrangement.length !== itemCount) {
+    return { ok: false, detail: "arrangement" };
+  }
+  const tiers = tierLabels.length;
+  const placed = (entry: unknown) =>
+    entry === null || (typeof entry === "number" && Number.isInteger(entry) && entry >= 0 && entry < tiers);
+  if (!source.arrangement.every(placed)) return { ok: false, detail: "arrangement" };
+  return { ok: true, arrangement: source.arrangement as (number | null)[], tierLabels: tierLabels as string[] };
+}
+
+export type RankingRefusal = "not_signed_in" | "banned" | "missing" | "own_list";
+
+export interface RankingCaller {
+  uid: string;
+  isAnonymous: boolean;
+  banned: boolean;
+}
+
+/**
+ * Who may put their placing of a list in its rankings sheet: somebody signed
+ * in and free to publish, on a list that is there for everybody to see, and
+ * not its own author, judged by the stored author since an anonymous list
+ * names nobody.
+ */
+export function rankingRefusal(
+  caller: RankingCaller,
+  list: { authorUid: string; underReview: boolean } | null,
+): RankingRefusal | null {
+  if (caller.isAnonymous) return "not_signed_in";
+  if (caller.banned) return "banned";
+  if (list === null || list.underReview) return "missing";
+  if (list.authorUid === caller.uid) return "own_list";
+  return null;
+}
+
+/** What writing a reader's ranking does to the list's count: one more only for a ranking that was not there. */
+export function rankingWrite(existed: boolean): { created: boolean; countChange: 0 | 1 } {
+  return existed ? { created: false, countChange: 0 } : { created: true, countChange: 1 };
 }
