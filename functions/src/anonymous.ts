@@ -54,6 +54,21 @@ export function ownAuthor(list: Authored): ShownAuthor {
   };
 }
 
+/** Who is reading a list: enough to tell whether it is theirs. */
+export interface ListReader {
+  uid: string;
+  isAnonymous: boolean;
+}
+
+/**
+ * `mine: true` on a list the reader published, judged by the stored author
+ * rather than what goes out, which for an anonymous list names nobody.
+ * Nothing at all otherwise, and never for a guest, who publishes nothing.
+ */
+export function mineFor(list: { authorUid: string }, reader: ListReader | null): { mine?: true } {
+  return reader !== null && !reader.isAnonymous && reader.uid.length > 0 && list.authorUid === reader.uid ? { mine: true } : {};
+}
+
 /** How many reads one page may take to fill itself past rows it does not show. */
 export const MAX_FILL_ROUNDS = 5;
 

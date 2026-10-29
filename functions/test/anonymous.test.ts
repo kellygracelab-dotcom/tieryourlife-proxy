@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { anonymityAfter, fillVisible, isAnonymous, ownAuthor, readAnonymous, shownAuthor } from "../src/anonymous";
+import { anonymityAfter, fillVisible, isAnonymous, mineFor, ownAuthor, readAnonymous, shownAuthor } from "../src/anonymous";
 
 const list = { authorUid: "u1", authorName: "Danylo", authorPhotoUrl: "https://p/face.jpg" };
 
@@ -100,5 +100,24 @@ describe("fillVisible", () => {
     assert.deepEqual(await fillVisible(done, even, 3, { rounds: 1, resumeFromHidden: true }), { rows: [], next: 5 });
     const { fetch: short } = source([1, 3]);
     assert.deepEqual(await fillVisible(short, even, 3, { resumeFromHidden: true }), { rows: [], next: null });
+  });
+});
+
+describe("mineFor", () => {
+  const owner = { uid: "u1", isAnonymous: false };
+
+  it("tells the author a list is theirs, by the stored author", () => {
+    assert.deepEqual(mineFor(list, owner), { mine: true });
+  });
+
+  it("tells nobody else anything", () => {
+    assert.deepEqual(mineFor(list, { uid: "u2", isAnonymous: false }), {});
+    assert.deepEqual(mineFor(list, null), {});
+  });
+
+  // A guest's uid lives in one install and publishes nothing; it never owns a list.
+  it("tells a guest nothing, whatever their uid", () => {
+    assert.deepEqual(mineFor(list, { uid: "u1", isAnonymous: true }), {});
+    assert.deepEqual(mineFor({ ...list, authorUid: "" }, { uid: "", isAnonymous: false }), {});
   });
 });
