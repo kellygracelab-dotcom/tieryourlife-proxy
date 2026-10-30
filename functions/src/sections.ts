@@ -912,12 +912,30 @@ export interface SectionView {
   proposerName?: string | null;
   mergedInto?: string | null;
   mergedTopicId?: string | null;
+  /** Staff only, on a waiting proposal: an approved topic or another section that already goes by its name. */
+  nameClash?: NameClash;
   palette?: string[];
   unfinished?: boolean;
   withdrawn?: boolean;
   createdAt?: number;
   decidedAt?: number | null;
   decidedBy?: string | null;
+}
+
+/** What a waiting proposal's name already belongs to, if anything: a topic it could be merged into, or a section. */
+export type NameClash =
+  | null
+  | { kind: "topic"; id: string; name: string; section: string | null; sectionName: string | null }
+  | { kind: "section"; id: string; name: string };
+
+/** The proposal a list waits for, while it still waits: a decided one is not waited for any more. */
+export function waitingFor(
+  proposedSection: unknown,
+  proposals: ReadonlyMap<string, SectionRecord>,
+): { proposedSection: string | null; proposedSectionName: string | null } {
+  const proposal = typeof proposedSection === "string" ? proposals.get(proposedSection) : undefined;
+  const waiting = proposal?.status === "pending" ? proposal : null;
+  return { proposedSection: waiting?.id ?? null, proposedSectionName: waiting?.name ?? null };
 }
 
 /**
