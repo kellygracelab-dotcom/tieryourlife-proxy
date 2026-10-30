@@ -168,14 +168,55 @@ export function mineFirst<T extends { uid: string }>(rankings: T[], uid: string)
 }
 
 export type RankingBody =
-  | { ok: true; arrangement: (number | null)[]; tierLabels: string[] }
-  | { ok: false; detail: string };
+  /** `rows` is null for a placing sent the old way, as a tier per card, which keeps no order within a tier. */
+  | { ok: true; arrangement: (number | null)[]; rows: number[][] | null; tierLabels: string[] }
+  | { ok: false; detail: "tierLabels" | "rows" | "arrangement" };
+
+/**
+ * The cards in each tier, left to right, by their place in the list: as many
+ * rows as tiers, each card at most once across them all. A card in no row is
+ * unranked.
+ */
+function readRows(value: unknown, tiers: number, itemCount: number): number[][] | null {
+  if (!Array.isArray(value) || value.length !== tiers) return null;
+  const seen = new Set<number>();
+  for (const row of value) {
+    if (!Array.isArray(row)) return null;
+    for (const item of row) {
+      if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item >= itemCount || seen.has(item)) return null;
+      seen.add(item);
+    }
+  }
+  return value as number[][];
+}
+
+/** The tier each card sits in, by its place in the list, or null for one in no row: what older readers understand. */
+export function arrangementFromRows(rows: readonly (readonly number[])[], itemCount: number): (number | null)[] {
+  const arrangement: (number | null)[] = new Array(itemCount).fill(null);
+  rows.forEach((row, tier) => row.forEach((item) => {
+    arrangement[item] = tier;
+  }));
+  return arrangement;
+}
+
+/** Firestore keeps no array inside an array, so each row is stored as `{items}`, as the website stores its own. */
+export function rowsToDocument(rows: readonly (readonly number[])[]): { items: number[] }[] {
+  return rows.map((row) => ({ items: [...row] }));
+}
+
+/** Stored rows read back, or none for a ranking stored without them, whose readers fall back to `arrangement`. */
+export function rowsFromDocument(stored: unknown): number[][] {
+  if (!Array.isArray(stored)) return [];
+  const rows = stored.map((row) => (row as { items?: unknown } | null)?.items);
+  if (!rows.every((items) => Array.isArray(items) && items.every((item) => typeof item === "number"))) return [];
+  return rows as number[][];
+}
 
 /**
  * A reader's placing of a list, as they send it: one to twenty tier labels,
- * each a proper label, and one entry per card of the list, in the list's own
- * order, naming one of those tiers by its place or null for a card left
- * unranked. The same shape a stored ranking has.
+ * each a proper label, and the cards of each tier left to right (`rows`); or,
+ * the old way, one tier or null per card in the list's order (`arrangement`),
+ * which is still read when there are no rows. Rows win when both are sent.
  */
 export function readRankingBody(body: unknown, itemCount: number): RankingBody {
   const source = (body ?? {}) as Record<string, unknown>;
@@ -184,6 +225,12 @@ export function readRankingBody(body: unknown, itemCount: number): RankingBody {
   }
   const tierLabels = source.tierLabels.map(cleanTierLabel);
   if (tierLabels.some((label) => label === null)) return { ok: false, detail: "tierLabels" };
+  if (source.rows !== undefined && source.rows !== null) {
+    const rows = readRows(source.rows, tierLabels.length, itemCount);
+    if (rows === null) return { ok: false, detail: "rows" };
+    return { ok: true, arrangement: arrangementFromRows(rows, itemCount), rows, tierLabels: tierLabels as string[] };
+  }
+  if (source.arrangement === undefined || source.arrangement === null) return { ok: false, detail: "rows" };
   if (!Array.isArray(source.arrangement) || source.arrangement.length !== itemCount) {
     return { ok: false, detail: "arrangement" };
   }
@@ -191,7 +238,7 @@ export function readRankingBody(body: unknown, itemCount: number): RankingBody {
   const placed = (entry: unknown) =>
     entry === null || (typeof entry === "number" && Number.isInteger(entry) && entry >= 0 && entry < tiers);
   if (!source.arrangement.every(placed)) return { ok: false, detail: "arrangement" };
-  return { ok: true, arrangement: source.arrangement as (number | null)[], tierLabels: tierLabels as string[] };
+  return { ok: true, arrangement: source.arrangement as (number | null)[], rows: null, tierLabels: tierLabels as string[] };
 }
 
 export type RankingRefusal = "not_signed_in" | "banned" | "missing" | "own_list";

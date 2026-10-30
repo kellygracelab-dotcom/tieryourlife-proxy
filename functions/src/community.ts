@@ -59,6 +59,8 @@ import {
   rankingWrite,
   RANKINGS_PAGE_SIZE,
   readRankingBody,
+  rowsFromDocument,
+  rowsToDocument,
   readTakenFrom,
   shownCredit,
   type BasedOn,
@@ -355,6 +357,8 @@ interface StoredRanking {
   authorName: string;
   authorPhotoUrl: string | null;
   arrangement: (number | null)[];
+  /** The cards of each tier left to right; absent on rankings stored without them. */
+  rows?: { items: number[] }[];
   tierLabels: string[];
   updatedAt?: FirebaseFirestore.Timestamp;
 }
@@ -2796,6 +2800,7 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
       authorName: identity.name ?? "Anonymous",
       authorPhotoUrl: identity.picture,
       arrangement: read.arrangement,
+      ...(read.rows === null ? {} : { rows: rowsToDocument(read.rows) }),
       tierLabels: read.tierLabels,
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -2833,6 +2838,7 @@ function toRanking(data: StoredRanking) {
     authorName: data.authorName,
     authorPhotoUrl: data.authorPhotoUrl ?? null,
     arrangement: data.arrangement ?? [],
+    rows: rowsFromDocument(data.rows),
     tierLabels: data.tierLabels ?? [],
     updatedAtMs: data.updatedAt?.toMillis() ?? 0,
   };
