@@ -10,7 +10,10 @@ import {
   mineFirst,
   rankingRefusal,
   rankingWrite,
+  arrangementFromRows,
   readRankingBody,
+  rowsFromDocument,
+  rowsToDocument,
   readTakenFrom,
   sameCards,
   shownCredit,
@@ -225,6 +228,7 @@ describe("readRankingBody", () => {
     assert.deepEqual(readRankingBody({ arrangement: [0, null, 2], tierLabels: labels }, 3), {
       ok: true,
       arrangement: [0, null, 2],
+      rows: null,
       tierLabels: labels,
     });
   });
@@ -235,7 +239,7 @@ describe("readRankingBody", () => {
   });
 
   it("refuses a placing that does not fit the list", () => {
-    for (const arrangement of [[0, 1], [0, 1, 2, 0], [0, 3, null], [0, -1, null], [0, 1.5, null], [0, "1", null], "0,1,2", undefined]) {
+    for (const arrangement of [[0, 1], [0, 1, 2, 0], [0, 3, null], [0, -1, null], [0, 1.5, null], [0, "1", null], "0,1,2"]) {
       assert.deepEqual(readRankingBody({ arrangement, tierLabels: labels }, 3), { ok: false, detail: "arrangement" }, JSON.stringify(arrangement));
     }
   });
@@ -284,5 +288,66 @@ describe("rankingWrite", () => {
 
   it("counts nothing for a ranking being replaced", () => {
     assert.deepEqual(rankingWrite(true), { created: false, countChange: 0 });
+  });
+});
+
+describe("rows of a ranking", () => {
+  const labels = ["S", "A", "B"];
+
+  // The point of rows: inside a tier, left to right is part of the placing.
+  it("keeps the order inside each tier, and derives the tier per card for older readers", () => {
+    const read = readRankingBody({ rows: [[3, 0], [], [1]], tierLabels: labels }, 5);
+    assert.deepEqual(read, { ok: true, rows: [[3, 0], [], [1]], arrangement: [0, 2, null, 0, null], tierLabels: labels });
+  });
+
+  it("ignores an arrangement sent beside rows", () => {
+    const read = readRankingBody({ rows: [[1], [0], []], arrangement: [2, 2], tierLabels: labels }, 2);
+    assert.deepEqual(read.ok && read.arrangement, [1, 0]);
+  });
+
+  it("still takes the old body, which keeps no order and stores no rows", () => {
+    assert.deepEqual(readRankingBody({ arrangement: [0, null], tierLabels: labels }, 2), {
+      ok: true,
+      arrangement: [0, null],
+      rows: null,
+      tierLabels: labels,
+    });
+  });
+
+  it("refuses a card twice, across rows or within one", () => {
+    assert.deepEqual(readRankingBody({ rows: [[0], [0], []], tierLabels: labels }, 3), { ok: false, detail: "rows" });
+    assert.deepEqual(readRankingBody({ rows: [[1, 1], [], []], tierLabels: labels }, 3), { ok: false, detail: "rows" });
+  });
+
+  it("refuses a card the list does not have, or one that is not a whole number", () => {
+    for (const rows of [[[3], [], []], [[-1], [], []], [[0.5], [], []], [["0"], [], []]]) {
+      assert.deepEqual(readRankingBody({ rows, tierLabels: labels }, 3), { ok: false, detail: "rows" }, JSON.stringify(rows));
+    }
+  });
+
+  it("refuses rows that are not one per tier", () => {
+    assert.deepEqual(readRankingBody({ rows: [[0], [1]], tierLabels: labels }, 3), { ok: false, detail: "rows" });
+    assert.deepEqual(readRankingBody({ rows: [[0], [1], [], []], tierLabels: labels }, 3), { ok: false, detail: "rows" });
+    assert.deepEqual(readRankingBody({ rows: "0,1", tierLabels: labels }, 3), { ok: false, detail: "rows" });
+  });
+
+  it("checks the labels first, and asks for rows when neither rows nor an arrangement is sent", () => {
+    assert.deepEqual(readRankingBody({ rows: [[0], [0]], tierLabels: [] }, 3), { ok: false, detail: "tierLabels" });
+    assert.deepEqual(readRankingBody({ tierLabels: labels }, 3), { ok: false, detail: "rows" });
+  });
+
+  it("are stored as {items}, since Firestore keeps no array inside an array, and read back as they went in", () => {
+    const stored = rowsToDocument([[3, 0], [], [1]]);
+    assert.deepEqual(stored, [{ items: [3, 0] }, { items: [] }, { items: [1] }]);
+    assert.deepEqual(rowsFromDocument(stored), [[3, 0], [], [1]]);
+  });
+
+  it("are none for a ranking stored without them, or with something else", () => {
+    assert.deepEqual(rowsFromDocument(undefined), []);
+    assert.deepEqual(rowsFromDocument([{ items: ["x"] }]), []);
+  });
+
+  it("leave a card in no row unranked", () => {
+    assert.deepEqual(arrangementFromRows([[2], []], 4), [null, null, 0, null]);
   });
 });
