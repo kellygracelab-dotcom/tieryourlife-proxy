@@ -127,9 +127,12 @@ import {
   sectionsListedFor,
   sectionView,
   TimedCache,
+  waitingFor,
   WITHDRAWN_LISTS,
   type CollageCandidate,
   type EditRefusal,
+  type NameClash,
+  type NameReservation,
   type ProposalRefusal,
   type Role,
   type SectionAction,
@@ -142,6 +145,7 @@ import {
   type SectionRecord,
   type SectionStats,
   type SectionStatus,
+  type SectionView,
   type Viewer,
 } from "./sections";
 import {
@@ -172,7 +176,7 @@ import {
   tokenAddressOf,
   topicPicturePath,
 } from "./sectionPictures";
-import { decideApproveAsTopic } from "./proposalTopic";
+import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, topicKeyOf } from "./proposalTopic";
 import { adminKeeps, readAdminListsQuery } from "./adminLists";
 import {
   cleanTopicName,
@@ -197,6 +201,7 @@ import {
   type TopicAction,
   type TopicReader,
   type TopicRequest,
+  type TopicReservation,
   type TopicStatus,
 } from "./topics";
 
@@ -235,6 +240,7 @@ const NAME_CHECK_PATH = "name-check";
 const ADMIN_PATH = "admin";
 const CANDIDATES_PATH = "candidates";
 const APPROVE_AS_TOPIC = "approve-as-topic";
+const MERGE_INTO_TOPIC = "merge-into-topic";
 
 /** How many accounts the candidate index holds at most; past that, appointing needs the uid. */
 const MAX_INDEXED_ACCOUNTS = 10_000;
@@ -1237,6 +1243,7 @@ async function routeSections(
       if (second === FOLLOW && method === "POST") return await followSection(response, identity, first);
       if (second === FOLLOW && method === "DELETE") return await unfollowSection(response, identity, first);
       if (second === APPROVE_AS_TOPIC && method === "POST") return await approveAsTopic(response, identity, first, body);
+      if (second === MERGE_INTO_TOPIC && method === "POST") return await mergeIntoTopic(response, identity, first, body);
       const action = SECTION_ACTIONS.find((known) => known === second);
       if (action && method === "POST") return await settleSection(response, identity, first, action, body);
     }
@@ -1375,8 +1382,13 @@ async function readSection(response: Response, identity: Identity, id: string): 
   if (answer === "merged") return merged(response, found.mergedInto as string, found.mergedTopicId);
   response.setHeader("Cache-Control", "no-store");
   if (found.status !== "approved") {
-    const waiting = found.status === "pending" ? await waitingCount(id) : 0;
-    response.status(200).json(sectionView(found, viewer, noStats(id), false, waiting));
+    const pending = found.status === "pending";
+    const [waiting, clashes] = await Promise.all([
+      pending ? waitingCount(id) : 0,
+      pending && viewer.moderator ? nameClashesOf([found]) : null,
+    ]);
+    const view = sectionView(found, viewer, noStats(id), false, waiting);
+    response.status(200).json(clashes === null ? view : withClash(view, clashes[0]));
     return;
   }
   const [stats, follow] = await Promise.all([
@@ -1651,11 +1663,67 @@ async function readSectionQueue(response: Response, identity: Identity): Promise
   const waiting = snapshot.docs
     .map((doc) => sectionRecord(doc.id, doc.data() as StoredSection))
     .sort((left, right) => left.createdAtMs - right.createdAtMs);
-  const counts = await Promise.all(waiting.map((one) => waitingCount(one.id)));
+  const [counts, clashes] = await Promise.all([
+    Promise.all(waiting.map((one) => waitingCount(one.id))),
+    nameClashesOf(waiting),
+  ]);
   const viewer: Viewer = { uid: identity.uid, moderator: true };
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    sections: waiting.map((one, at) => sectionView(one, viewer, noStats(one.id), false, counts[at])),
+    sections: waiting.map((one, at) => withClash(sectionView(one, viewer, noStats(one.id), false, counts[at]), clashes[at])),
+  });
+}
+
+function withClash(view: SectionView, nameClash: NameClash): SectionView {
+  return { ...view, nameClash };
+}
+
+/**
+ * For the staff: what each waiting proposal's name already belongs to, read
+ * from the reservations the names are claimed by. Two reads per proposal, its
+ * topic name and its section name, then the holders, each step one batch.
+ */
+async function nameClashesOf(proposals: readonly SectionRecord[]): Promise<NameClash[]> {
+  if (proposals.length === 0) return [];
+  const db = getFirestore();
+  const topicKeys = proposals.map((one) => topicKeyOf(one.name));
+  const sectionKeys = proposals.map((one) => nameKey(one.name));
+  const askedTopics = [...new Set(topicKeys.filter((key): key is string => key !== null))];
+  const askedSections = [...new Set(sectionKeys)];
+  const [topicDocs, sectionDocs] = await Promise.all([
+    askedTopics.length === 0 ? [] : db.getAll(...askedTopics.map(topicReservationRef)),
+    db.getAll(...askedSections.map(reservationRef)),
+  ]);
+  const topicReservations = new Map<string, TopicReservation>(
+    topicDocs
+      .filter((doc) => doc.exists)
+      .map((doc) => [doc.get("key") as string, { key: doc.get("key") as string, topicId: doc.get("topicId") as string }]),
+  );
+  const byKey = new Map<string, NameReservation>(
+    sectionDocs
+      .filter((doc) => doc.exists)
+      .map((doc) => [doc.get("key") as string, { key: doc.get("key") as string, sectionId: doc.get("sectionId") as string }]),
+  );
+  const sectionReservations = sectionKeys.map((key) => byKey.get(key) ?? null);
+  const topicIds = [...new Set([...topicReservations.values()].map((one) => one.topicId).filter(isTopicId))];
+  const [holders, sections] = await Promise.all([
+    topicIds.length === 0 ? [] : db.getAll(...topicIds.map((id) => db.collection(TOPICS).doc(id))),
+    readSectionsById(sectionReservations.flatMap((one, at) => (one === null || one.sectionId === proposals[at].id ? [] : [one.sectionId]))),
+  ]);
+  const topics = new Map(
+    holders.filter((doc) => doc.exists).map((doc) => [doc.id, knownTopic(doc.id, doc.data() as StoredTopic)]),
+  );
+  const topicSections = [...topics.values()].flatMap((one) => (one.section === null || sections.has(one.section) ? [] : [one.section]));
+  (await readSectionsById(topicSections)).forEach((one, id) => sections.set(id, one));
+  return proposals.map((proposal, at) => {
+    const key = topicKeys[at];
+    const topicReservation = key === null ? null : topicReservations.get(key) ?? null;
+    return nameClashOf(proposal, {
+      topicReservation,
+      topic: topicReservation === null ? null : topics.get(topicReservation.topicId) ?? null,
+      sectionReservation: sectionReservations[at],
+      sections,
+    });
   });
 }
 
@@ -2336,25 +2404,28 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
     .orderBy("updatedAt", "desc")
     .get();
 
-  // A list waiting for its author's proposed section says which, so the app can say where it will move.
-  const waitingFor = snapshot.docs
-    .map((doc) => (doc.data() as StoredList).proposedSection)
-    .filter((id): id is string => typeof id === "string");
-  const proposals = await readSectionsById(waitingFor);
+  const proposals = await proposalsWaitedFor(snapshot.docs);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     lists: snapshot.docs.map((doc) => {
       const data = doc.data() as StoredList;
-      const proposal = proposals.get(data.proposedSection ?? "");
-      const waiting = proposal?.status === "pending" ? proposal : null;
       return {
         ...toSummary(doc.id, data, identity, identity.isAnonymous ? null : new Set()),
         ...ownAuthor(data),
-        proposedSection: waiting?.id ?? null,
-        proposedSectionName: waiting?.name ?? null,
+        ...waitingFor(data.proposedSection, proposals),
       };
     }),
   });
+}
+
+/**
+ * The proposals these lists wait for, read in one batch: a list waiting for
+ * a proposed section says which, so a reader can say where it will move.
+ */
+async function proposalsWaitedFor(docs: readonly FirebaseFirestore.DocumentSnapshot[]): Promise<Map<string, SectionRecord>> {
+  return await readSectionsById(
+    docs.map((doc) => (doc.data() as StoredList).proposedSection).filter((id): id is string => typeof id === "string"),
+  );
 }
 
 /**
@@ -3475,18 +3546,26 @@ function topicReservationRef(nameLower: string): FirebaseFirestore.DocumentRefer
 }
 
 /** Inside a transaction: the topic other than `self` holding this name by its reservation. Reads only. */
-async function topicNameTaken(
+async function topicNameHolder(
   transaction: FirebaseFirestore.Transaction,
   nameLower: string,
   self: string | null,
-): Promise<string | null> {
+): Promise<KnownTopic | null> {
   const held = await transaction.get(topicReservationRef(nameLower));
   if (!held.exists) return null;
   const reservation = { key: held.get("key") as string, topicId: held.get("topicId") as string };
   if (!isTopicId(reservation.topicId)) return null;
   const holder = await transaction.get(getFirestore().collection(TOPICS).doc(reservation.topicId));
   const known = holder.exists ? knownTopic(holder.id, holder.data() as StoredTopic) : null;
-  return topicReservationClash(nameLower, reservation, known, self);
+  return topicReservationClash(nameLower, reservation, known, self) === null ? null : known;
+}
+
+async function topicNameTaken(
+  transaction: FirebaseFirestore.Transaction,
+  nameLower: string,
+  self: string | null,
+): Promise<string | null> {
+  return (await topicNameHolder(transaction, nameLower, self))?.id ?? null;
 }
 
 function reserveTopicName(transaction: FirebaseFirestore.Transaction, nameLower: string, topicId: string): void {
@@ -3577,8 +3656,15 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   response.status(201).json(toTopic(created.id, fresh.data() as StoredTopic, false, { uid: identity.uid, staff: true }));
 }
 
-function topicNameRefused(response: Response, id: string): void {
-  response.status(409).json({ error: "There is a topic by that name already", code: "NAME_TAKEN", detail: id, id });
+/** `id` is the topic holding the name; `section`, where known, is that topic's section. */
+function topicNameRefused(response: Response, id: string, section?: string | null): void {
+  response.status(409).json({
+    error: "There is a topic by that name already",
+    code: "NAME_TAKEN",
+    detail: id,
+    id,
+    ...(section === undefined ? {} : { section }),
+  });
 }
 
 /**
@@ -4004,6 +4090,7 @@ async function readAdminLists(response: Response, identity: Identity, query: Rec
     FEED_PAGE_SIZE,
     { resumeFromHidden: true },
   );
+  const proposals = await proposalsWaitedFor(page.rows);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     lists: page.rows.map((doc) => {
@@ -4012,13 +4099,17 @@ async function readAdminLists(response: Response, identity: Identity, query: Rec
         ...toSummary(doc.id, data, identity),
         underReview: data.underReview === true,
         publishedBy: { uid: data.authorUid, name: data.authorName },
+        ...waitingFor(data.proposedSection, proposals),
       };
     }),
     nextCursor: page.next?.id ?? null,
   });
 }
 
-type TopicApproval = { refused: "missing" | "settled" | "bad_section" | "bad_name" } | { taken: string } | { done: true };
+type TopicApproval =
+  | { refused: "missing" | "settled" | "bad_section" | "bad_name" }
+  | { taken: Pick<KnownTopic, "id" | "section"> }
+  | { done: true };
 
 /**
  * A proposal approved as a topic inside a section that exists: in one
@@ -4044,7 +4135,7 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
   const twin = same.docs
     .map((doc) => knownTopic(doc.id, doc.data() as StoredTopic))
     .find((one) => one.status === "approved" || one.status === "pending");
-  if (twin) return topicNameRefused(response, twin.id);
+  if (twin) return topicNameRefused(response, twin.id, twin.section);
 
   // The proposal's picture goes public as the topic's; a proposal whose copy is gone makes a topic without one.
   const topicRef = db.collection(TOPICS).doc();
@@ -4062,8 +4153,8 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
     const again = decideApproveAsTopic(current, target, body);
     if (!again.ok) return { refused: again.reason };
     if (again.resume || current === null) return { refused: "settled" };
-    const taken = await topicNameTaken(transaction, again.nameLower, null);
-    if (taken !== null) return { taken };
+    const taken = await topicNameHolder(transaction, again.nameLower, null);
+    if (taken !== null) return { taken: { id: taken.id, section: taken.section } };
     const released = await ownReservations(transaction, releasedNames(namesAfter(current, {}), []), id);
     transaction.set(topicRef, {
       name: again.name,
@@ -4100,10 +4191,74 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
   });
   if (!("done" in outcome)) {
     if (kept !== null) await discardStoredPicture(kept.path);
-    if ("taken" in outcome) return topicNameRefused(response, outcome.taken);
+    if ("taken" in outcome) return topicNameRefused(response, outcome.taken.id, outcome.taken.section);
     return refuseTopicApproval(response, outcome.refused);
   }
   await finishTopicApproval(response, identity, id, early.section, topicRef.id);
+}
+
+type TopicMerge = { refused: "missing" | "settled" | "bad_topic" } | { done: true };
+
+/**
+ * A proposal merged into a topic that exists: in one transaction the
+ * proposal is marked merged into the topic and its section, and lets its
+ * names go. The lists waiting for it move after, as for a topic made from
+ * it, and asking again finishes a move cut short. The topic keeps its own
+ * picture; the proposal's private copy is deleted.
+ */
+async function mergeIntoTopic(response: Response, identity: Identity, id: string, body: unknown): Promise<void> {
+  const role = await roleFor(response, identity, "approve");
+  if (role === null) return;
+  const db = getFirestore();
+  const topicId = mergeTopicId(body);
+  const [proposal, held] = await Promise.all([
+    isSectionId(id) ? readSectionById(id) : null,
+    topicId === null ? null : db.collection(TOPICS).doc(topicId).get(),
+  ]);
+  const topic = held?.exists ? knownTopic(held.id, held.data() as StoredTopic) : null;
+  // Read through the built-ins, which seeds them, so the transaction finds a built-in section too.
+  const section = topic?.section ? await readSectionById(topic.section) : null;
+  const early = decideMergeIntoTopic(proposal, topic, section);
+  if (!early.ok) return refuseTopicMerge(response, early.reason);
+  if (early.resume) return await finishTopicApproval(response, identity, id, early.section, early.topicId);
+
+  const ref = db.collection(SECTIONS).doc(id);
+  const outcome = await db.runTransaction(async (transaction): Promise<TopicMerge> => {
+    const [fresh, topicNow, place] = await Promise.all([
+      transaction.get(ref),
+      transaction.get(db.collection(TOPICS).doc(early.topicId)),
+      transaction.get(db.collection(SECTIONS).doc(early.section)),
+    ]);
+    const current = fresh.exists ? sectionRecord(id, fresh.data() as StoredSection) : null;
+    const into = topicNow.exists ? knownTopic(topicNow.id, topicNow.data() as StoredTopic) : null;
+    const target = place.exists ? sectionRecord(place.id, place.data() as StoredSection) : null;
+    const again = decideMergeIntoTopic(current, into, target);
+    if (!again.ok) return { refused: again.reason };
+    if (again.resume || current === null) return { refused: "settled" };
+    const released = await ownReservations(transaction, releasedNames(namesAfter(current, {}), []), id);
+    released.forEach((one) => transaction.delete(one));
+    transaction.update(ref, {
+      status: "merged",
+      mergedInto: again.section,
+      mergedTopicId: again.topicId,
+      decidedAt: FieldValue.serverTimestamp(),
+      decidedBy: identity.uid,
+      unfinished: true,
+    });
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "section.merge_into_topic", `${SECTIONS}/${id}`,
+      { status: current.status }, { status: "merged", mergedInto: again.section, mergedTopicId: again.topicId }));
+    return { done: true };
+  });
+  if (!("done" in outcome)) return refuseTopicMerge(response, outcome.refused);
+  await finishTopicApproval(response, identity, id, early.section, early.topicId);
+}
+
+function refuseTopicMerge(response: Response, reason: "missing" | "settled" | "bad_topic"): void {
+  if (reason === "bad_topic") {
+    response.status(400).json({ error: "Merge it into an approved topic of an open section", code: "INVALID", detail: "topic" });
+    return;
+  }
+  refuseTopicApproval(response, reason);
 }
 
 /**
