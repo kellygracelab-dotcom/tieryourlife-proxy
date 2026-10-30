@@ -16,7 +16,16 @@ import {
   type WordingConcern,
 } from "./wording";
 import { isPictureId } from "./safety";
-import { anonymityAfter, fillVisible, isAnonymous, mineFor, ownAuthor, shownAuthor, type ListReader } from "./anonymous";
+import {
+  anonymityAfter,
+  fillVisible,
+  isAnonymous,
+  mineFor,
+  ownAuthor,
+  shownAuthor,
+  viewerFollowsFor,
+  type ListReader,
+} from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
@@ -47,6 +56,7 @@ import {
   decidePublish,
   picturesWanted,
   settle,
+  tierCountsOf,
   type PublishDecision,
 } from "./publishing";
 import {
@@ -347,6 +357,8 @@ interface StoredList {
   basedOn?: BasedOn | null;
   /** Published without the author's name; the author is still stored, for owning it. */
   anonymous?: boolean;
+  /** Cards per tier in tier order, the unranked last; worked out on read for lists published before it was kept. */
+  tierCounts?: number[];
 }
 
 interface StoredRanking {
@@ -385,14 +397,24 @@ export function webPicture(value: unknown): string | null {
 
 /**
  * A list as one reader is told it: an anonymous one by nobody, and so is a
- * copy's credit to one; and `mine` when the reader is the one who published it.
+ * copy's credit to one; `mine` when the reader is the one who published it,
+ * and whether they follow its author when `followed` says whom they follow.
  */
-export function toSummary(id: string, data: StoredList, reader: ListReader | null = null) {
+export function toSummary(
+  id: string,
+  data: StoredList,
+  reader: ListReader | null = null,
+  followed: ReadonlySet<string> | null = null,
+) {
   return {
     id,
     title: data.title,
     ...shownAuthor(data),
     ...mineFor(data, reader),
+    ...viewerFollowsFor(data, reader, followed),
+    tierCounts: Array.isArray(data.tierCounts)
+      ? data.tierCounts
+      : tierCountsOf((data.tiers ?? []).length, (data.items ?? []) as { tierIndex?: unknown }[]),
     category: data.category ?? "other",
     itemCount: data.itemCount,
     coverImageUrl: webPicture(data.coverImageUrl),
@@ -705,15 +727,18 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
     const data = doc.data() as StoredList;
     return data.underReview !== true && !(filters.author !== null && isAnonymous(data));
   };
-  const page = await fillVisible(
-    async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
-    shown,
-    FEED_PAGE_SIZE,
-  );
+  const [page, followed] = await Promise.all([
+    fillVisible(
+      async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
+      shown,
+      FEED_PAGE_SIZE,
+    ),
+    authorsFollowedBy(identity),
+  ]);
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList, identity)),
+    lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList, identity, followed)),
     nextCursor: page.next?.id ?? null,
   });
 }
@@ -738,13 +763,14 @@ async function readFollowingFeed(response: Response, identity: Identity, filters
   }
 
   const cursor = readCursor(filters.after);
+  const followed = identity.isAnonymous ? null : new Set(authors);
   // People, topics and sections are sets of runs over the same page; a list
   // reached more than one way comes out once.
   const sectionRun = followedSectionRun(sections, filters.category);
   const runs = await Promise.all([
-    ...chunked(authors).map((run) => followedRun("authorUid", run, filters, cursor, identity)),
-    ...chunked(topics).map((run) => followedRun("topicId", run, filters, cursor, identity)),
-    ...chunked(sectionRun).map((run) => followedRun("category", run, filters, cursor, identity)),
+    ...chunked(authors).map((run) => followedRun("authorUid", run, filters, cursor, identity, followed)),
+    ...chunked(topics).map((run) => followedRun("topicId", run, filters, cursor, identity, followed)),
+    ...chunked(sectionRun).map((run) => followedRun("category", run, filters, cursor, identity, followed)),
   ]);
   const page = mergePages(runs, filters.sort, FEED_PAGE_SIZE);
 
@@ -773,6 +799,7 @@ async function followedRun(
   filters: FeedFilters,
   cursor: Cursor | null,
   reader: ListReader,
+  followed: ReadonlySet<string> | null,
 ): Promise<FeedRow[]> {
   let query: FirebaseFirestore.Query = getFirestore()
     .collection(PUBLISHED)
@@ -810,7 +837,7 @@ async function followedRun(
         id: doc.id,
         updatedAt: data.updatedAt?.toMillis() ?? 0,
         takeCount: data.takeCount ?? 0,
-        summary: toSummary(doc.id, data, reader),
+        summary: toSummary(doc.id, data, reader, followed),
       };
     });
 }
@@ -833,6 +860,11 @@ async function followedSectionIds(uid: string): Promise<string[]> {
     .limit(MAX_FOLLOWING)
     .get();
   return snapshot.docs.map((doc) => doc.get("section") as string);
+}
+
+/** Whom a signed-in reader follows, read once for a whole page; nothing for a guest, who follows nobody. */
+async function authorsFollowedBy(identity: Identity): Promise<Set<string> | null> {
+  return identity.isAnonymous ? null : new Set(await followedBy(identity.uid));
 }
 
 /** Whom this person follows, at most as many as one page will draw from. */
@@ -2312,7 +2344,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
       const proposal = proposals.get(data.proposedSection ?? "");
       const waiting = proposal?.status === "pending" ? proposal : null;
       return {
-        ...toSummary(doc.id, data, identity),
+        ...toSummary(doc.id, data, identity, identity.isAnonymous ? null : new Set()),
         ...ownAuthor(data),
         proposedSection: waiting?.id ?? null,
         proposedSectionName: waiting?.name ?? null,
@@ -2460,9 +2492,14 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
     return;
   }
+  // One document says whether the reader follows this author; a set of one is all the summary needs.
+  const follows = identity.isAnonymous
+    ? null
+    : (await getFirestore().collection(FOLLOWS).doc(followId(identity.uid, data.authorUid)).get()).exists;
+  const followed = follows === null ? null : new Set(follows ? [data.authorUid] : []);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    ...toSummary(doc.id, data, identity),
+    ...toSummary(doc.id, data, identity, followed),
     tiers: data.tiers,
     items: data.items,
   });
@@ -2603,6 +2640,7 @@ async function publish(
     coverImageUrl: list.coverImageUrl,
     previewImages: list.previewImages,
     tierColors: list.tierColors,
+    tierCounts: tierCountsOf(list.tiers.length, list.items),
     basedOn: publication.basedOn,
     anonymous: anonymityAfter(decision.draft.anonymous, previous),
     updatedAt: FieldValue.serverTimestamp(),

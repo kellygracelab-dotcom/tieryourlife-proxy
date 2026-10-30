@@ -292,6 +292,22 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
   };
 }
 
+/**
+ * How many cards sit in each tier, in tier order, and how many are left
+ * unranked, last, as the pool: what a list page needs to lay itself out
+ * before the cards arrive. A card naming a tier the list does not have is
+ * counted with the unranked ones, as `tierIndexOf` reads it.
+ */
+export function tierCountsOf(tierCount: number, items: readonly { tierIndex?: unknown }[]): number[] {
+  const counts = new Array(tierCount + 1).fill(0);
+  for (const item of items) {
+    const tier = item.tierIndex;
+    const placed = typeof tier === "number" && Number.isInteger(tier) && tier >= 0 && tier < tierCount;
+    counts[placed ? tier : tierCount] += 1;
+  }
+  return counts;
+}
+
 /** Every own photograph a draft names, each one once. */
 export function picturesWanted(draft: PublishDraft): string[] {
   return [...new Set(

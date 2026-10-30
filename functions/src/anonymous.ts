@@ -69,6 +69,20 @@ export function mineFor(list: { authorUid: string }, reader: ListReader | null):
   return reader !== null && !reader.isAnonymous && reader.uid.length > 0 && list.authorUid === reader.uid ? { mine: true } : {};
 }
 
+/**
+ * Whether the reader follows the list's author, for a reader signed in and a
+ * list with its author's name on it. Nothing at all for a guest, who follows
+ * nobody, or for an anonymous list, where the answer would say whose it is.
+ */
+export function viewerFollowsFor(
+  list: { authorUid: string; anonymous?: unknown },
+  reader: ListReader | null,
+  followed: ReadonlySet<string> | null,
+): { viewerFollowsAuthor?: boolean } {
+  if (reader === null || reader.isAnonymous || followed === null || isAnonymous(list)) return {};
+  return { viewerFollowsAuthor: followed.has(list.authorUid) };
+}
+
 /** How many reads one page may take to fill itself past rows it does not show. */
 export const MAX_FILL_ROUNDS = 5;
 
