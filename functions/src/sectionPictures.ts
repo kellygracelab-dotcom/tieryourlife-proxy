@@ -13,6 +13,10 @@ export function proposalPath(sectionId: string, pictureId: string): string {
   return `proposals/${sectionId}/${pictureId}`;
 }
 
+export function topicPicturePath(topicId: string, pictureId: string): string {
+  return `topics/${topicId}/${pictureId}`;
+}
+
 export function sectionPicturePath(sectionId: string, pictureId: string): string {
   return `sections/${sectionId}/${pictureId}`;
 }
@@ -82,6 +86,17 @@ export async function discardSectionPictures(sectionId: string): Promise<void> {
   await getStorage()
     .bucket()
     .deleteFiles({ prefix: `sections/${sectionId}/`, force: true });
+}
+
+/** A topic's pictures but the one it keeps, or all of them when it keeps none. */
+export async function discardOtherTopicPictures(topicId: string, keeping: string | null): Promise<void> {
+  const prefix = `topics/${topicId}/`;
+  const [files] = await getStorage().bucket().getFiles({ prefix });
+  await Promise.all(
+    files
+      .filter((file) => file.name.slice(prefix.length) !== keeping)
+      .map((file) => file.delete().catch(() => undefined)),
+  );
 }
 
 /** The pictures a section had before a moderator gave it a new one. */

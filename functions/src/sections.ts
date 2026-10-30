@@ -241,6 +241,8 @@ export interface SectionRecord {
   rank: number | null;
   fileUnder: string | null;
   mergedInto: string | null;
+  /** The topic a proposal became, when it was approved as a topic rather than a section. */
+  mergedTopicId: string | null;
   proposerUid: string | null;
   proposerName: string | null;
   /** The private copy of the proposer's picture, and the unguessable address it is shown to them by. */
@@ -277,6 +279,7 @@ export function builtInRecord(builtIn: BuiltInSection): SectionRecord {
     rank: null,
     fileUnder: null,
     mergedInto: null,
+    mergedTopicId: null,
     proposerUid: null,
     proposerName: null,
     proposalPicture: null,
@@ -310,6 +313,7 @@ export function newSection(id: string, name: string, nowMs: number): SectionReco
     rank: null,
     fileUnder: null,
     mergedInto: null,
+    mergedTopicId: null,
     proposerUid: null,
     proposerName: null,
     proposalPicture: null,
@@ -907,6 +911,7 @@ export interface SectionView {
   waitingLists?: number;
   proposerName?: string | null;
   mergedInto?: string | null;
+  mergedTopicId?: string | null;
   palette?: string[];
   unfinished?: boolean;
   withdrawn?: boolean;
@@ -963,6 +968,7 @@ export function sectionView(
     view.proposerUid = section.proposerUid;
     view.declineNote = section.dismissed && !viewer.moderator ? null : section.declineNote;
     view.mergedInto = section.mergedInto;
+    view.mergedTopicId = section.mergedTopicId;
     view.waitingLists = waitingLists;
   }
   if (viewer.moderator) {
@@ -970,6 +976,7 @@ export function sectionView(
     view.proposerUid = section.proposerUid;
     view.proposerName = section.proposerName;
     view.mergedInto = section.mergedInto;
+    view.mergedTopicId = section.mergedTopicId;
     view.palette = section.palette;
     view.unfinished = section.unfinished;
     view.withdrawn = section.withdrawn;

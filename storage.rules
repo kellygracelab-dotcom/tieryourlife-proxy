@@ -50,6 +50,13 @@ service firebase.storage {
       allow read: if true;
     }
 
+    // A topic's picture, for everybody, the same way: copied here only by the
+    // function that checked it, from the owner's or a moderator's own folder
+    // or from the proposal the topic was approved from.
+    match /topics/{topicId}/{pictureId} {
+      allow read: if true;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

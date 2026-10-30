@@ -12,6 +12,7 @@ export const AUDIT_ACTIONS = [
   "section.edit",
   "section.order",
   "section.delete",
+  "section.approve_as_topic",
   "topic.create",
   "topic.edit",
   "topic.merge",
