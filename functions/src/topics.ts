@@ -5,6 +5,7 @@
  * `community.ts` does the reads and writes.
  */
 import { OTHER, readNames } from "./sections";
+import { isPictureId } from "./safety";
 
 export const MIN_TOPIC_NAME_LENGTH = 2;
 export const MAX_TOPIC_NAME_LENGTH = 40;
@@ -48,6 +49,8 @@ export interface Topic {
   /** Who proposed it: sent only to them and to the staff, since it can name the author of an anonymous list. */
   createdBy?: string;
   mergedInto: string | null;
+  /** The topic's own picture, public, or null for none. */
+  pictureUrl: string | null;
 }
 
 /** Who is reading a topic. */
@@ -298,8 +301,19 @@ export function readTopicNames(value: unknown): Record<string, string> | null {
 }
 
 export type TopicEdit =
-  | { ok: true; name?: string; nameLower?: string; names?: Record<string, string> }
-  | { ok: false; reason: "settled" | "bad_name" };
+  | { ok: true; name?: string; nameLower?: string; names?: Record<string, string>; pictureId?: string | null }
+  | { ok: false; reason: "settled" | "bad_name" | "bad_picture" };
+
+/**
+ * What a call says about a topic's picture: a picture id from the caller's
+ * own folder, null to take the picture away, or nothing to leave it be.
+ * Anything else is not a picture id.
+ */
+export function readTopicPictureId(value: unknown): { ok: true; pictureId: string | null | undefined } | { ok: false } {
+  if (value === undefined) return { ok: true, pictureId: undefined };
+  if (value === null) return { ok: true, pictureId: null };
+  return isPictureId(value) ? { ok: true, pictureId: value } : { ok: false };
+}
 
 /**
  * A moderator's edit of a topic: a new name, new translations, or both, for
@@ -321,6 +335,9 @@ export function decideTopicEdit(topic: Pick<KnownTopic, "status">, body: unknown
     if (names === null) return { ok: false, reason: "bad_name" };
     edit.names = names;
   }
+  const picture = readTopicPictureId(source.pictureId);
+  if (!picture.ok) return { ok: false, reason: "bad_picture" };
+  if (picture.pictureId !== undefined) edit.pictureId = picture.pictureId;
   return edit;
 }
 
