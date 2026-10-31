@@ -64,15 +64,21 @@ describe("decideMergeIntoTopic", () => {
     assert.deepEqual(decideMergeIntoTopic(pending, topic(), section({ id: "travel" })), { ok: false, reason: "bad_topic" });
   });
 
-  it("finishes a merge whose lists are not all moved, whatever topic is sent", () => {
+  it("finishes a merge whose lists are not all moved when the same topic is sent", () => {
     const halfway = { ...pending, status: "merged" as const, mergedInto: "food", mergedTopicId: "t1", unfinished: true };
-    assert.deepEqual(decideMergeIntoTopic(halfway, null, null), { ok: true, resume: true, section: "food", topicId: "t1" });
+    assert.deepEqual(decideMergeIntoTopic(halfway, topic(), null), { ok: true, resume: true, section: "food", topicId: "t1" });
     assert.deepEqual(decideMergeIntoTopic({ ...halfway, unfinished: false }, topic(), food), { ok: false, reason: "settled" });
   });
 
-  it("is finished the same way as a proposal made a topic", () => {
+  it("does not hand a half-done merge to a call naming another topic, or none", () => {
     const halfway = { ...pending, status: "merged" as const, mergedInto: "food", mergedTopicId: "t1", unfinished: true };
-    assert.deepEqual(decideApproveAsTopic(halfway, null, {}), { ok: true, resume: true, section: "food", topicId: "t1" });
+    assert.deepEqual(decideMergeIntoTopic(halfway, topic({ id: "t2" }), food), { ok: false, reason: "settled" });
+    assert.deepEqual(decideMergeIntoTopic(halfway, null, null), { ok: false, reason: "settled" });
+  });
+
+  it("is finished the same way as a proposal made a topic, by its section", () => {
+    const halfway = { ...pending, status: "merged" as const, mergedInto: "food", mergedTopicId: "t1", unfinished: true };
+    assert.deepEqual(decideApproveAsTopic(halfway, food, {}), { ok: true, resume: true, section: "food", topicId: "t1" });
   });
 
   it("reads the topic from the body only by a usable id", () => {
@@ -132,6 +138,14 @@ describe("nameClashOf", () => {
     assert.equal(nameClashOf(pending, reads({ sectionReservation: { key, sectionId: pending.id } })), null);
     const declined = new Map([[travel.id, { ...travel, status: "declined" as const }]]);
     assert.equal(nameClashOf(pending, reads({ sectionReservation: { key, sectionId: "travel" }, sections: declined })), null);
+  });
+
+  it("does not offer a section still waiting or hidden, which /merge would refuse", () => {
+    const key = nameKey("Street food");
+    const waiting = new Map([[travel.id, { ...travel, status: "pending" as const, approvedAtMs: null }]]);
+    assert.equal(nameClashOf(pending, reads({ sectionReservation: { key, sectionId: "travel" }, sections: waiting })), null);
+    const hidden = new Map([[travel.id, { ...travel, hidden: true }]]);
+    assert.equal(nameClashOf(pending, reads({ sectionReservation: { key, sectionId: "travel" }, sections: hidden })), null);
   });
 
   it("names the topic first, since a proposal can be merged into it", () => {

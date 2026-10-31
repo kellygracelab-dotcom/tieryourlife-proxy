@@ -88,15 +88,48 @@ export async function discardSectionPictures(sectionId: string): Promise<void> {
     .deleteFiles({ prefix: `sections/${sectionId}/`, force: true });
 }
 
-/** A topic's pictures but the one it keeps, or all of them when it keeps none. */
-export async function discardOtherTopicPictures(topicId: string, keeping: string | null): Promise<void> {
-  const prefix = `topics/${topicId}/`;
-  const [files] = await getStorage().bucket().getFiles({ prefix });
-  await Promise.all(
-    files
-      .filter((file) => file.name.slice(prefix.length) !== keeping)
-      .map((file) => file.delete().catch(() => undefined)),
-  );
+/** A picture copied for a write that threw is nobody's: it goes, and the error goes on. */
+export async function keepingOnlyIfWritten<T>(
+  copied: string | null,
+  write: () => Promise<T>,
+  discard: (path: string) => Promise<void> = discardStoredPicture,
+): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    if (copied !== null) await discard(copied);
+    throw error;
+  }
+}
+
+/** Every picture a topic has, for a topic that is gone. */
+export async function discardTopicPictures(topicId: string): Promise<void> {
+  await getStorage()
+    .bucket()
+    .deleteFiles({ prefix: `topics/${topicId}/`, force: true });
+}
+
+/** The Storage path a public address names, or null for one that is not an address of ours. */
+export function storedPathOf(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  const match = /\/v0\/b\/[^/]+\/o\/([^?]+)/.exec(url);
+  if (match === null) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The file a topic's picture edit leaves behind: the one it showed before,
+ * when that was in its own folder and is not the one it shows now. Only that
+ * file, so an edit that lost a race never deletes the winner's.
+ */
+export function replacedTopicPicture(topicId: string, before: unknown, after: unknown): string | null {
+  const old = storedPathOf(before);
+  if (old === null || !old.startsWith(`topics/${topicId}/`)) return null;
+  return old === storedPathOf(after) ? null : old;
 }
 
 /** The pictures a section had before a moderator gave it a new one. */

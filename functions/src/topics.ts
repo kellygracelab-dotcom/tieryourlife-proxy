@@ -368,3 +368,49 @@ export function topicReservationClash(
   const alive = holder.status === "approved" || holder.status === "pending";
   return alive && holder.nameLower === nameLower ? holder.id : null;
 }
+
+/** How many merges a topic id is followed through before it counts as gone. */
+export const MAX_TOPIC_HOPS = 5;
+
+export type TopicHop = { live: true } | { next: string } | { gone: true };
+
+/** One step towards the topic a list belongs in: an approved one is it, a merged one points on, anything else is gone. */
+export function topicHop(topic: { status: TopicStatus; section: string | null; mergedInto?: string | null } | null): TopicHop {
+  if (topic === null) return { gone: true };
+  if (topic.status === "approved" && topic.section !== null) return { live: true };
+  if (topic.status === "merged" && isTopicId(topic.mergedInto)) return { next: topic.mergedInto };
+  return { gone: true };
+}
+
+/** The topic a republished list takes without naming one, with the section it brings. */
+export interface ImpliedTopic {
+  topicId: string;
+  topicName: string | null;
+  category: string;
+}
+
+/**
+ * A board on a phone keeps naming what it was published under long after the
+ * server moved the list: a proposal made a topic, or a topic the phone never
+ * heard of. So a republish that names no topic lands in the proposal's topic
+ * while that is approved, and otherwise keeps the topic it already had as
+ * long as it stays in the same section.
+ */
+export function impliedTopic(input: {
+  request: TopicRequest;
+  /** The live topic the asked proposal became, when it became one. */
+  viaTopic: Pick<KnownTopic, "id" | "name" | "status" | "section"> | null;
+  chosenCategory: string;
+  previous: { category?: string | null; topicId?: string | null; topicName?: string | null } | null;
+}): ImpliedTopic | null {
+  if (input.request.kind !== "none") return null;
+  const via = input.viaTopic;
+  if (via !== null && via.status === "approved") {
+    return { topicId: via.id, topicName: via.name, category: via.section ?? input.chosenCategory };
+  }
+  const previous = input.previous;
+  if (previous && typeof previous.topicId === "string" && previous.category === input.chosenCategory) {
+    return { topicId: previous.topicId, topicName: previous.topicName ?? null, category: input.chosenCategory };
+  }
+  return null;
+}
