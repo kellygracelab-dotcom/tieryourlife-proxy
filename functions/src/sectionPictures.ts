@@ -122,25 +122,22 @@ export function storedPathOf(url: unknown): string | null {
 }
 
 /**
- * The file a topic's picture edit leaves behind: the one it showed before,
- * when that was in its own folder and is not the one it shows now. Only that
- * file, so an edit that lost a race never deletes the winner's.
+ * The file a picture edit leaves behind: the one shown before, when that was
+ * in this folder and is not the one shown now. Only that file, so an edit
+ * that lost a race never deletes the winner's.
  */
-export function replacedTopicPicture(topicId: string, before: unknown, after: unknown): string | null {
+function replacedIn(folder: string, before: unknown, after: unknown): string | null {
   const old = storedPathOf(before);
-  if (old === null || !old.startsWith(`topics/${topicId}/`)) return null;
+  if (old === null || !old.startsWith(folder)) return null;
   return old === storedPathOf(after) ? null : old;
 }
 
-/** The pictures a section had before a moderator gave it a new one. */
-export async function discardOtherSectionPictures(sectionId: string, keeping: string): Promise<void> {
-  const prefix = `sections/${sectionId}/`;
-  const [files] = await getStorage().bucket().getFiles({ prefix });
-  await Promise.all(
-    files
-      .filter((file) => file.name.slice(prefix.length) !== keeping)
-      .map((file) => file.delete().catch(() => undefined)),
-  );
+export function replacedTopicPicture(topicId: string, before: unknown, after: unknown): string | null {
+  return replacedIn(topicPicturePath(topicId, ""), before, after);
+}
+
+export function replacedSectionPicture(sectionId: string, before: unknown, after: unknown): string | null {
+  return replacedIn(sectionPicturePath(sectionId, ""), before, after);
 }
 
 /**

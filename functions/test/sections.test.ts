@@ -32,6 +32,7 @@ import {
   NEUTRAL_COLOURS,
   notYetEditable,
   PENDING_EDIT_FIELDS,
+  pictureEditRefusal,
   newSection,
   noStats,
   orderSections,
@@ -412,10 +413,39 @@ describe("readSectionEdits", () => {
     assert.deepEqual(readSectionEdits({ pictureId: "../x" }, ["pictureId"]), { ok: false, code: "BAD_PICTURE", why: "missing" });
   });
 
+  it("reads a picture taken away as null", () => {
+    assert.deepEqual(readSectionEdits({ pictureId: null }, ["pictureId"]), { ok: true, edits: { pictureId: null } });
+    assert.deepEqual(readSectionEdits({ pictureId: "pic_1" }, ["pictureId"]), { ok: true, edits: { pictureId: "pic_1" } });
+  });
+
   it("reads a chosen tint as one hex colour, and refuses anything else", () => {
     assert.deepEqual(readSectionEdits({ tint: "#7a4a33" }, ["tint"]), { ok: true, edits: { tint: "#7A4A33" } });
     assert.equal(readSectionEdits({ tint: { light: "#7a4a33", dark: "#5f3d2d" } }, ["tint"]).ok, false);
     assert.equal(readSectionEdits({ tint: "7a4a33" }, ["tint"]).ok, false);
+  });
+});
+
+describe("pictureEditRefusal", () => {
+  const games = builtInRecord(BUILT_IN_SECTIONS.find((one) => one.id === "games")!);
+
+  it("lets the owner give a built-in a picture and take it away again", () => {
+    assert.equal(pictureEditRefusal(games, "owner", "pic_1"), null);
+    assert.equal(pictureEditRefusal(games, "owner", null), null);
+  });
+
+  it("refuses a moderator a built-in's picture either way", () => {
+    assert.equal(pictureEditRefusal(games, "moderator", "pic_1"), "built_in");
+    assert.equal(pictureEditRefusal(games, "moderator", null), "built_in");
+  });
+
+  it("asks nothing of an edit that leaves the picture alone", () => {
+    assert.equal(pictureEditRefusal(games, "moderator", undefined), null);
+  });
+
+  it("lets an approved section's picture go, and never a waiting proposal's", () => {
+    assert.equal(pictureEditRefusal(section({ id: "street-food" }), "owner", null), null);
+    assert.equal(pictureEditRefusal(section({ id: "street-food", status: "pending" }), "owner", null), "waiting");
+    assert.equal(pictureEditRefusal(section({ id: "street-food", status: "pending" }), "owner", "pic_2"), null);
   });
 });
 
@@ -834,8 +864,11 @@ describe("sectionView", () => {
     assert.equal(sectionView(declined, { uid: "mod", moderator: true }, noStats("x"), false).declineNote, "Too close to Food");
   });
 
-  it("never gives a built-in a picture: clients draw their own art", () => {
-    assert.equal(sectionView(builtInRecord(BUILT_IN_SECTIONS[0]), stranger, noStats("anime"), false).pictureUrl, null);
+  it("gives a built-in the picture the owner gave it, like any section, and none before that", () => {
+    const anime = builtInRecord(BUILT_IN_SECTIONS[0]);
+    assert.equal(sectionView(anime, stranger, noStats("anime"), false).pictureUrl, null);
+    const pictured = { ...anime, picture: { url: "https://pic/anime", width: 1600, height: 1000 } };
+    assert.equal(sectionView(pictured, stranger, noStats("anime"), false).pictureUrl, "https://pic/anime");
   });
 });
 

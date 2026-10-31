@@ -74,6 +74,12 @@ describe("judgePicture", () => {
     assert.equal(judgePicture(jpeg(MIN_PICTURE_WIDTH, 600)).ok, true);
   });
 
+  it("takes the 1600 by 1000 WebP both clients upload, and sets no upper bound", () => {
+    assert.deepEqual(judgePicture(webpLossy(1600, 1000)), { ok: true, size: { format: "webp", width: 1600, height: 1000 } });
+    assert.equal(judgePicture(webpExtended(1600, 1000)).ok, true);
+    assert.equal(judgePicture(webpExtended(4000, 2500)).ok, true);
+  });
+
   it("says when there is no picture", () => {
     assert.deepEqual(judgePicture(null), { ok: false, why: "missing" });
   });

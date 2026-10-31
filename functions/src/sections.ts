@@ -485,7 +485,8 @@ export interface SectionEdits {
   icon?: string;
   rank?: number | null;
   hidden?: boolean;
-  pictureId?: string;
+  /** A picture from the caller's own folder, or null to take the section's picture away. */
+  pictureId?: string | null;
   /** A light tint the owner or a moderator chose; the rest is derived from it. */
   tint?: string;
 }
@@ -532,7 +533,7 @@ export function readSectionEdits(
     edits.hidden = source.hidden;
   }
   if (allowed.includes("pictureId") && sent("pictureId")) {
-    if (!isPictureId(source.pictureId)) return { ok: false, code: "BAD_PICTURE", why: "missing" };
+    if (source.pictureId !== null && !isPictureId(source.pictureId)) return { ok: false, code: "BAD_PICTURE", why: "missing" };
     edits.pictureId = source.pictureId;
   }
   if (allowed.includes("tint") && sent("tint")) {
@@ -554,6 +555,24 @@ export function notYetEditable(status: SectionStatus, body: unknown): "rank" | "
   const source = (body ?? {}) as Record<string, unknown>;
   if (source.rank !== undefined) return "rank";
   if (source.hidden !== undefined) return "hidden";
+  return null;
+}
+
+export type PictureEditRefusal = "built_in" | "waiting";
+
+/**
+ * Whether this edit of a section's picture may go ahead. A built-in takes a
+ * picture, or has it taken away, from the owner alone; a waiting proposal
+ * always keeps one, so it can be replaced but not removed.
+ */
+export function pictureEditRefusal(
+  section: Pick<SectionRecord, "builtIn" | "status">,
+  role: Role,
+  pictureId: string | null | undefined,
+): PictureEditRefusal | null {
+  if (pictureId === undefined) return null;
+  if (section.builtIn && role !== "owner") return "built_in";
+  if (pictureId === null && section.status === "pending") return "waiting";
   return null;
 }
 
@@ -1004,13 +1023,11 @@ export function sectionView(
     name: section.name,
     names: section.names,
     icon: section.icon,
-    pictureUrl: section.builtIn
-      ? null
-      : section.status === "approved"
-        ? section.picture?.url ?? null
-        : mayKnow
-          ? section.proposalPictureUrl
-          : null,
+    pictureUrl: section.status === "approved"
+      ? section.picture?.url ?? null
+      : mayKnow
+        ? section.proposalPictureUrl
+        : null,
     tint: section.tint,
     topicBg: section.topicBg,
     topicIcon: section.topicIcon,
