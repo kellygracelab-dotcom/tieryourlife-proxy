@@ -96,10 +96,16 @@ describe("decideApproveAsTopic", () => {
     assert.deepEqual(decideApproveAsTopic({ ...pending, status: "approved" }, food, {}), { ok: false, reason: "settled" });
   });
 
-  it("finishes a proposal already made a topic whose lists are not all moved, whatever section is sent", () => {
+  it("finishes a proposal already made a topic whose lists are not all moved, when the same section is sent", () => {
     const halfway = { ...pending, status: "merged" as const, mergedInto: "food", mergedTopicId: "t9", unfinished: true };
-    assert.deepEqual(decideApproveAsTopic(halfway, null, {}), { ok: true, resume: true, section: "food", topicId: "t9" });
+    assert.deepEqual(decideApproveAsTopic(halfway, food, {}), { ok: true, resume: true, section: "food", topicId: "t9" });
     assert.deepEqual(decideApproveAsTopic({ ...halfway, unfinished: false }, food, {}), { ok: false, reason: "settled" });
+  });
+
+  it("does not hand a half-done topic to a call naming another section, or none", () => {
+    const halfway = { ...pending, status: "merged" as const, mergedInto: "food", mergedTopicId: "t9", unfinished: true };
+    assert.deepEqual(decideApproveAsTopic(halfway, section({ id: "travel" }), {}), { ok: false, reason: "settled" });
+    assert.deepEqual(decideApproveAsTopic(halfway, null, {}), { ok: false, reason: "settled" });
   });
 
   it("is written in the log under its own name", () => {

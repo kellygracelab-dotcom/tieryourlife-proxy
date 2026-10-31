@@ -270,3 +270,31 @@ export function rankingRefusal(
 export function rankingWrite(existed: boolean): { created: boolean; countChange: 0 | 1 } {
   return existed ? { created: false, countChange: 0 } : { created: true, countChange: 1 };
 }
+
+/** When a ranking was last saved, as Firestore keeps it. */
+export interface RankingTime {
+  seconds: number;
+  nanoseconds: number;
+}
+
+const TIME_CURSOR = /^~(\d{1,12})\.(\d{1,9})$/;
+
+/**
+ * Where the next page of rankings carries on. After a ranking the page shows,
+ * its id, as always. After one it does not, its time instead: a website
+ * ranking's id is the code of its unlisted page, and a cursor would hand
+ * that code to anybody reading the sheet.
+ */
+export function rankingCursor(next: { id: string; shown: boolean; updatedAt: RankingTime | null } | null): string | null {
+  if (next === null) return null;
+  if (next.shown) return next.id;
+  return next.updatedAt === null ? null : `~${next.updatedAt.seconds}.${next.updatedAt.nanoseconds}`;
+}
+
+/** A cursor as `rankingCursor` wrote it: a ranking's id, or the time to carry on after. */
+export function readRankingCursor(after: string): { kind: "id"; id: string } | { kind: "time"; time: RankingTime } {
+  const match = TIME_CURSOR.exec(after);
+  return match === null
+    ? { kind: "id", id: after }
+    : { kind: "time", time: { seconds: Number(match[1]), nanoseconds: Number(match[2]) } };
+}

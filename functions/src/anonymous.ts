@@ -83,6 +83,17 @@ export function viewerFollowsFor(
   return { viewerFollowsAuthor: followed.has(list.authorUid) };
 }
 
+/**
+ * The authors whose follow a reader's page needs looked up: each once, never
+ * an anonymous list's, which gets no answer, and never the reader, who
+ * cannot follow themselves. Nobody for a guest.
+ */
+export function authorsToAsk(lists: readonly { authorUid: string; anonymous?: unknown }[], reader: ListReader): string[] {
+  if (reader.isAnonymous) return [];
+  const authors = lists.filter((list) => !isAnonymous(list) && list.authorUid !== reader.uid).map((list) => list.authorUid);
+  return [...new Set(authors)];
+}
+
 /** How many reads one page may take to fill itself past rows it does not show. */
 export const MAX_FILL_ROUNDS = 5;
 

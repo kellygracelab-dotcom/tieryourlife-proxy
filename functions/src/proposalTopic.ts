@@ -23,7 +23,8 @@ export type ApproveAsTopic =
  * Whether a proposal can become a topic: one still waiting, into an open
  * section, under its own name or a better one, with any translations. A
  * proposal already turned into a topic but whose lists are not all moved yet
- * is finished rather than refused, so asking again completes the job.
+ * is finished when the call names the same section, so asking again
+ * completes the job; any other section is too late.
  */
 export function decideApproveAsTopic(
   proposal: SectionRecord | null,
@@ -32,7 +33,9 @@ export function decideApproveAsTopic(
 ): ApproveAsTopic {
   if (proposal === null || proposal.builtIn) return { ok: false, reason: "missing" };
   const resume = halfDone(proposal);
-  if (resume !== null) return { ok: true, resume: true, ...resume };
+  if (resume !== null) {
+    return section?.id === resume.section ? { ok: true, resume: true, ...resume } : { ok: false, reason: "settled" };
+  }
   if (proposal.status !== "pending") return { ok: false, reason: "settled" };
   if (section === null || !isOpen(section)) return { ok: false, reason: "bad_section" };
   const source = (body ?? {}) as Record<string, unknown>;
@@ -57,7 +60,8 @@ export type MergeIntoTopic =
 /**
  * Whether a proposal can go into a topic that exists: one still waiting, into
  * an approved topic of an open section. Its lists then move as for a topic
- * made from it, so a move cut short finishes the same way.
+ * made from it, so a move cut short finishes the same way, when the call
+ * names the same topic.
  */
 export function decideMergeIntoTopic(
   proposal: SectionRecord | null,
@@ -66,7 +70,9 @@ export function decideMergeIntoTopic(
 ): MergeIntoTopic {
   if (proposal === null || proposal.builtIn) return { ok: false, reason: "missing" };
   const resume = halfDone(proposal);
-  if (resume !== null) return { ok: true, resume: true, ...resume };
+  if (resume !== null) {
+    return topic?.id === resume.topicId ? { ok: true, resume: true, ...resume } : { ok: false, reason: "settled" };
+  }
   if (proposal.status !== "pending") return { ok: false, reason: "settled" };
   if (topic === null || topic.status !== "approved" || topic.section === null) return { ok: false, reason: "bad_topic" };
   if (section === null || section.id !== topic.section || !isOpen(section)) return { ok: false, reason: "bad_topic" };
@@ -95,7 +101,9 @@ export interface ClashReads {
 /**
  * What a waiting proposal's name already belongs to, by the reservations:
  * an approved topic first, since a proposal can be merged into one, then
- * another section approved or waiting. A decided proposal clashes with nothing.
+ * another open section, which it can be merged into as well. A name held by
+ * another proposal still waiting is not offered: there is nothing to merge
+ * into yet. A decided proposal clashes with nothing.
  */
 export function nameClashOf(proposal: SectionRecord, reads: ClashReads): NameClash {
   if (proposal.status !== "pending") return null;
@@ -108,5 +116,5 @@ export function nameClashOf(proposal: SectionRecord, reads: ClashReads): NameCla
   const reservations = reads.sectionReservation === null ? [] : [reads.sectionReservation];
   const holder = reservationClash([proposal.name], reservations, reads.sections, proposal.id);
   const section = holder === null ? undefined : reads.sections.get(holder);
-  return section === undefined ? null : { kind: "section", id: section.id, name: section.name };
+  return section === undefined || !isOpen(section) ? null : { kind: "section", id: section.id, name: section.name };
 }

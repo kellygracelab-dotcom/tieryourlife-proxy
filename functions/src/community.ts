@@ -24,6 +24,7 @@ import {
   ownAuthor,
   shownAuthor,
   viewerFollowsFor,
+  authorsToAsk,
   type ListReader,
 } from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
@@ -65,6 +66,8 @@ import {
   decidePublication,
   isOwnedRanking,
   mineFirst,
+  rankingCursor,
+  readRankingCursor,
   rankingRefusal,
   rankingWrite,
   RANKINGS_PAGE_SIZE,
@@ -146,6 +149,9 @@ import {
   type SectionStats,
   type SectionStatus,
   type SectionView,
+  finishCallOf,
+  TOPIC_DECISIONS,
+  type TopicDecision,
   type Viewer,
 } from "./sections";
 import {
@@ -172,12 +178,14 @@ import {
   readStoredPicture,
   realPictureColours,
   sectionPicturePath,
-  discardOtherTopicPictures,
+  discardTopicPictures,
+  keepingOnlyIfWritten,
+  replacedTopicPicture,
   tokenAddressOf,
   topicPicturePath,
 } from "./sectionPictures";
 import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, topicKeyOf } from "./proposalTopic";
-import { adminKeeps, readAdminListsQuery } from "./adminLists";
+import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "./adminLists";
 import {
   cleanTopicName,
   decideAttachment,
@@ -185,6 +193,9 @@ import {
   decideTopicCreation,
   decideTopicDeletion,
   decideTopicEdit,
+  impliedTopic,
+  MAX_TOPIC_HOPS,
+  topicHop,
   readTopicPictureId,
   isTopicId,
   mayKnowProposer,
@@ -239,8 +250,8 @@ const ORDER_PATH = "order";
 const NAME_CHECK_PATH = "name-check";
 const ADMIN_PATH = "admin";
 const CANDIDATES_PATH = "candidates";
-const APPROVE_AS_TOPIC = "approve-as-topic";
-const MERGE_INTO_TOPIC = "merge-into-topic";
+const APPROVE_AS_TOPIC: TopicDecision = "approve-as-topic";
+const MERGE_INTO_TOPIC: TopicDecision = "merge-into-topic";
 
 /** How many accounts the candidate index holds at most; past that, appointing needs the uid. */
 const MAX_INDEXED_ACCOUNTS = 10_000;
@@ -737,14 +748,12 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
     const data = doc.data() as StoredList;
     return data.underReview !== true && !(filters.author !== null && isAnonymous(data));
   };
-  const [page, followed] = await Promise.all([
-    fillVisible(
-      async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
-      shown,
-      FEED_PAGE_SIZE,
-    ),
-    authorsFollowedBy(identity),
-  ]);
+  const page = await fillVisible(
+    async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
+    shown,
+    FEED_PAGE_SIZE,
+  );
+  const followed = await followsAmong(identity, page.rows.map((doc) => doc.data() as StoredList));
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
@@ -872,9 +881,17 @@ async function followedSectionIds(uid: string): Promise<string[]> {
   return snapshot.docs.map((doc) => doc.get("section") as string);
 }
 
-/** Whom a signed-in reader follows, read once for a whole page; nothing for a guest, who follows nobody. */
-async function authorsFollowedBy(identity: Identity): Promise<Set<string> | null> {
-  return identity.isAnonymous ? null : new Set(await followedBy(identity.uid));
+/**
+ * Which of a page's authors a signed-in reader follows: one document per
+ * author on the page, at most a page of them; nothing for a guest, who follows nobody.
+ */
+async function followsAmong(identity: Identity, lists: readonly StoredList[]): Promise<Set<string> | null> {
+  if (identity.isAnonymous) return null;
+  const authors = authorsToAsk(lists, identity);
+  if (authors.length === 0) return new Set();
+  const db = getFirestore();
+  const docs = await db.getAll(...authors.map((author) => db.collection(FOLLOWS).doc(followId(identity.uid, author))));
+  return new Set(authors.filter((_, at) => docs[at].exists));
 }
 
 /** Whom this person follows, at most as many as one page will draw from. */
@@ -949,6 +966,7 @@ interface StoredSection {
   proposalPictureUrl?: string | null;
   palette?: string[];
   unfinished?: boolean;
+  decidedAs?: string | null;
   declineNote?: string | null;
   dismissedAt?: FirebaseFirestore.Timestamp | null;
   withdrawn?: boolean;
@@ -983,6 +1001,7 @@ function sectionRecord(id: string, data: StoredSection): SectionRecord {
     proposalPictureUrl: data.proposalPictureUrl ?? null,
     palette: data.palette ?? [],
     unfinished: data.unfinished === true,
+    decidedAs: TOPIC_DECISIONS.find((one) => one === data.decidedAs) ?? null,
     declineNote: data.declineNote ?? null,
     dismissed: data.dismissedAt != null,
     withdrawn: data.withdrawn === true,
@@ -1652,25 +1671,37 @@ async function withdrawProposal(response: Response, identity: Identity, id: stri
   response.status(204).send();
 }
 
-/** The queue, oldest first, each with who asked, its picture, its palette and how many lists wait for it. */
+/**
+ * The queue, oldest first, each with who asked, its picture, its palette and
+ * how many lists wait for it; then the decisions whose lists were not all
+ * moved, oldest decision first, each with `finish`, the call that completes it.
+ */
 async function readSectionQueue(response: Response, identity: Identity): Promise<void> {
   if ((await roleFor(response, identity, "queue")) === null) return;
-  const snapshot = await getFirestore()
-    .collection(SECTIONS)
-    .where("status", "==", "pending")
-    .limit(SECTION_QUEUE_READ)
-    .get();
-  const waiting = snapshot.docs
+  const sections = getFirestore().collection(SECTIONS);
+  const [pending, unfinished] = await Promise.all([
+    sections.where("status", "==", "pending").limit(SECTION_QUEUE_READ).get(),
+    sections.where("unfinished", "==", true).limit(SECTION_QUEUE_READ).get(),
+  ]);
+  const waiting = pending.docs
     .map((doc) => sectionRecord(doc.id, doc.data() as StoredSection))
     .sort((left, right) => left.createdAtMs - right.createdAtMs);
-  const [counts, clashes] = await Promise.all([
+  const stuck = unfinished.docs
+    .map((doc) => sectionRecord(doc.id, doc.data() as StoredSection))
+    .filter((one) => one.status !== "pending" && finishCallOf(one) !== null)
+    .sort((left, right) => (left.decidedAtMs ?? 0) - (right.decidedAtMs ?? 0));
+  const [counts, clashes, stuckCounts] = await Promise.all([
     Promise.all(waiting.map((one) => waitingCount(one.id))),
     nameClashesOf(waiting),
+    Promise.all(stuck.map((one) => waitingCount(one.id))),
   ]);
   const viewer: Viewer = { uid: identity.uid, moderator: true };
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    sections: waiting.map((one, at) => withClash(sectionView(one, viewer, noStats(one.id), false, counts[at]), clashes[at])),
+    sections: [
+      ...waiting.map((one, at) => withClash(sectionView(one, viewer, noStats(one.id), false, counts[at]), clashes[at])),
+      ...stuck.map((one, at) => withClash(sectionView(one, viewer, noStats(one.id), false, stuckCounts[at]), null)),
+    ],
   });
 }
 
@@ -2657,6 +2688,14 @@ async function publish(
     refuseAttachment(response, attachment.reason);
     return;
   }
+  const implied = asked.request.kind === "none"
+    ? impliedTopic({
+        request: asked.request,
+        viaTopic: section.viaTopic === undefined ? null : await liveTopic(section.viaTopic),
+        chosenCategory: section.category,
+        previous,
+      })
+    : null;
 
   // Asked before the pictures, because it costs one call and no bytes.
   // Answered after the board is stored, because the answer is a report about
@@ -2693,8 +2732,12 @@ async function publish(
 
   // A new topic is named here, with the list, so the two are written together.
   const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
-  const topicId = attachment.kind === "attach" ? attachment.topic.id : topicRef?.id ?? null;
-  const topicName = attachment.kind === "attach" ? attachment.topic.name : attachment.kind === "create" ? attachment.name : null;
+  const topicId = attachment.kind === "attach" ? attachment.topic.id : topicRef?.id ?? implied?.topicId ?? null;
+  const topicName = attachment.kind === "attach"
+    ? attachment.topic.name
+    : attachment.kind === "create"
+      ? attachment.name
+      : implied?.topicName ?? null;
 
   const document = {
     authorUid: identity.uid,
@@ -2705,8 +2748,8 @@ async function publish(
     // A topic decides the section: an approved one brings its own, a waiting
     // one holds the list under "other" until somebody has looked. So a list
     // with a topic never waits for a proposed section as well.
-    category: attachment.kind === "none" ? section.category : attachment.category,
-    proposedSection: attachment.kind === "none" ? section.proposedSection : null,
+    category: attachment.kind === "none" ? implied?.category ?? section.category : attachment.category,
+    proposedSection: attachment.kind === "none" && implied === null ? section.proposedSection : null,
     topicId,
     topicName,
     tiers: list.tiers,
@@ -2958,8 +3001,11 @@ async function readRankings(response: Response, identity: Identity, listId: stri
   const db = getFirestore();
   const collection = db.collection(RANKINGS);
   let ordered: FirebaseFirestore.Query = collection.where("listId", "==", listId).orderBy("updatedAt", "desc");
-  if (after) {
-    const previous = await collection.doc(after).get();
+  const cursor = after ? readRankingCursor(after) : null;
+  if (cursor?.kind === "time") {
+    ordered = ordered.startAfter(new Timestamp(cursor.time.seconds, cursor.time.nanoseconds));
+  } else if (cursor?.kind === "id") {
+    const previous = await collection.doc(cursor.id).get();
     if (!previous.exists) {
       response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
       return;
@@ -2989,7 +3035,11 @@ async function readRankings(response: Response, identity: Identity, listId: stri
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     rankings: mineFirst(withMine, identity.uid),
-    nextCursor: page.next?.id ?? null,
+    nextCursor: rankingCursor(
+      page.next === null
+        ? null
+        : { id: page.next.id, shown: shown(page.next), updatedAt: (page.next.get("updatedAt") as Timestamp | undefined) ?? null },
+    ),
   });
 }
 
@@ -3011,11 +3061,17 @@ async function deleteMyRanking(response: Response, identity: Identity, listId: s
   response.status(204).send();
 }
 
-/** A list that is gone takes its rankings with it; nobody can open them without it. */
+/**
+ * A list that is gone takes the app's rankings of it with it; nobody can open
+ * them without it. The website's rankings, kept by code and without an
+ * account, are the website's: its pages outlive the list.
+ */
 async function discardRankings(listId: string): Promise<void> {
   const db = getFirestore();
-  const carrying = await db.collection(RANKINGS).where("listId", "==", listId).get();
-  for (const part of chunked(carrying.docs, WRITES_PER_BATCH)) {
+  const carrying = (await db.collection(RANKINGS).where("listId", "==", listId).get()).docs.filter((doc) =>
+    isOwnedRanking(doc.data()),
+  );
+  for (const part of chunked(carrying, WRITES_PER_BATCH)) {
     const batch = db.batch();
     part.forEach((doc) => batch.delete(doc.ref));
     await batch.commit();
@@ -3058,6 +3114,26 @@ async function resolveSectionChoice(identity: Identity, asked: string, keeping: 
   const next = filed ? section.fileUnder : section?.status === "merged" ? section.mergedInto : null;
   const known = next ? new Map([...first, ...(await readSectionsById([next]))]) : first;
   return decideSectionChoice(asked, known, identity.uid, keeping);
+}
+
+/**
+ * The approved topic an id ends up at, following merges, or null when it is
+ * rejected, gone or merged further than anybody should have to follow.
+ */
+async function liveTopic(topicId: string): Promise<KnownTopic | null> {
+  const topics = getFirestore().collection(TOPICS);
+  let id = topicId;
+  const seen = new Set<string>();
+  for (let hop = 0; hop < MAX_TOPIC_HOPS && !seen.has(id); hop++) {
+    seen.add(id);
+    const snapshot = await topics.doc(id).get();
+    const stored = snapshot.exists ? (snapshot.data() as StoredTopic) : null;
+    const step = topicHop(stored === null ? null : { status: stored.status, section: stored.section ?? null, mergedInto: stored.mergedInto });
+    if ("live" in step) return knownTopic(id, stored as StoredTopic);
+    if ("gone" in step) return null;
+    id = step.next;
+  }
+  return null;
 }
 
 /** What the deciding needs to know about the topic a publication asked for. */
@@ -3619,7 +3695,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
     ? await copyTopicPicture(await readOwnPicture(identity.uid, asked.pictureId), ref.id, asked.pictureId)
     : null;
   if (picture !== null && !picture.ok) return refuseSection(response, { code: "BAD_PICTURE", why: picture.why });
-  const created = await db.runTransaction(async (transaction): Promise<{ taken: string } | { id: string }> => {
+  const created = await keepingOnlyIfWritten(picture?.path ?? null, () => db.runTransaction(async (transaction): Promise<{ taken: string } | { id: string }> => {
     const taken = await topicNameTaken(transaction, decision.nameLower, null);
     if (taken !== null) return { taken };
     transaction.set(ref, {
@@ -3647,7 +3723,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
       picture: picture?.picture ?? null,
     }));
     return { id: ref.id };
-  });
+  }));
   if ("taken" in created) {
     if (picture !== null) await discardStoredPicture(picture.path);
     return topicNameRefused(response, created.taken);
@@ -3724,7 +3800,8 @@ async function editTopic(response: Response, identity: Identity, topicId: string
     update.picture = null;
   }
 
-  const saved = await db.runTransaction(async (transaction): Promise<"saved" | "settled" | { taken: string }> => {
+  type Saved = { replaced: string | null } | "settled" | { taken: string };
+  const saved = await keepingOnlyIfWritten(copied, () => db.runTransaction(async (transaction): Promise<Saved> => {
     const fresh = await transaction.get(ref);
     const status = fresh.get("status");
     if (!fresh.exists || (status !== "approved" && status !== "pending")) return "settled";
@@ -3736,13 +3813,17 @@ async function editTopic(response: Response, identity: Identity, topicId: string
     if (change.after !== null) {
       auditInTransaction(transaction, auditEntry(identity.uid, role, "topic.edit", `${TOPICS}/${topicId}`, change.before, change.after));
     }
-    return "saved";
-  });
-  if (saved !== "saved" && copied !== null) await discardStoredPicture(copied);
-  if (saved === "settled") return refuseTopicAction(response, "settled");
-  if (saved !== "saved") return topicNameRefused(response, saved.taken);
-  // The old picture goes once the new one, or none, is what the topic says.
-  if (edit.pictureId !== undefined) await discardOtherTopicPictures(topicId, edit.pictureId);
+    // The picture this edit replaces, as the topic says now rather than when it was first read.
+    const before = (fresh.get("picture") as SectionPicture | null | undefined)?.url;
+    const after = (update.picture as SectionPicture | null | undefined)?.url;
+    return { replaced: "picture" in update ? replacedTopicPicture(topicId, before, after) : null };
+  }));
+  if (typeof saved === "string" || "taken" in saved) {
+    if (copied !== null) await discardStoredPicture(copied);
+    if (saved === "settled") return refuseTopicAction(response, "settled");
+    return topicNameRefused(response, saved.taken);
+  }
+  if (saved.replaced !== null) await discardStoredPicture(saved.replaced);
   if (edit.name !== undefined && edit.name !== topic.name) {
     await rewriteWhere(PUBLISHED, "topicId", topicId, { topicName: edit.name });
   }
@@ -3783,6 +3864,8 @@ async function deleteTopic(response: Response, identity: Identity, topicId: stri
   batch.delete(ref);
   auditInBatch(batch, auditEntry(identity.uid, role, "topic.delete", `${TOPICS}/${topicId}`, { name: stored.name, status: stored.status }, null));
   await batch.commit();
+  // Public by address; with the topic gone nothing names them.
+  await discardTopicPictures(topicId);
   response.status(204).send();
 }
 
@@ -3823,57 +3906,65 @@ async function moveList(response: Response, identity: Identity, listId: string, 
     return;
   }
   const db = getFirestore();
+  const source = (body ?? {}) as Record<string, unknown>;
+  const intoTopic = Object.prototype.hasOwnProperty.call(source, "topicId") && source.topicId !== null;
+  if (intoTopic && !isTopicId(source.topicId)) {
+    response.status(400).json({ error: "Which topic?", code: "INVALID" });
+    return;
+  }
+  // Sections are read through their cache, which seeds the built-ins; the list and the topics inside the transaction.
+  const asked = intoTopic ? null : isSectionId(source.category) ? await readSectionById(source.category) : null;
+  if (!intoTopic && (asked === null || asked.status !== "approved")) {
+    response.status(400).json({ error: "Which section?", code: "INVALID" });
+    return;
+  }
+
+  type Moved = "moved" | "missing" | "bad_topic";
   const ref = db.collection(PUBLISHED).doc(listId);
-  const snapshot = await ref.get();
-  if (!snapshot.exists) {
+  // One transaction, so two moves at once each take the list from where the other left it, and count it once.
+  const moved = await db.runTransaction(async (transaction): Promise<Moved> => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return "missing";
+    const stored = snapshot.data() as StoredList;
+    const from = stored.topicId ?? null;
+
+    let update: { category: string; topicId: string | null; topicName: string | null; proposedSection: null };
+    if (intoTopic) {
+      const target = await transaction.get(db.collection(TOPICS).doc(source.topicId as string));
+      const topic = target.exists ? (target.data() as StoredTopic) : null;
+      if (!topic || topic.status !== "approved" || topic.section === null) return "bad_topic";
+      update = { category: topic.section, topicId: target.id, topicName: topic.name, proposedSection: null };
+    } else {
+      const category = (asked as SectionRecord).id;
+      let keeps = false;
+      if (from !== null && !Object.prototype.hasOwnProperty.call(source, "topicId")) {
+        const current = await transaction.get(db.collection(TOPICS).doc(from));
+        keeps = current.exists && (current.data() as StoredTopic).section === category;
+      }
+      update = keeps
+        ? { category, topicId: from, topicName: stored.topicName ?? null, proposedSection: null }
+        : { category, topicId: null, topicName: null, proposedSection: null };
+    }
+
+    transaction.update(ref, update);
+    const change = changedFields(stored as unknown as Record<string, unknown>, update);
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "list.move", `${PUBLISHED}/${listId}`, change.before, change.after));
+    if (from !== null && from !== update.topicId) {
+      transaction.update(db.collection(TOPICS).doc(from), { listCount: FieldValue.increment(-1) });
+    }
+    if (update.topicId !== null && update.topicId !== from) {
+      transaction.update(db.collection(TOPICS).doc(update.topicId), { listCount: FieldValue.increment(1) });
+    }
+    return "moved";
+  });
+  if (moved === "missing") {
     response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
     return;
   }
-  const stored = snapshot.data() as StoredList;
-  const source = (body ?? {}) as Record<string, unknown>;
-  const from = stored.topicId ?? null;
-
-  let update: { category: string; topicId: string | null; topicName: string | null; proposedSection: null };
-  if (Object.prototype.hasOwnProperty.call(source, "topicId") && source.topicId !== null) {
-    if (!isTopicId(source.topicId)) {
-      response.status(400).json({ error: "Which topic?", code: "INVALID" });
-      return;
-    }
-    const target = await db.collection(TOPICS).doc(source.topicId).get();
-    const topic = target.exists ? (target.data() as StoredTopic) : null;
-    if (!topic || topic.status !== "approved" || topic.section === null) {
-      response.status(400).json({ error: "Move into an approved topic", code: "INVALID" });
-      return;
-    }
-    update = { category: topic.section, topicId: target.id, topicName: topic.name, proposedSection: null };
-  } else {
-    const asked = isSectionId(source.category) ? await readSectionById(source.category) : null;
-    if (asked === null || asked.status !== "approved") {
-      response.status(400).json({ error: "Which section?", code: "INVALID" });
-      return;
-    }
-    const category = asked.id;
-    let keeps = false;
-    if (from !== null && !Object.prototype.hasOwnProperty.call(source, "topicId")) {
-      const current = await db.collection(TOPICS).doc(from).get();
-      keeps = current.exists && (current.data() as StoredTopic).section === category;
-    }
-    update = keeps
-      ? { category, topicId: from, topicName: stored.topicName ?? null, proposedSection: null }
-      : { category, topicId: null, topicName: null, proposedSection: null };
+  if (moved === "bad_topic") {
+    response.status(400).json({ error: "Move into an approved topic", code: "INVALID" });
+    return;
   }
-
-  const batch = db.batch();
-  batch.update(ref, update);
-  const change = changedFields(stored as unknown as Record<string, unknown>, update);
-  auditInBatch(batch, auditEntry(identity.uid, role, "list.move", `${PUBLISHED}/${listId}`, change.before, change.after));
-  if (from !== null && from !== update.topicId) {
-    batch.update(db.collection(TOPICS).doc(from), { listCount: FieldValue.increment(-1) });
-  }
-  if (update.topicId !== null && update.topicId !== from) {
-    batch.update(db.collection(TOPICS).doc(update.topicId), { listCount: FieldValue.increment(1) });
-  }
-  await batch.commit();
   response.status(204).send();
 }
 
@@ -4057,11 +4148,13 @@ async function copyTopicPicture(bytes: Buffer | null, topicId: string, pictureId
 
 /**
  * One section's lists as the staff see them: lists under review too, and
- * the real author beside the public fields, anonymous lists included.
- * Narrowed to a topic, or to the lists with none.
+ * the real author beside the public fields, though on an anonymous list only
+ * the owner is told who that is. Narrowed to a topic, to the lists with none,
+ * or to the lists whose topic is not an approved topic of the section.
  */
 async function readAdminLists(response: Response, identity: Identity, query: Record<string, unknown>): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
+  const role = await roleOf(identity);
+  if (role === null) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -4072,9 +4165,9 @@ async function readAdminLists(response: Response, identity: Identity, query: Rec
   }
   const collection = getFirestore().collection(PUBLISHED);
   // A topic's lists are read by topic, whose indexes exist, and kept to the section here.
-  const base = asked.topic !== null && asked.topic !== "none"
-    ? collection.where("topicId", "==", asked.topic)
-    : collection.where("category", "==", asked.section);
+  const base = readsBySection(asked.topic)
+    ? collection.where("category", "==", asked.section)
+    : collection.where("topicId", "==", asked.topic);
   let ordered = base.orderBy(asked.sort === "popular" ? "takeCount" : "updatedAt", "desc");
   if (asked.after !== null) {
     const previous = await collection.doc(asked.after).get();
@@ -4084,9 +4177,16 @@ async function readAdminLists(response: Response, identity: Identity, query: Rec
     }
     ordered = ordered.startAfter(previous);
   }
+  // For "other": the topics the rows read so far name, and which of them are approved here.
+  const approvedHere = new Set<string>();
+  const looked = new Set<string>();
   const page = await fillVisible(
-    async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
-    (doc: FirebaseFirestore.QueryDocumentSnapshot) => adminKeeps(doc.data(), asked.section, asked.topic),
+    async (last) => {
+      const docs = (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs;
+      if (asked.topic === "other") await lookUpTopics(docs, asked.section, looked, approvedHere);
+      return docs;
+    },
+    (doc: FirebaseFirestore.QueryDocumentSnapshot) => adminKeeps(doc.data(), asked.section, asked.topic, approvedHere),
     FEED_PAGE_SIZE,
     { resumeFromHidden: true },
   );
@@ -4098,12 +4198,29 @@ async function readAdminLists(response: Response, identity: Identity, query: Rec
       return {
         ...toSummary(doc.id, data, identity),
         underReview: data.underReview === true,
-        publishedBy: { uid: data.authorUid, name: data.authorName },
+        publishedBy: publishedByFor(data, role === "owner"),
         ...waitingFor(data.proposedSection, proposals),
       };
     }),
     nextCursor: page.next?.id ?? null,
   });
+}
+
+/** Reads the topics these lists name that were not read yet, and notes the ones approved into `section`. */
+async function lookUpTopics(
+  docs: readonly FirebaseFirestore.QueryDocumentSnapshot[],
+  section: string,
+  looked: Set<string>,
+  approvedHere: Set<string>,
+): Promise<void> {
+  const ids = [...new Set(docs.map((doc) => doc.get("topicId")).filter(isTopicId))].filter((id) => !looked.has(id));
+  if (ids.length === 0) return;
+  ids.forEach((id) => looked.add(id));
+  const db = getFirestore();
+  const topics = await db.getAll(...ids.map((id) => db.collection(TOPICS).doc(id)));
+  for (const topic of topics) {
+    if (topic.exists && topic.get("status") === "approved" && topic.get("section") === section) approvedHere.add(topic.id);
+  }
 }
 
 type TopicApproval =
@@ -4146,7 +4263,7 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
   const kept = picture?.ok ? picture : null;
 
   const ref = db.collection(SECTIONS).doc(id);
-  const outcome = await db.runTransaction(async (transaction): Promise<TopicApproval> => {
+  const outcome = await keepingOnlyIfWritten(kept?.path ?? null, () => db.runTransaction(async (transaction): Promise<TopicApproval> => {
     const [fresh, place] = await Promise.all([transaction.get(ref), transaction.get(db.collection(SECTIONS).doc(early.section))]);
     const current = fresh.exists ? sectionRecord(id, fresh.data() as StoredSection) : null;
     const target = place.exists ? sectionRecord(place.id, place.data() as StoredSection) : null;
@@ -4179,6 +4296,7 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
       status: "merged",
       mergedInto: again.section,
       mergedTopicId: topicRef.id,
+      decidedAs: APPROVE_AS_TOPIC,
       decidedAt: FieldValue.serverTimestamp(),
       decidedBy: identity.uid,
       unfinished: true,
@@ -4188,7 +4306,7 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
     auditInTransaction(transaction, auditEntry(identity.uid, role, "topic.create", `${TOPICS}/${topicRef.id}`, null,
       { name: again.name, section: again.section, status: "approved", picture: kept?.picture ?? null, fromProposal: id }));
     return { done: true };
-  });
+  }));
   if (!("done" in outcome)) {
     if (kept !== null) await discardStoredPicture(kept.path);
     if ("taken" in outcome) return topicNameRefused(response, outcome.taken.id, outcome.taken.section);
@@ -4241,6 +4359,7 @@ async function mergeIntoTopic(response: Response, identity: Identity, id: string
       status: "merged",
       mergedInto: again.section,
       mergedTopicId: again.topicId,
+      decidedAs: MERGE_INTO_TOPIC,
       decidedAt: FieldValue.serverTimestamp(),
       decidedBy: identity.uid,
       unfinished: true,
@@ -4262,9 +4381,11 @@ function refuseTopicMerge(response: Response, reason: "missing" | "settled" | "b
 }
 
 /**
- * The lists that waited for the proposal move into the section under the new
- * topic, a page at a time; the topic's count is then read rather than added
- * to, so finishing twice counts nothing twice.
+ * The lists that waited for the proposal move into the topic it became, or
+ * wherever that topic was merged since; into the section without a topic
+ * when it was rejected or deleted. A page at a time, each page in one
+ * transaction with what it adds to the topic's count: only lists still
+ * waiting are moved, so finishing twice counts nothing twice.
  */
 async function finishTopicApproval(
   response: Response,
@@ -4274,18 +4395,42 @@ async function finishTopicApproval(
   topicId: string,
 ): Promise<void> {
   const db = getFirestore();
-  const topicRef = db.collection(TOPICS).doc(topicId);
-  const topic = await topicRef.get();
-  const topicName = (topic.get("name") as string | undefined) ?? null;
-  await rewriteWhere(PUBLISHED, "proposedSection", proposalId, { category: section, topicId, topicName, proposedSection: null });
-  if (topic.exists) await topicRef.update({ listCount: await countWhere(PUBLISHED, "topicId", topicId) });
+  const waiting = db
+    .collection(PUBLISHED)
+    .where("proposedSection", "==", proposalId)
+    .orderBy(FieldPath.documentId())
+    .limit(WRITES_PER_BATCH);
+  let live = await liveTopic(topicId);
+  for (let stale = 0; ; ) {
+    const moved = await db.runTransaction(async (transaction): Promise<number | "stale"> => {
+      const topicRef = live === null ? null : db.collection(TOPICS).doc(live.id);
+      // Read again with the page: a topic merged or rejected in between sends the lists elsewhere.
+      const topicNow = topicRef === null ? null : await transaction.get(topicRef);
+      if (topicRef !== null && !(topicNow?.exists && "live" in topicHop(topicNow.data() as StoredTopic))) return "stale";
+      const page = await transaction.get(waiting);
+      const change = live === null
+        ? { category: section, topicId: null, topicName: null, proposedSection: null }
+        : { category: live.section ?? section, topicId: live.id, topicName: live.name, proposedSection: null };
+      page.docs.forEach((doc) => transaction.update(doc.ref, change));
+      if (topicRef !== null && page.size > 0) transaction.update(topicRef, { listCount: FieldValue.increment(page.size) });
+      return page.size;
+    });
+    if (moved === "stale") {
+      if (++stale > MAX_TOPIC_HOPS) throw new Error(`Topic ${topicId} kept changing while its lists moved`);
+      live = await liveTopic(topicId);
+      continue;
+    }
+    if (moved < WRITES_PER_BATCH) break;
+  }
   await discardProposalPicture(proposalId);
   await db.collection(SECTIONS).doc(proposalId).update({ unfinished: false, proposalPicture: null, proposalPictureUrl: null });
   await bumpSectionsVersion();
   forgetSections();
-  const [fresh, proposal] = await Promise.all([topicRef.get(), readSectionById(proposalId)]);
+  // The topic the lists are in now, or the one the proposal became when they are in none.
+  const shownId = live?.id ?? topicId;
+  const [fresh, proposal] = await Promise.all([db.collection(TOPICS).doc(shownId).get(), readSectionById(proposalId)]);
   response.status(200).json({
-    topic: fresh.exists ? toTopic(topicId, fresh.data() as StoredTopic, false, { uid: identity.uid, staff: true }) : null,
+    topic: fresh.exists ? toTopic(shownId, fresh.data() as StoredTopic, false, { uid: identity.uid, staff: true }) : null,
     proposal: proposal === null ? null : sectionView(proposal, { uid: identity.uid, moderator: true }, noStats(proposalId), false),
   });
 }

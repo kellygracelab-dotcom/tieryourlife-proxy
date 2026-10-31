@@ -259,6 +259,8 @@ export interface SectionRecord {
   palette: string[];
   /** A decision is written but the lists it moves are not all moved yet; asking again finishes it. */
   unfinished: boolean;
+  /** Which call made a proposal a topic, so a move cut short can be finished by the same call. */
+  decidedAs: TopicDecision | null;
   createdAtMs: number;
   approvedAtMs: number | null;
   decidedAtMs: number | null;
@@ -290,6 +292,7 @@ export function builtInRecord(builtIn: BuiltInSection): SectionRecord {
     tintChosen: false,
     palette: [],
     unfinished: false,
+    decidedAs: null,
     createdAtMs: 0,
     // Approved at the beginning of time, so among themselves they keep their old order.
     approvedAtMs: 0,
@@ -324,6 +327,7 @@ export function newSection(id: string, name: string, nowMs: number): SectionReco
     tintChosen: false,
     palette: [],
     unfinished: false,
+    decidedAs: null,
     createdAtMs: nowMs,
     approvedAtMs: null,
     decidedAtMs: null,
@@ -610,7 +614,8 @@ function movesOf(action: SectionAction, sectionId: string, into: string | null):
 export function decideSectionAction(action: SectionAction, section: SectionRecord, into: SectionRecord | null): SectionOutcome {
   if (section.builtIn && action !== "approve") return { ok: false, reason: "built_in" };
   if (section.unfinished && section.status === SETTLED_AS[action]) {
-    if (action === "merge" && section.mergedInto !== into?.id) return { ok: false, reason: "settled" };
+    // A proposal made a topic is finished by its own call, which knows the topic.
+    if (action === "merge" && (section.mergedInto !== into?.id || section.mergedTopicId !== null)) return { ok: false, reason: "settled" };
     return { ok: true, resume: true, status: section.status, mergedInto: section.mergedInto, ...movesOf(action, section.id, section.mergedInto) };
   }
   switch (action) {
@@ -625,6 +630,39 @@ export function decideSectionAction(action: SectionAction, section: SectionRecor
       if (into.status !== "approved") return { ok: false, reason: "target_not_approved" };
       return { ok: true, resume: false, status: "merged", mergedInto: into.id, ...movesOf(action, section.id, into.id) };
     }
+  }
+}
+
+export const TOPIC_DECISIONS = ["approve-as-topic", "merge-into-topic"] as const;
+export type TopicDecision = (typeof TOPIC_DECISIONS)[number];
+
+/** A call to repeat, as `POST sections/{id}/{action}` with this body. */
+export interface FinishCall {
+  action: SectionAction | TopicDecision;
+  body: Record<string, string>;
+}
+
+/**
+ * How the staff finish a decision whose lists were not all moved: the same
+ * call with the same target. A proposal made a topic before the call was
+ * recorded is finished by merge-into-topic, which asks only for the topic.
+ * A withdrawal is the proposer's to finish, and a settled section needs nothing.
+ */
+export function finishCallOf(section: SectionRecord): FinishCall | null {
+  if (!section.unfinished || section.withdrawn) return null;
+  switch (section.status) {
+    case "approved":
+      return { action: "approve", body: {} };
+    case "declined":
+      return { action: "decline", body: {} };
+    case "merged":
+      if (section.mergedInto === null) return null;
+      if (section.mergedTopicId === null) return { action: "merge", body: { into: section.mergedInto } };
+      return section.decidedAs === "approve-as-topic"
+        ? { action: "approve-as-topic", body: { section: section.mergedInto } }
+        : { action: "merge-into-topic", body: { topic: section.mergedTopicId } };
+    default:
+      return null;
   }
 }
 
@@ -704,7 +742,10 @@ export function answerFor(section: SectionRecord | null, viewer: Viewer): Reader
   return mayKnow ? "view" : "missing";
 }
 
-export type SectionChoice = { ok: true; category: string; proposedSection: string | null } | { ok: false };
+export type SectionChoice =
+  /** `viaTopic`: the asked id is a proposal that became this topic. */
+  | { ok: true; category: string; proposedSection: string | null; viaTopic?: string }
+  | { ok: false };
 
 /**
  * Where a published list goes. An open section takes it, and a list being
@@ -737,7 +778,9 @@ export function decideSectionChoice(
   }
   if (section.status === "merged" && section.mergedInto !== null) {
     const target = known.get(section.mergedInto);
-    if (target && isOpen(target)) return { ok: true, category: target.id, proposedSection: null };
+    if (target && isOpen(target)) {
+      return { ok: true, category: target.id, proposedSection: null, ...(section.mergedTopicId === null ? {} : { viaTopic: section.mergedTopicId }) };
+    }
   }
   return { ok: false };
 }
@@ -916,6 +959,8 @@ export interface SectionView {
   nameClash?: NameClash;
   palette?: string[];
   unfinished?: boolean;
+  /** Staff only, on a decision cut short: the call that finishes it. */
+  finish?: FinishCall;
   withdrawn?: boolean;
   createdAt?: number;
   decidedAt?: number | null;
@@ -997,6 +1042,8 @@ export function sectionView(
     view.mergedTopicId = section.mergedTopicId;
     view.palette = section.palette;
     view.unfinished = section.unfinished;
+    const finish = finishCallOf(section);
+    if (finish !== null) view.finish = finish;
     view.withdrawn = section.withdrawn;
     view.createdAt = section.createdAtMs;
     view.decidedAt = section.decidedAtMs;
