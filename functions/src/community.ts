@@ -109,6 +109,7 @@ import {
   mayCall,
   notYetEditable,
   PENDING_EDIT_FIELDS,
+  pictureEditRefusal,
   namesAfter,
   nameKey,
   NEUTRAL_COLOURS,
@@ -166,7 +167,6 @@ import {
 import { CONTENT_TYPES, judgePicture, type PictureRefusal } from "./imageSize";
 import {
   bucketName,
-  discardOtherSectionPictures,
   discardProposalPicture,
   discardSectionPictures,
   discardStoredPicture,
@@ -180,6 +180,7 @@ import {
   sectionPicturePath,
   discardTopicPictures,
   keepingOnlyIfWritten,
+  replacedSectionPicture,
   replacedTopicPicture,
   tokenAddressOf,
   topicPicturePath,
@@ -1758,9 +1759,11 @@ async function nameClashesOf(proposals: readonly SectionRecord[]): Promise<NameC
   });
 }
 
-type PreparedPicture =
-  | { ok: true; bytes: Buffer; contentType: string; width: number; height: number; colours: SectionColours }
+type MeasuredPicture =
+  | { ok: true; bytes: Buffer; contentType: string; width: number; height: number }
   | { ok: false; why: PictureRefusal };
+
+type PreparedPicture = (MeasuredPicture & { ok: false }) | (MeasuredPicture & { ok: true; colours: SectionColours });
 
 /** Vision's look at a picture's colours; when Vision cannot be asked, the palette it gave at proposal time. */
 async function pictureColours(bytes: Buffer, palette: readonly string[]): Promise<SectionColours> {
@@ -1783,16 +1786,18 @@ async function preparePicture(
   chosenTint: string | undefined,
   palette: readonly string[],
 ): Promise<PreparedPicture> {
+  const measured = measurePicture(bytes);
+  if (!measured.ok) return measured;
+  return {
+    ...measured,
+    colours: chosenTint === undefined ? await pictureColours(measured.bytes, palette) : coloursFromChosenTint(chosenTint, false),
+  };
+}
+
+function measurePicture(bytes: Buffer | null): MeasuredPicture {
   const judged = judgePicture(bytes);
   if (!judged.ok || bytes === null) return { ok: false, why: judged.ok ? "missing" : judged.why };
-  return {
-    ok: true,
-    bytes,
-    contentType: CONTENT_TYPES[judged.size.format],
-    width: judged.size.width,
-    height: judged.size.height,
-    colours: chosenTint === undefined ? await pictureColours(bytes, palette) : coloursFromChosenTint(chosenTint, false),
-  };
+  return { ok: true, bytes, contentType: CONTENT_TYPES[judged.size.format], width: judged.size.width, height: judged.size.height };
 }
 
 function editFields(edits: SectionEdits): Record<string, unknown> {
@@ -1825,7 +1830,7 @@ async function createSection(response: Response, identity: Identity, body: unkno
   const names = namesAfter({ name, names: {} }, edits);
   const clash = findClash(names, sections, null);
   if (clash !== null) return refuseSection(response, { code: "NAME_TAKEN", id: clash });
-  const pictureId = edits.pictureId;
+  const pictureId = edits.pictureId ?? undefined;
   const picture = pictureId === undefined ? null : await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint, []);
   if (picture !== null && !picture.ok) return refuseSection(response, { code: "BAD_PICTURE", why: picture.why });
 
@@ -1991,11 +1996,13 @@ async function settleSection(
 /**
  * The owner's edit of a section. An approved one may change anything: a new
  * picture brings new colours unless the same call names a tint, which wins,
- * and a built-in's tint is taken as given. A proposal still waiting may have
- * its name, translations, icon, picture and tint changed and stays waiting:
- * its picture is replaced in the private folder and its palette looked at
- * again, a tint chosen for it is kept for approval, and its place and
- * visibility wait for approval (400 INVALID).
+ * and `pictureId: null` takes the picture away and leaves the colours. A
+ * built-in keeps its own colours whatever picture it is given, and its tint
+ * is taken as given. A proposal still waiting may have its name,
+ * translations, icon, picture and tint changed and stays waiting: its
+ * picture is replaced in the private folder, never removed, and its palette
+ * looked at again, a tint chosen for it is kept for approval, and its place
+ * and visibility wait for approval (400 INVALID).
  */
 async function editSection(response: Response, identity: Identity, id: string, body: unknown): Promise<void> {
   const role = await roleFor(response, identity, "edit");
@@ -2015,8 +2022,13 @@ async function editSection(response: Response, identity: Identity, id: string, b
   const read = readSectionEdits(body, waiting ? PENDING_EDIT_FIELDS : APPROVED_EDIT_FIELDS);
   if (!read.ok) return refuseSection(response, read);
   const { edits } = read;
-  if (edits.pictureId !== undefined && found.builtIn) {
-    response.status(409).json({ error: "A built-in section draws its own art", code: "BUILT_IN", detail: "pictureId" });
+  const pictureRefusal = pictureEditRefusal(found, role, edits.pictureId);
+  if (pictureRefusal === "built_in") {
+    response.status(409).json({ error: "Only the owner gives a built-in section a picture", code: "BUILT_IN", detail: "pictureId" });
+    return;
+  }
+  if (pictureRefusal === "waiting") {
+    response.status(400).json({ error: "A waiting section keeps its picture", code: "INVALID", detail: "pictureId" });
     return;
   }
   if (edits.hidden === true && found.id === OTHER) {
@@ -2034,7 +2046,7 @@ async function editSection(response: Response, identity: Identity, id: string, b
   // A file this edit writes, removed again if the edit does not land; and the one it makes old, removed if it does.
   let copied: string | null = null;
   let replaced: string | null = null;
-  if (pictureId !== undefined && waiting) {
+  if (typeof pictureId === "string" && waiting) {
     const bytes = await readOwnPicture(identity.uid, pictureId);
     const judged = judgePicture(bytes);
     if (!judged.ok || bytes === null) return refuseSection(response, { code: "BAD_PICTURE", why: judged.ok ? "missing" : judged.why });
@@ -2050,24 +2062,29 @@ async function editSection(response: Response, identity: Identity, id: string, b
       proposalPictureUrl: tokenAddressOf(bucketName(), path, token),
       palette: await paletteFor(bytes),
     });
-  } else if (pictureId !== undefined) {
-    const picture = await preparePicture(await readOwnPicture(identity.uid, pictureId), edits.tint, found.palette);
+  } else if (typeof pictureId === "string") {
+    const bytes = await readOwnPicture(identity.uid, pictureId);
+    const picture = found.builtIn ? measurePicture(bytes) : await preparePicture(bytes, edits.tint, found.palette);
     if (!picture.ok) return refuseSection(response, { code: "BAD_PICTURE", why: picture.why });
     const path = sectionPicturePath(id, pictureId);
     const url = addressOf(bucketName(), path);
     await publishSectionPicture(path, picture.bytes, picture.contentType);
     // The same file again is the picture it already has, never one to clean up.
     copied = found.picture?.url === url ? null : path;
-    Object.assign(update, picture.colours, { picture: { url, width: picture.width, height: picture.height } });
+    Object.assign(update, "colours" in picture ? picture.colours : {}, { picture: { url, width: picture.width, height: picture.height } });
+  } else if (pictureId === null) {
+    update.picture = null;
   }
-  if (edits.tint !== undefined && (waiting || pictureId === undefined)) {
+  // A new picture on any section but a built-in already brought its colours, the chosen tint among them.
+  if (edits.tint !== undefined && (waiting || typeof pictureId !== "string" || found.builtIn)) {
     Object.assign(update, coloursFromChosenTint(edits.tint, found.builtIn));
     if (waiting) update.tintChosen = true;
   }
 
   const db = getFirestore();
   const ref = db.collection(SECTIONS).doc(id);
-  const saved = await db.runTransaction(async (transaction): Promise<"saved" | "settled" | { taken: string }> => {
+  type Saved = { replaced: string | null } | "settled" | { taken: string };
+  const saved = await keepingOnlyIfWritten(copied, () => db.runTransaction(async (transaction): Promise<Saved> => {
     const fresh = await transaction.get(ref);
     if (!fresh.exists || fresh.get("status") !== found.status) return "settled";
     const current = sectionRecord(id, fresh.data() as StoredSection);
@@ -2081,9 +2098,13 @@ async function editSection(response: Response, identity: Identity, id: string, b
     if (change.after !== null) {
       auditInTransaction(transaction, auditEntry(identity.uid, role, "section.edit", `${SECTIONS}/${id}`, change.before, change.after));
     }
-    return "saved";
-  });
-  if (saved !== "saved") {
+    if (waiting || !("picture" in update)) return { replaced: null };
+    // The picture this edit replaces, as the section says now rather than when it was first read.
+    const before = (fresh.get("picture") as SectionPicture | null | undefined)?.url;
+    const after = (update.picture as SectionPicture | null)?.url;
+    return { replaced: replacedSectionPicture(id, before, after) };
+  }));
+  if (typeof saved === "string" || "taken" in saved) {
     if (copied !== null) await discardStoredPicture(copied);
     if (saved === "settled") {
       response.status(409).json({ error: "That section was decided meanwhile", code: "SETTLED" });
@@ -2095,7 +2116,7 @@ async function editSection(response: Response, identity: Identity, id: string, b
     if (replaced !== null) await discardStoredPicture(replaced);
     claimedSectionsCache.invalidate();
   } else {
-    if (pictureId !== undefined) await discardOtherSectionPictures(id, pictureId);
+    if (saved.replaced !== null) await discardStoredPicture(saved.replaced);
     await bumpSectionsVersion();
     forgetSections();
   }

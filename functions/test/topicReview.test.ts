@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "../src/adminLists";
 import { authorsToAsk } from "../src/anonymous";
 import { isOwnedRanking, rankingCursor, readRankingCursor } from "../src/rankings";
-import { keepingOnlyIfWritten, replacedTopicPicture, storedPathOf } from "../src/sectionPictures";
+import { keepingOnlyIfWritten, replacedSectionPicture, replacedTopicPicture, storedPathOf } from "../src/sectionPictures";
 import {
   builtInRecord,
   BUILT_IN_SECTIONS,
@@ -132,6 +132,25 @@ describe("a topic's replaced picture", () => {
   it("is never a file outside the topic's own folder", () => {
     assert.equal(replacedTopicPicture("t1", at("topics/t2/old"), undefined), null);
     assert.equal(replacedTopicPicture("t1", at("sections/food/old"), undefined), null);
+  });
+});
+
+describe("a section's replaced picture", () => {
+  const at = (path: string) => addressOf("bucket.appspot.com", path);
+
+  it("is the old file alone, built-in or not, and only when the new one differs", () => {
+    assert.equal(replacedSectionPicture("games", at("sections/games/old"), at("sections/games/new")), "sections/games/old");
+    assert.equal(replacedSectionPicture("games", at("sections/games/same"), at("sections/games/same")), null);
+    assert.equal(replacedSectionPicture("games", undefined, at("sections/games/new")), null);
+  });
+
+  it("is the old file when the picture is taken away", () => {
+    assert.equal(replacedSectionPicture("games", at("sections/games/old"), undefined), "sections/games/old");
+  });
+
+  it("is never a file outside the section's own folder", () => {
+    assert.equal(replacedSectionPicture("games", at("sections/games-2/old"), undefined), null);
+    assert.equal(replacedSectionPicture("games", at("topics/games/old"), undefined), null);
   });
 });
 
