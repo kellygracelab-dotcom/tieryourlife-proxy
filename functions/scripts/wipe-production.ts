@@ -181,6 +181,16 @@ export async function makePlan(app: App, bucket: string): Promise<Plan> {
   };
 }
 
+/** Phones and browsers upload boards the account no longer has, so they must be quiet before and cleared after. */
+const BEFORE_AND_AFTER = [
+  "",
+  "Before typing the id:",
+  "  1. Close every TierYourLife tab in every browser and stop the app on every phone.",
+  "After it finishes, before anybody signs in again:",
+  "  2. Clear site data for tieryourlife.web.app and tieryourlife.firebaseapp.com in every browser.",
+  "  3. Clear the app's data on every phone (Settings > Apps > TierYourLife > Storage > Clear data).",
+].join("\n");
+
 async function planCollection(db: Firestore, name: string): Promise<CollectionPlan> {
   const rule = collectionRule(name);
   const collection = db.collection(name);
@@ -284,6 +294,7 @@ async function main(): Promise<number> {
   describePlan(plan).forEach((line) => console.log(line));
   if (!options.execute) {
     console.log("\nDry run: nothing was changed. Add --execute to delete what is marked DELETE.");
+    console.log(BEFORE_AND_AFTER);
     return 0;
   }
 
@@ -295,7 +306,7 @@ async function main(): Promise<number> {
     return 1;
   }
   await executePlan(app, options.bucket, plan, (line) => console.log(line));
-  console.log("Done. Clear app data on the phone and site data in every browser now, or their local copies sync boards back.");
+  console.log("Done. Now clear site data and the app's data on every device, before anybody signs in again.");
   return 0;
 }
 
