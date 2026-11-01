@@ -28,6 +28,7 @@ import {
   type ListReader,
 } from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
+import { bylineOf, decideEditorialAccess, EDITORIAL_BYLINE, EDITORIAL_UID, type Byline } from "./editorial";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
   chunked,
@@ -250,6 +251,7 @@ const QUEUE_PATH = "queue";
 const ORDER_PATH = "order";
 const NAME_CHECK_PATH = "name-check";
 const ADMIN_PATH = "admin";
+const EDITORIAL_PATH = "editorial";
 const CANDIDATES_PATH = "candidates";
 const APPROVE_AS_TOPIC: TopicDecision = "approve-as-topic";
 const MERGE_INTO_TOPIC: TopicDecision = "merge-into-topic";
@@ -544,6 +546,9 @@ export const lists = onRequest(
       }
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
+      }
+      if (segments[0] === EDITORIAL_PATH) {
+        return await routeEditorial(request.method, segments.slice(1), query, request.body, response, identity);
       }
       if (segments[0] === SECTIONS_PATH) {
         return await routeSections(request.method, segments.slice(1), query, request.body, response, identity);
@@ -2637,6 +2642,7 @@ async function publish(
   identity: Identity,
   body: unknown,
   existingId: string | null,
+  byline: Byline = bylineOf(identity),
 ): Promise<void> {
   const db = getFirestore();
   const collection = db.collection(PUBLISHED);
@@ -2650,8 +2656,9 @@ async function publish(
     return;
   }
 
-  // Replacing a list the author already published does not add to their count.
-  const alreadyPublished = existingId
+  // Replacing a list the author already published does not add to their count,
+  // and the house has no count.
+  const alreadyPublished = existingId || byline.editorial
     ? 0
     : (await collection.where("authorUid", "==", identity.uid).count().get()).data().count;
 
@@ -2675,7 +2682,7 @@ async function publish(
       return;
     }
     previous = existing.data() as StoredList;
-    if (previous.authorUid !== identity.uid) {
+    if (previous.authorUid !== byline.uid) {
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
       return;
     }
@@ -2683,9 +2690,10 @@ async function publish(
 
   // Where the board came from, settled before the pictures: the same cards
   // make this a ranking of that list, which copies nothing and names no topic.
-  // A list of the author's own being replaced is a republish whatever it says.
+  // A list of the author's own being replaced is a republish whatever it says,
+  // and the house only ever publishes lists of its own.
   const source = body as Record<string, unknown>;
-  const publication = existingId
+  const publication = existingId || byline.editorial
     ? ({ kind: "list", basedOn: null } as Publication)
     : await resolvePublication(identity, readTakenFrom(source.takenFrom), decision.draft.items);
   if (publication.kind === "ranking") {
@@ -2722,7 +2730,7 @@ async function publish(
   // Answered after the board is stored, because the answer is a report about
   // a list and there has to be a list to report.
   const words = wordsOf(decision.draft);
-  const wording = words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
+  const wording = !byline.editorial && words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
   const concern = wording === null ? "none" : decideWordingConcern(wording);
 
   // A new list is named before it is written. The pictures have to be copied
@@ -2761,9 +2769,9 @@ async function publish(
       : implied?.topicName ?? null;
 
   const document = {
-    authorUid: identity.uid,
-    authorName: identity.name ?? "Anonymous",
-    authorPhotoUrl: identity.picture,
+    authorUid: byline.uid,
+    authorName: byline.name,
+    authorPhotoUrl: byline.photoUrl,
     title: list.title,
     titleLower: list.titleLower,
     // A topic decides the section: an approved one brings its own, a waiting
@@ -2781,7 +2789,7 @@ async function publish(
     tierColors: list.tierColors,
     tierCounts: tierCountsOf(list.tiers.length, list.items),
     basedOn: publication.basedOn,
-    anonymous: anonymityAfter(decision.draft.anonymous, previous),
+    anonymous: byline.editorial || anonymityAfter(decision.draft.anonymous, previous),
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
@@ -2824,6 +2832,11 @@ async function publish(
     } else if (topicId !== null && topicId !== previousTopic) {
       transaction.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
     }
+    if (byline.editorial) {
+      // Who spoke for the house lives here and nowhere a reader can reach.
+      const what = existingId ? "list.editorial_edit" : "list.editorial_publish";
+      auditInTransaction(transaction, auditEntry(identity.uid, "owner", what, `${PUBLISHED}/${target}`, null, { title: list.title, category: document.category }));
+    }
     if (existingId) {
       transaction.set(collection.doc(existingId), document, { merge: true });
     } else {
@@ -2840,7 +2853,7 @@ async function publish(
   await noteWordingConcern(target, document.title, identity, concern);
 
   if (existingId) {
-    await syncCredits(existingId, document.anonymous, identity.uid, document.authorName);
+    await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
     await discardUnusedPublished(existingId, [...addresses.keys()]);
@@ -3276,7 +3289,7 @@ async function readBan(uid: string): Promise<Ban | null> {
   return doc.exists ? (doc.data() as Ban) : null;
 }
 
-async function unpublish(response: Response, identity: Identity, id: string): Promise<void> {
+async function unpublish(response: Response, identity: Identity, id: string, byline: Byline = bylineOf(identity)): Promise<void> {
   const doc = getFirestore().collection(PUBLISHED).doc(id);
   const existing = await doc.get();
   if (!existing.exists) {
@@ -3284,12 +3297,15 @@ async function unpublish(response: Response, identity: Identity, id: string): Pr
     return;
   }
   const stored = existing.data() as StoredList;
-  if (stored.authorUid !== identity.uid) {
+  if (stored.authorUid !== byline.uid) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
   const batch = getFirestore().batch();
   batch.delete(doc);
+  if (byline.editorial) {
+    auditInBatch(batch, auditEntry(identity.uid, "owner", "list.editorial_unpublish", `${PUBLISHED}/${id}`, { title: stored.title }, null));
+  }
   if (stored.topicId) {
     batch.update(getFirestore().collection(TOPICS).doc(stored.topicId), { listCount: FieldValue.increment(-1) });
   }
@@ -4506,6 +4522,54 @@ async function readAdminCounts(response: Response, identity: Identity): Promise<
   ]);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({ reports: reports.data().count, proposals: proposals.data().count });
+}
+
+/**
+ * The house's lists (src/editorial.ts), the owner's alone: list them, publish
+ * one, replace one, take one down. A published one is read, ranked and found
+ * like any other list.
+ */
+async function routeEditorial(
+  method: string,
+  rest: string[],
+  query: Record<string, unknown>,
+  body: unknown,
+  response: Response,
+  identity: Identity,
+): Promise<void> {
+  const access = decideEditorialAccess(await roleOf(identity));
+  if (!access.ok) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(access.detail ? { detail: access.detail } : {}) });
+    return;
+  }
+  const [id = "", extra = ""] = rest;
+  if (extra === "") {
+    if (method === "GET" && id === "") return await readEditorialLists(response, identity, typeof query.after === "string" ? query.after : null);
+    if (method === "POST" && id === "") return await publish(response, identity, body, null, EDITORIAL_BYLINE);
+    if (method === "PUT" && id !== "") return await publish(response, identity, body, id, EDITORIAL_BYLINE);
+    if (method === "DELETE" && id !== "") return await unpublish(response, identity, id, EDITORIAL_BYLINE);
+  }
+  response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+/** The house's lists, the latest change first, a page at a time. */
+async function readEditorialLists(response: Response, identity: Identity, after: string | null): Promise<void> {
+  const collection = getFirestore().collection(PUBLISHED);
+  let ordered = collection.where("authorUid", "==", EDITORIAL_UID).orderBy("updatedAt", "desc");
+  if (after) {
+    const previous = await collection.doc(after).get();
+    if (!previous.exists) {
+      response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
+      return;
+    }
+    ordered = ordered.startAfter(previous);
+  }
+  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    lists: snapshot.docs.map((doc) => toSummary(doc.id, doc.data() as StoredList, identity)),
+    nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
+  });
 }
 
 /**
