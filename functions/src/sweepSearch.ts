@@ -54,7 +54,14 @@ export const sweepSearch = onSchedule(
         );
       }
     }
-    console.log(`Search sweep: translated ${done}`);
+    // Picture search answers are kept three days (src/pictureSearch.ts); older ones only take room.
+    const stale = await db.collection("pictureCache").where("at", "<", new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)).limit(400).get();
+    if (!stale.empty) {
+      const batch = db.batch();
+      stale.docs.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+    }
+    console.log(`Search sweep: translated ${done}, dropped ${stale.size} old picture answers`);
   },
 );
 
