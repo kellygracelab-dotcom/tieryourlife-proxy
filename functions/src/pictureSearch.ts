@@ -46,6 +46,8 @@ import { dayKey } from "./quota";
 import { fold } from "./search";
 
 export const pictureTmdbToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
+export const igdbClientId = defineSecret("IGDB_CLIENT_ID");
+export const igdbClientSecret = defineSecret("IGDB_CLIENT_SECRET");
 
 const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
@@ -247,10 +249,9 @@ async function igdbAccess(id: string, secret: string): Promise<string> {
   return igdbToken.value;
 }
 
-/** Off until the owner has set the IGDB keys and bound them to this function. */
 async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
-  const id = process.env.IGDB_CLIENT_ID;
-  const secret = process.env.IGDB_CLIENT_SECRET;
+  const id = igdbClientId.value().trim();
+  const secret = igdbClientSecret.value().trim();
   if (!id || !secret) return { hits: [], hasMore: false };
   const typed = input.typed.replace(/["\\]/g, " ").trim();
   const query = `search "${typed}"; fields ${IGDB_QUERY_FIELDS}; where cover != null & version_parent = null; limit ${IGDB_PAGE}; offset ${(input.page - 1) * IGDB_PAGE};`;
