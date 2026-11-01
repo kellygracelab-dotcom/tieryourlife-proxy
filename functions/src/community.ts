@@ -189,7 +189,7 @@ import {
 import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, topicKeyOf } from "./proposalTopic";
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "./adminLists";
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
-import { pictureTmdbToken, routePictures } from "./pictureSearch";
+import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
 import {
   cleanTopicName,
   decideAttachment,
@@ -515,7 +515,7 @@ export const lists = onRequest(
     memory: "256MiB",
     maxInstances: 10,
     // Picture search asks TMDB itself (src/pictureSearch.ts).
-    secrets: [pictureTmdbToken],
+    secrets: [pictureTmdbToken, igdbClientId, igdbClientSecret],
     // One copy kept warm: a cold start cost 2-5 s on every first open of
     // Community, a face or a publish. About three dollars a month at this size.
     minInstances: 1,
