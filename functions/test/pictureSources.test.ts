@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   anilistHits,
+  commonsName,
+  commonsUpright,
   decideWeb,
   deezerArtistHits,
   matchScore,
@@ -10,6 +12,7 @@ import {
   PictureHit,
   pictureScopeOf,
   sourcesFor,
+  steamAppIds,
   steamHits,
   tmdbHits,
   webHits,
@@ -111,10 +114,34 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(hits.map((one) => [one.imageUrl, one.thumbUrl]), [["https://a/20xl.jpg", null], ["https://a/c17.jpg", null]]);
   });
 
-  it("Steam: apps only, the tall cover asked for first", () => {
-    const hits = steamHits({ items: [{ id: 570, type: "app", name: "Dota 2" }, { id: 1, type: "sub", name: "Bundle" }] });
-    assert.equal(hits.length, 1);
-    assert.match(hits[0]?.imageUrl ?? "", /570\/library_600x900\.jpg$/);
+  it("Steam: apps only, each by its tall cover where Steam keeps it, and none without one", () => {
+    const ids = steamAppIds({ items: [{ id: 3527290, type: "app", name: "PEAK" }, { id: 1, type: "sub", name: "Bundle" }, { id: 10, type: "app" }, { id: 7, type: "app" }] });
+    assert.deepEqual(ids, [3527290, 10, 7]);
+    const hits = steamHits(ids, { response: { store_items: [
+      { appid: 10, name: "Counter-Strike", assets: { asset_url_format: "steam/apps/10/${FILENAME}?t=1", library_capsule: "library_600x900.jpg" } },
+      { appid: 3527290, name: "PEAK", assets: {
+        asset_url_format: "steam/apps/3527290/${FILENAME}?t=2",
+        library_capsule: "480b/library_600x900.jpg",
+        library_capsule_2x: "480b/library_600x900_2x.jpg",
+        header: "header.jpg",
+      } },
+      { appid: 7, name: "Only a banner", assets: { asset_url_format: "steam/apps/7/${FILENAME}", header: "header.jpg" } },
+    ] } });
+    assert.deepEqual(hits.map((one) => [one.title, one.imageUrl, one.thumbUrl]), [
+      ["PEAK", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3527290/480b/library_600x900_2x.jpg?t=2", null],
+      ["Counter-Strike", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg?t=1", null],
+    ]);
+  });
+
+  it("Commons sizes: tall and square pictures stay, wide ones go, names matched as Commons writes them", () => {
+    const upright = commonsUpright({ query: { pages: {
+      "1": { title: "File:Hollow Knight cover.jpg", imageinfo: [{ width: 600, height: 900 }] },
+      "2": { title: "File:Album.png", imageinfo: [{ width: 500, height: 500 }] },
+      "3": { title: "File:Game logo.svg", imageinfo: [{ width: 1200, height: 300 }] },
+      "-1": { title: "File:Missing.jpg", missing: "" },
+    } } });
+    assert.deepEqual([...upright].sort(), ["Album.png", "Hollow Knight cover.jpg"]);
+    assert.ok(upright.has(commonsName("hollow_Knight_cover.jpg")));
   });
 
   it("Deezer: an artist without a photo is left out", () => {

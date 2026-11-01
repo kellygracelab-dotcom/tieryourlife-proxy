@@ -176,27 +176,36 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
     id name { full } image { large } media(perPage: 1) { nodes { title { english romaji } } } } }
 }`;
 
-const STEAM_CDN = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/";
+const STEAM_ASSETS = "https://shared.akamai.steamstatic.com/store_item_assets/";
 
-/** Steam's own search: the portrait cover where the game has one is chosen by the caller, the wide header is always there. */
-export function steamHits(body: unknown): PictureHit[] {
-  return rows((body as Json | null)?.items).flatMap((row): PictureHit[] => {
-    const title = text(row.name);
-    if (!title || typeof row.id !== "number" || row.type !== "app") return [];
+/** The ids of the apps a Steam store search found, in its order. */
+export function steamAppIds(body: unknown): number[] {
+  return rows((body as Json | null)?.items).flatMap((row) => (row.type === "app" && typeof row.id === "number" ? [row.id] : []));
+}
+
+/**
+ * `IStoreBrowseService/GetItems` with assets: each game's tall library cover at the address Steam keeps it,
+ * which for newer games sits under a hash. A game with no tall cover is left out, never shown by its wide banner.
+ */
+export function steamHits(ids: readonly number[], body: unknown): PictureHit[] {
+  const items = new Map(rows(((body as Json | null)?.response as Json | undefined)?.store_items).map((row) => [row.appid, row]));
+  return ids.flatMap((id): PictureHit[] => {
+    const row = items.get(id);
+    const title = text(row?.name);
+    const assets = (row?.assets ?? {}) as Json;
+    const format = text(assets.asset_url_format);
+    const cover = text(assets.library_capsule_2x) ?? text(assets.library_capsule);
+    if (!title || !format || !cover) return [];
     return [{
-      id: `steam:${row.id}`,
+      id: `steam:${id}`,
       title,
       subtitle: null,
-      imageUrl: `${STEAM_CDN}${row.id}/library_600x900.jpg`,
-      thumbUrl: `${STEAM_CDN}${row.id}/header.jpg`,
+      imageUrl: STEAM_ASSETS + format.replace("${FILENAME}", cover),
+      thumbUrl: null,
       source: "steam",
       kind: "game",
     }];
   });
-}
-
-export function steamHeaderOf(hit: PictureHit): PictureHit {
-  return { ...hit, imageUrl: hit.thumbUrl ?? hit.imageUrl, thumbUrl: null };
 }
 
 /** Deezer gives a grey silhouette to an artist with no photo; its address has no picture id. */
@@ -258,7 +267,25 @@ const WIKIDATA_TMDB = { P4947: "movie", P4983: "tv", P4985: "person" } as const;
 
 export interface WikidataCandidate {
   hit: PictureHit;
+  file: string;
   tmdbIds: string[];
+}
+
+/** How Commons names a file: spaces, not underscores, and a capital first letter. */
+export function commonsName(file: string): string {
+  const spaced = file.replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/** Commons `imageinfo` sizes: the files that are not wider than they are tall, by their Commons names. */
+export function commonsUpright(body: unknown): Set<string> {
+  const pages = ((((body as Json | null)?.query as Json | undefined)?.pages ?? {}) as Record<string, Json>);
+  return new Set(Object.values(pages).flatMap((page) => {
+    const info = rows(page.imageinfo)[0];
+    const title = text(page.title);
+    if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || info.width > info.height) return [];
+    return [commonsName(title.replace(/^File:/, ""))];
+  }));
 }
 
 export function commonsThumb(file: string, width: number): string {
@@ -289,6 +316,7 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
         source: "wikidata",
         kind: "thing",
       },
+      file,
       tmdbIds,
     }];
   });
