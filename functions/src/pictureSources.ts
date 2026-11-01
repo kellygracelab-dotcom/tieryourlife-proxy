@@ -5,13 +5,13 @@
  */
 import { fold, wordsOf } from "./search";
 
-export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people"] as const;
+export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
 
-export type PictureSource = "tmdb" | "anilist" | "steam" | "deezer" | "openlibrary" | "wikidata" | "web";
+export type PictureSource = "tmdb" | "anilist" | "igdb" | "steam" | "deezer" | "openlibrary" | "inaturalist" | "wikidata" | "web";
 
 /** What a card's picture can be: the chip a client draws under a result is its own business. */
-export type PictureKind = "movie" | "tv" | "person" | "anime" | "manga" | "character" | "game" | "artist" | "album" | "book" | "thing" | "web";
+export type PictureKind = "movie" | "tv" | "person" | "anime" | "manga" | "character" | "game" | "artist" | "album" | "book" | "animal" | "thing" | "web";
 
 export interface PictureHit {
   /** `source:id`, stable across searches, so a client can drop what it already shows. */
@@ -41,14 +41,32 @@ export function sourcesFor(scope: PictureScope): PictureSource[] {
     case "anime":
       return ["anilist", "wikidata"];
     case "games":
-      return ["steam", "wikidata"];
+      return ["igdb", "steam", "wikidata"];
     case "music":
       return ["deezer", "wikidata"];
     case "books":
       return ["openlibrary", "wikidata"];
+    case "animals":
+      return ["inaturalist", "wikidata"];
     case "all":
-      return ["tmdb", "anilist", "steam", "deezer", "openlibrary", "wikidata"];
+      return ["tmdb", "anilist", "igdb", "steam", "deezer", "openlibrary", "inaturalist", "wikidata"];
   }
+}
+
+/** Scopes whose tiles are covers and posters, where anything wider than tall looks broken; the others hold photos. */
+export function wantsCovers(scope: PictureScope): boolean {
+  return scope !== "all" && scope !== "animals";
+}
+
+/** Below this on its short side a picture is soft in a grid tile. */
+export const MIN_SHORT_SIDE = 300;
+/** A photo may be cropped into a tile; past this it is a banner or a screenshot. */
+const WIDEST_PHOTO = 1.5;
+
+/** Whether a picture this size makes a good tile: big enough, and upright where covers are wanted. */
+export function fitsTile(width: number, height: number, covers: boolean): boolean {
+  if (!(width > 0 && height > 0) || Math.min(width, height) < MIN_SHORT_SIDE) return false;
+  return covers ? width <= height : width <= height * WIDEST_PHOTO;
 }
 
 /** Fewer good matches than this from the catalogues, and "all" asks the web too. */
@@ -103,7 +121,8 @@ export function mergeHits(typed: string, answers: readonly (readonly PictureHit[
   }
   const seen = new Set<string>();
   const kept = interleaved.filter((hit) => {
-    const keys = [hit.imageUrl, `${hit.kind}|${fold(hit.title)}|${hit.subtitle ?? ""}`];
+    // Two catalogues of games write the year differently or not at all; the title is enough.
+    const keys = [hit.imageUrl, `${hit.kind}|${fold(hit.title)}|${hit.kind === "game" ? "" : hit.subtitle ?? ""}`];
     if (keys.some((key) => seen.has(key))) return false;
     keys.forEach((key) => seen.add(key));
     return true;
@@ -152,7 +171,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     const title = text(titles.english) ?? text(titles.romaji) ?? text(titles.native);
     const cover = (row.coverImage ?? {}) as Json;
     const imageUrl = text(cover.extraLarge) ?? text(cover.large);
-    if (!title || !imageUrl || typeof row.id !== "number" || row.isAdult === true) return [];
+    if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number" || row.isAdult === true) return [];
     const kind: PictureKind = row.type === "MANGA" ? "manga" : "anime";
     const year = typeof row.seasonYear === "number" ? String(row.seasonYear) : typeof (row.startDate as Json | undefined)?.year === "number" ? String((row.startDate as Json).year) : null;
     return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind }];
@@ -175,6 +194,23 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
   characters: Page(page: $page, perPage: 10) { characters(search: $q, sort: SEARCH_MATCH) {
     id name { full } image { large } media(perPage: 1) { nodes { title { english romaji } } } } }
 }`;
+
+const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
+
+/** IGDB's games: its cover is always upright, and a game without one is not asked for. */
+export const IGDB_QUERY_FIELDS = "name,first_release_date,cover.image_id,cover.width,cover.height";
+
+export function igdbHits(body: unknown): PictureHit[] {
+  return rows(body).flatMap((row): PictureHit[] => {
+    const title = text(row.name);
+    const cover = (row.cover ?? {}) as Json;
+    const image = text(cover.image_id);
+    if (!title || !image || typeof row.id !== "number" || !/^[a-z0-9]+$/.test(image)) return [];
+    if (typeof cover.width === "number" && typeof cover.height === "number" && !fitsTile(cover.width, cover.height, true)) return [];
+    const year = typeof row.first_release_date === "number" ? String(new Date(row.first_release_date * 1000).getUTCFullYear()) : null;
+    return [{ id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game" }];
+  });
+}
 
 const STEAM_ASSETS = "https://shared.akamai.steamstatic.com/store_item_assets/";
 
@@ -261,6 +297,32 @@ export function openLibraryHits(body: unknown): PictureHit[] {
 }
 
 /** The properties a Wikidata item's picture can be in, the most telling first: a poster, a cover, a logo, a photo. */
+/**
+ * iNaturalist's animals: the common name in the reader's language over the Latin one,
+ * which then stands under it. Its photos are cropped into tiles, so a wide one is left out.
+ */
+export function inaturalistHits(body: unknown): PictureHit[] {
+  return rows((body as Json | null)?.results).flatMap((row): PictureHit[] => {
+    const latin = text(row.name);
+    const common = text(row.preferred_common_name);
+    const photo = (row.default_photo ?? {}) as Json;
+    const medium = text(photo.medium_url);
+    const size = (photo.original_dimensions ?? {}) as Json;
+    if (!latin || !medium || !medium.startsWith("https://") || typeof row.id !== "number" || row.is_active === false) return [];
+    if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return [];
+    const title = common ? common.charAt(0).toLocaleUpperCase() + common.slice(1) : latin;
+    return [{
+      id: `inaturalist:${row.id}`,
+      title,
+      subtitle: common ? latin : null,
+      imageUrl: medium.replace(/\/medium\.(\w+)$/, "/large.$1"),
+      thumbUrl: medium,
+      source: "inaturalist",
+      kind: "animal",
+    }];
+  });
+}
+
 const WIKIDATA_PICTURES = ["P3383", "P18", "P154", "P2716"];
 /** Where an item says what it is on TMDB, so the same film is not shown twice. */
 const WIKIDATA_TMDB = { P4947: "movie", P4983: "tv", P4985: "person" } as const;
@@ -277,13 +339,13 @@ export function commonsName(file: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-/** Commons `imageinfo` sizes: the files that are not wider than they are tall, by their Commons names. */
-export function commonsUpright(body: unknown): Set<string> {
+/** Commons `imageinfo` sizes: the files that make good tiles, by their Commons names. */
+export function commonsFitting(body: unknown, covers: boolean): Set<string> {
   const pages = ((((body as Json | null)?.query as Json | undefined)?.pages ?? {}) as Record<string, Json>);
   return new Set(Object.values(pages).flatMap((page) => {
     const info = rows(page.imageinfo)[0];
     const title = text(page.title);
-    if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || info.width > info.height) return [];
+    if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || !fitsTile(info.width, info.height, covers)) return [];
     return [commonsName(title.replace(/^File:/, ""))];
   }));
 }
@@ -344,13 +406,14 @@ export function webHits(body: unknown): PictureHit[] {
     const imageUrl = text(row.imageUrl);
     const title = text(row.title);
     if (!imageUrl || !imageUrl.startsWith("https://") || !title) return [];
-    const thumb = text(row.thumbnailUrl);
+    // The search engine's own thumbnail is a couple of hundred pixels: the grid takes the picture itself.
+    if (typeof row.imageWidth !== "number" || typeof row.imageHeight !== "number" || !fitsTile(row.imageWidth, row.imageHeight, false)) return [];
     return [{
       id: `web:${hashOf(imageUrl)}`,
       title: title.length > 80 ? `${title.slice(0, 79)}…` : title,
       subtitle: text(row.source) ?? text(row.domain),
       imageUrl,
-      thumbUrl: thumb?.startsWith("https://") ? thumb : null,
+      thumbUrl: null,
       source: "web",
       kind: "web",
     }];

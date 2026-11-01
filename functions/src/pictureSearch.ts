@@ -17,12 +17,15 @@ import type { Identity } from "./auth";
 import {
   ANILIST_QUERY,
   anilistHits,
+  commonsFitting,
   commonsName,
-  commonsUpright,
   decideWeb,
   deezerAlbumHits,
   deezerArtistHits,
   goodMatches,
+  IGDB_QUERY_FIELDS,
+  igdbHits,
+  inaturalistHits,
   mergeHits,
   openLibraryHits,
   PictureHit,
@@ -36,6 +39,7 @@ import {
   tmdbKeyOf,
   webHits,
   WikidataCandidate,
+  wantsCovers,
   wikidataCandidates,
 } from "./pictureSources";
 import { dayKey } from "./quota";
@@ -47,7 +51,7 @@ const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 3;
+const CACHE_SHAPE = 4;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -176,8 +180,12 @@ async function askSource(source: PictureSource, input: SearchInput): Promise<Sou
         return await askTmdb(input);
       case "anilist":
         return await askAnilist(input);
+      case "igdb":
+        return await askIgdb(input);
       case "steam":
         return input.page > 1 ? { hits: [], hasMore: false } : await askSteam(input);
+      case "inaturalist":
+        return await askInaturalist(input);
       case "deezer":
         return await askDeezer(input);
       case "openlibrary":
@@ -224,6 +232,42 @@ async function askAnilist(input: SearchInput): Promise<SourceAnswer> {
   const pages = (body as { data?: { media?: { pageInfo?: { hasNextPage?: boolean } } } }).data;
   const hits = anilistHits(body);
   return { hits, hasMore: pages?.media?.pageInfo?.hasNextPage === true || hits.length >= 20 };
+}
+
+const IGDB_PAGE = 15;
+let igdbToken: { value: string; untilMs: number } | null = null;
+
+/** Twitch's app token for IGDB, kept for the instance's life and asked again a day before it ends. */
+async function igdbAccess(id: string, secret: string): Promise<string> {
+  if (igdbToken && igdbToken.untilMs > Date.now()) return igdbToken.value;
+  const params = new URLSearchParams({ client_id: id, client_secret: secret, grant_type: "client_credentials" });
+  const body = (await getJson(`https://id.twitch.tv/oauth2/token?${params}`, { method: "POST" })) as { access_token?: unknown; expires_in?: unknown };
+  if (typeof body.access_token !== "string" || typeof body.expires_in !== "number") throw new Error("Twitch gave no IGDB token");
+  igdbToken = { value: body.access_token, untilMs: Date.now() + Math.max(0, body.expires_in - 24 * 60 * 60) * 1000 };
+  return igdbToken.value;
+}
+
+/** Off until the owner has set the IGDB keys and bound them to this function. */
+async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
+  const id = process.env.IGDB_CLIENT_ID;
+  const secret = process.env.IGDB_CLIENT_SECRET;
+  if (!id || !secret) return { hits: [], hasMore: false };
+  const typed = input.typed.replace(/["\\]/g, " ").trim();
+  const query = `search "${typed}"; fields ${IGDB_QUERY_FIELDS}; where cover != null & version_parent = null; limit ${IGDB_PAGE}; offset ${(input.page - 1) * IGDB_PAGE};`;
+  const body = await getJson("https://api.igdb.com/v4/games", {
+    method: "POST",
+    headers: { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" },
+    body: query,
+  });
+  return { hits: igdbHits(body), hasMore: Array.isArray(body) && body.length >= IGDB_PAGE };
+}
+
+/** Autocomplete ranks the tiger above the tiger moths; it has one page, so the next one is empty. */
+async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
+  if (input.page > 1) return { hits: [], hasMore: false };
+  // taxon_id 1 is Animalia: plants and fungi are not what this scope is for.
+  const params = new URLSearchParams({ q: input.typed, taxon_id: "1", rank: "species,subspecies,genus", locale: input.language, per_page: "20" });
+  return { hits: inaturalistHits(await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`)), hasMore: false };
 }
 
 async function askSteam(input: SearchInput): Promise<SourceAnswer> {
@@ -284,7 +328,7 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     format: "json",
   });
   const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language);
-  const candidates = input.scope === "all" || pictured.length === 0 ? pictured : await onlyUpright(pictured);
+  const candidates = pictured.length === 0 ? pictured : await fitting(pictured, wantsCovers(input.scope));
   return {
     hits: candidates.map(({ hit }) => hit),
     hasMore: false,
@@ -292,8 +336,8 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
   };
 }
 
-/** A narrow scope fills cover-shaped tiles, where a wide logo or screenshot looks broken; "all" keeps photos of things. */
-async function onlyUpright(candidates: WikidataCandidate[]): Promise<WikidataCandidate[]> {
+/** Commons knows each file's size: too small a picture never shows, nor a wide one where covers are wanted. */
+async function fitting(candidates: WikidataCandidate[], covers: boolean): Promise<WikidataCandidate[]> {
   const sizes = new URLSearchParams({
     action: "query",
     prop: "imageinfo",
@@ -301,8 +345,8 @@ async function onlyUpright(candidates: WikidataCandidate[]): Promise<WikidataCan
     titles: candidates.map(({ file }) => `File:${file}`).join("|"),
     format: "json",
   });
-  const upright = commonsUpright(await getJson(`https://commons.wikimedia.org/w/api.php?${sizes}`));
-  return candidates.filter(({ file }) => upright.has(commonsName(file)));
+  const good = commonsFitting(await getJson(`https://commons.wikimedia.org/w/api.php?${sizes}`), covers);
+  return candidates.filter(({ file }) => good.has(commonsName(file)));
 }
 
 interface WebOutcome {

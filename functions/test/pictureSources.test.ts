@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   anilistHits,
+  commonsFitting,
   commonsName,
-  commonsUpright,
   decideWeb,
   deezerArtistHits,
+  fitsTile,
+  igdbHits,
+  inaturalistHits,
   matchScore,
   mergeHits,
   openLibraryHits,
@@ -13,6 +16,7 @@ import {
   pictureScopeOf,
   sourcesFor,
   steamAppIds,
+  wantsCovers,
   steamHits,
   tmdbHits,
   webHits,
@@ -40,7 +44,9 @@ describe("pictureScopeOf", () => {
   });
 
   it("asks every catalogue for all, and Wikidata in every scope", () => {
-    assert.deepEqual(sourcesFor("all"), ["tmdb", "anilist", "steam", "deezer", "openlibrary", "wikidata"]);
+    assert.deepEqual(sourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "deezer", "openlibrary", "inaturalist", "wikidata"]);
+    assert.deepEqual(sourcesFor("animals"), ["inaturalist", "wikidata"]);
+    assert.equal(pictureScopeOf("animals"), "animals");
     assert.ok(sourcesFor("games").includes("wikidata"));
   });
 });
@@ -103,6 +109,7 @@ describe("the catalogues' answers", () => {
         media: { media: [
           { id: 20, type: "ANIME", seasonYear: 2002, title: { english: "Naruto", romaji: "NARUTO" }, coverImage: { extraLarge: "https://a/20xl.jpg", large: "https://a/20.jpg" } },
           { id: 21, type: "ANIME", isAdult: true, title: { romaji: "X" }, coverImage: { large: "https://a/21.jpg" } },
+          { id: 22, type: "ANIME", title: { romaji: "Y" }, coverImage: { large: "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/default.jpg" } },
         ] },
         characters: { characters: [
           { id: 17, name: { full: "Naruto Uzumaki" }, image: { large: "https://a/c17.jpg" }, media: { nodes: [{ title: { english: "Naruto" } }] } },
@@ -133,15 +140,57 @@ describe("the catalogues' answers", () => {
     ]);
   });
 
-  it("Commons sizes: tall and square pictures stay, wide ones go, names matched as Commons writes them", () => {
-    const upright = commonsUpright({ query: { pages: {
+  it("Commons sizes: covers must stand upright, photos may be cropped, nothing small, names as Commons writes them", () => {
+    const body = { query: { pages: {
       "1": { title: "File:Hollow Knight cover.jpg", imageinfo: [{ width: 600, height: 900 }] },
       "2": { title: "File:Album.png", imageinfo: [{ width: 500, height: 500 }] },
       "3": { title: "File:Game logo.svg", imageinfo: [{ width: 1200, height: 300 }] },
+      "4": { title: "File:Fox.jpg", imageinfo: [{ width: 2048, height: 1638 }] },
+      "5": { title: "File:Tiny.jpg", imageinfo: [{ width: 120, height: 160 }] },
       "-1": { title: "File:Missing.jpg", missing: "" },
-    } } });
-    assert.deepEqual([...upright].sort(), ["Album.png", "Hollow Knight cover.jpg"]);
-    assert.ok(upright.has(commonsName("hollow_Knight_cover.jpg")));
+    } } };
+    const covers = commonsFitting(body, true);
+    assert.deepEqual([...covers].sort(), ["Album.png", "Hollow Knight cover.jpg"]);
+    assert.ok(covers.has(commonsName("hollow_Knight_cover.jpg")));
+    assert.deepEqual([...commonsFitting(body, false)].sort(), ["Album.png", "Fox.jpg", "Hollow Knight cover.jpg"]);
+  });
+
+  it("which scopes want covers, and what fits a tile", () => {
+    assert.deepEqual(["all", "animals", "games", "people"].map((scope) => wantsCovers(pictureScopeOf(scope))), [false, false, true, true]);
+    assert.equal(fitsTile(600, 900, true), true);
+    assert.equal(fitsTile(901, 900, true), false);
+    assert.equal(fitsTile(1500, 1000, false), true);
+    assert.equal(fitsTile(1600, 1000, false), false);
+    assert.equal(fitsTile(299, 600, false), false);
+  });
+
+  it("IGDB: the tall cover at twice the size, the year it came out, nothing without a cover", () => {
+    const hits = igdbHits([
+      { id: 1025, name: "The Legend of Zelda: Breath of the Wild", first_release_date: 1488499200, cover: { image_id: "co3p2d", width: 1080, height: 1440 } },
+      { id: 7, name: "No cover" },
+      { id: 8, name: "Odd cover", cover: { image_id: "../x" } },
+      { id: 9, name: "Wide cover", cover: { image_id: "co1", width: 1920, height: 1080 } },
+    ]);
+    assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.kind]), [
+      ["The Legend of Zelda: Breath of the Wild", "2017", "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co3p2d.jpg", "game"],
+    ]);
+  });
+
+  it("the same game from IGDB and Steam is shown once, IGDB's first", () => {
+    const igdb = { ...hit("igdb:1", "Hollow Knight"), kind: "game" as const, subtitle: "2017", source: "igdb" as const };
+    const steam = { ...hit("steam:367520", "Hollow Knight"), kind: "game" as const, source: "steam" as const };
+    assert.deepEqual(mergeHits("hollow knight", [[igdb], [steam]]).map((one) => one.id), ["igdb:1"]);
+  });
+
+  it("iNaturalist: the common name over the Latin one, a large photo, never a wide one or none", () => {
+    const hits = inaturalistHits({ results: [
+      { id: 42069, name: "Vulpes vulpes", preferred_common_name: "обыкновенная лисица", default_photo: { medium_url: "https://static.inaturalist.org/photos/1/medium.jpg", original_dimensions: { width: 2048, height: 1638 } } },
+      { id: 2, name: "Panorama", default_photo: { medium_url: "https://static.inaturalist.org/photos/2/medium.jpg", original_dimensions: { width: 3000, height: 1000 } } },
+      { id: 3, name: "Unseen" },
+    ] });
+    assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.thumbUrl]), [
+      ["Обыкновенная лисица", "Vulpes vulpes", "https://static.inaturalist.org/photos/1/large.jpg", "https://static.inaturalist.org/photos/1/medium.jpg"],
+    ]);
   });
 
   it("Deezer: an artist without a photo is left out", () => {
@@ -177,14 +226,17 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(candidates[0]?.tmdbIds, ["movie:77"]);
   });
 
-  it("the web: https pictures only, long page titles cut", () => {
+  it("the web: https pictures big enough for a tile, the picture itself in the grid, long page titles cut", () => {
     const hits = webHits({ images: [
-      { title: "x".repeat(100), imageUrl: "https://site/a.jpg", thumbnailUrl: "https://t/a", source: "site" },
-      { title: "plain", imageUrl: "http://site/b.jpg" },
+      { title: "x".repeat(100), imageUrl: "https://site/a.jpg", imageWidth: 800, imageHeight: 1000, thumbnailUrl: "https://t/a", source: "site" },
+      { title: "plain", imageUrl: "http://site/b.jpg", imageWidth: 800, imageHeight: 1000 },
+      { title: "banner", imageUrl: "https://site/c.jpg", imageWidth: 1600, imageHeight: 400 },
+      { title: "icon", imageUrl: "https://site/d.jpg", imageWidth: 128, imageHeight: 128 },
+      { title: "unknown size", imageUrl: "https://site/e.jpg" },
     ] });
-    assert.equal(hits.length, 1);
+    assert.deepEqual(hits.map((one) => one.imageUrl), ["https://site/a.jpg"]);
     assert.equal([...(hits[0]?.title ?? "")].length, 80);
-    assert.equal(hits[0]?.thumbUrl, "https://t/a");
+    assert.equal(hits[0]?.thumbUrl, null);
   });
 });
 
