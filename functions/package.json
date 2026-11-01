@@ -13,6 +13,7 @@
     "test:wipe": "tsc -p tsconfig.test.json && firebase emulators:exec --only firestore,auth,storage --project demo-tieryourlife-wipe \"node --test lib-test/scripts/wipe-production.emulator.js\"",
     "wipe-production": "tsc -p tsconfig.test.json && node lib-test/scripts/wipe-production.js",
     "cache-public-pictures": "tsc -p tsconfig.test.json && node lib-test/scripts/cache-public-pictures.js",
+    "search-keys": "tsc -p tsconfig.test.json && node lib-test/scripts/search-keys.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"

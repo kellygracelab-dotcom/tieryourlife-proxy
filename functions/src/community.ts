@@ -188,6 +188,7 @@ import {
 } from "./sectionPictures";
 import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, topicKeyOf } from "./proposalTopic";
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "./adminLists";
+import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
 import {
   cleanTopicName,
   decideAttachment,
@@ -252,6 +253,8 @@ const ORDER_PATH = "order";
 const NAME_CHECK_PATH = "name-check";
 const ADMIN_PATH = "admin";
 const EDITORIAL_PATH = "editorial";
+const SEARCH_MISSES_PATH = "search-misses";
+const SEARCH_MISSES = "searchMisses";
 const CANDIDATES_PATH = "candidates";
 const APPROVE_AS_TOPIC: TopicDecision = "approve-as-topic";
 const MERGE_INTO_TOPIC: TopicDecision = "merge-into-topic";
@@ -339,6 +342,8 @@ const MAX_NOTE_LENGTH = 500;
 
 
 interface StoredList {
+  /** Words to be found by (src/search.ts); absent on a list stored before search had them. */
+  searchKeys?: string[];
   authorUid: string;
   authorName: string;
   authorPhotoUrl: string | null;
@@ -547,6 +552,9 @@ export const lists = onRequest(
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
       }
+      if (segments[0] === SEARCH_MISSES_PATH && segments.length === 1) {
+        return await routeSearchMisses(request.method, request.body, response, identity);
+      }
       if (segments[0] === EDITORIAL_PATH) {
         return await routeEditorial(request.method, segments.slice(1), query, request.body, response, identity);
       }
@@ -722,13 +730,16 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
     query = query.where("topicId", "==", filters.topic);
   }
 
-  // A range has to be ordered by the field it ranges over, so a search orders
-  // by title whatever was asked for, and everything else by what was asked.
-  let ordered = filters.query
-    ? query
-        .where("titleLower", ">=", filters.query)
-        .where("titleLower", "<=", `${filters.query}`)
-        .orderBy("titleLower")
+  // A search asks for one word and keeps what has the others (src/search.ts),
+  // in the order Firestore keeps them, so pages resume where they stopped.
+  const search = searchQueryOf(filters.query);
+  if (filters.query !== null && search === null) {
+    response.setHeader("Cache-Control", "no-store");
+    response.status(200).json({ lists: [], nextCursor: null });
+    return;
+  }
+  let ordered = search
+    ? query.where("searchKeys", "array-contains", search.key)
     : query.orderBy(filters.sort === "popular" ? "takeCount" : "updatedAt", "desc");
 
   // The cursor is the last id of the page before. Reading that document
@@ -752,7 +763,7 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
   // would be its author's; everywhere else it goes out by nobody.
   const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
     const data = doc.data() as StoredList;
-    return data.underReview !== true && !(filters.author !== null && isAnonymous(data));
+    return data.underReview !== true && !(filters.author !== null && isAnonymous(data)) && (search === null || matchesSearch(doc.get("searchKeys"), search));
   };
   const page = await fillVisible(
     async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
@@ -2774,6 +2785,8 @@ async function publish(
     authorPhotoUrl: byline.photoUrl,
     title: list.title,
     titleLower: list.titleLower,
+    // A title kept keeps its keys, translations and all; a new one starts from its own words.
+    ...(previous?.title === list.title && previous.searchKeys !== undefined ? {} : searchFieldsFor([list.title])),
     // A topic decides the section: an approved one brings its own, a waiting
     // one holds the list under "other" until somebody has looked. So a list
     // with a topic never waits for a proposed section as well.
@@ -2816,6 +2829,7 @@ async function publish(
         name: attachment.name,
         nameLower: attachment.nameLower,
         names: {},
+        ...searchFieldsFor([attachment.name]),
         section: null,
         status: "pending",
         requestedSection: attachment.requestedSection,
@@ -3404,26 +3418,41 @@ interface TopicFilters {
   limit: number;
 }
 
-/** Approved topics: the ones that start with what was typed, or the biggest, within a section if asked. */
+/**
+ * Approved topics: the ones with every typed word in their names, in any of
+ * the app's languages, the most followed first; or the biggest, within a
+ * section if asked.
+ */
 async function readTopics(response: Response, identity: Identity, filters: TopicFilters): Promise<void> {
-  let query: FirebaseFirestore.Query = getFirestore().collection(TOPICS).where("status", "==", "approved");
-  if (filters.prefix) {
-    query = query
-      .where("nameLower", ">=", filters.prefix)
-      .where("nameLower", "<=", `${filters.prefix}`)
-      .orderBy("nameLower");
+  const topics = getFirestore().collection(TOPICS);
+  const search = searchQueryOf(filters.prefix);
+  let docs: FirebaseFirestore.QueryDocumentSnapshot[];
+  let followed: string[];
+  if (filters.prefix !== null) {
+    // The status is checked here rather than asked: with the word it would need an index of its own.
+    const found = search === null
+      ? []
+      : (await topics.where("searchKeys", "array-contains", search.key).limit(filters.limit * 3).get()).docs;
+    docs = found
+      .filter((doc) => doc.get("status") === "approved" && search !== null && matchesSearch(doc.get("searchKeys"), search))
+      .sort((left, right) => Number(right.get("followerCount") ?? 0) - Number(left.get("followerCount") ?? 0))
+      .slice(0, filters.limit);
+    followed = await followedTopicIds(identity.uid);
   } else {
+    let query: FirebaseFirestore.Query = topics.where("status", "==", "approved");
     if (filters.section) {
       query = query.where("section", "==", filters.section);
     }
     query = query.orderBy("listCount", "desc");
+    const [snapshot, mineFollowed] = await Promise.all([query.limit(filters.limit).get(), followedTopicIds(identity.uid)]);
+    docs = snapshot.docs;
+    followed = mineFollowed;
   }
 
-  const [snapshot, followed] = await Promise.all([query.limit(filters.limit).get(), followedTopicIds(identity.uid)]);
   const mine = new Set(followed);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    topics: snapshot.docs.map((doc) => toTopic(doc.id, doc.data() as StoredTopic, mine.has(doc.id), { uid: identity.uid, staff: false })),
+    topics: docs.map((doc) => toTopic(doc.id, doc.data() as StoredTopic, mine.has(doc.id), { uid: identity.uid, staff: false })),
   });
 }
 
@@ -3629,6 +3658,7 @@ async function settleTopic(
   await rewriteWhere(PUBLISHED, "topicId", topicId, outcome.lists);
 
   const update: Record<string, unknown> = { ...outcome.topic };
+  if (typeof outcome.topic.name === "string") Object.assign(update, searchFieldsFor([outcome.topic.name]));
   if (outcome.decided) {
     update.decidedAt = FieldValue.serverTimestamp();
     update.decidedBy = identity.uid;
@@ -3741,6 +3771,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
       name: decision.name,
       nameLower: decision.nameLower,
       names: {},
+      ...searchFieldsFor([decision.name]),
       section: decision.section,
       status: "approved",
       requestedSection: decision.section,
@@ -3827,6 +3858,9 @@ async function editTopic(response: Response, identity: Identity, topicId: string
     update.nameLower = edit.nameLower;
   }
   if (edit.names !== undefined) update.names = edit.names;
+  if (edit.name !== undefined || edit.names !== undefined) {
+    Object.assign(update, searchFieldsFor([edit.name ?? stored.name, ...Object.values(edit.names ?? stored.names ?? {})]));
+  }
   // A new picture is copied before the decision and removed again if the edit does not land.
   let copied: string | null = null;
   if (typeof edit.pictureId === "string") {
@@ -4315,6 +4349,7 @@ async function approveAsTopic(response: Response, identity: Identity, id: string
       name: again.name,
       nameLower: again.nameLower,
       names: again.names,
+      ...searchFieldsFor([again.name, ...Object.values(again.names)]),
       section: again.section,
       status: "approved",
       requestedSection: again.section,
@@ -4522,6 +4557,38 @@ async function readAdminCounts(response: Response, identity: Identity): Promise<
   ]);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({ reports: reports.data().count, proposals: proposals.data().count });
+}
+
+/**
+ * Searches nothing answered: a client says so once it has asked everywhere
+ * (sections, topics, lists), and staff read the most asked. Only the words
+ * are kept, never who typed them.
+ */
+async function routeSearchMisses(method: string, body: unknown, response: Response, identity: Identity): Promise<void> {
+  if (method === "POST") {
+    const miss = missOf((body as { q?: unknown } | null)?.q);
+    if (miss !== null) {
+      await getFirestore()
+        .collection(SEARCH_MISSES)
+        .doc(createHash("sha256").update(miss).digest("hex"))
+        .set({ q: miss, count: FieldValue.increment(1), lastAt: FieldValue.serverTimestamp() }, { merge: true });
+    }
+    response.status(204).send();
+    return;
+  }
+  if (method === "GET") {
+    if (!(await isModeratorNow(identity))) {
+      response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+      return;
+    }
+    const snapshot = await getFirestore().collection(SEARCH_MISSES).orderBy("count", "desc").limit(100).get();
+    response.setHeader("Cache-Control", "no-store");
+    response.status(200).json({
+      misses: snapshot.docs.map((doc) => ({ q: doc.get("q"), count: doc.get("count") ?? 0, lastAt: doc.get("lastAt")?.toMillis() ?? 0 })),
+    });
+    return;
+  }
+  response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
 }
 
 /**
