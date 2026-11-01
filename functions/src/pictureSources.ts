@@ -23,6 +23,8 @@ export interface PictureHit {
   thumbUrl: string | null;
   source: PictureSource;
   kind: PictureKind;
+  /** Who the picture's license asks to be named beside it; absent when it asks for nobody or the source does not say. */
+  credit?: string;
 }
 
 /** A scope from what a client sent: a known scope, or a section id that means one; anything else is all. */
@@ -297,28 +299,58 @@ export function openLibraryHits(body: unknown): PictureHit[] {
 }
 
 /** The properties a Wikidata item's picture can be in, the most telling first: a poster, a cover, a logo, a photo. */
+/** Licenses that let anybody show and keep a photo, a commercial app included: no NC, no ND, not "all rights reserved". */
+const OPEN_LICENSES = new Set(["cc0", "cc-by", "cc-by-sa", "pd"]);
+
+/** An openly licensed photo a tile can be cut from, or null. */
+function inaturalistPhoto(raw: unknown): { medium: string; credit: string | null } | null {
+  const photo = (raw ?? {}) as Json;
+  const medium = text(photo.medium_url);
+  const size = (photo.original_dimensions ?? {}) as Json;
+  if (typeof photo.license_code !== "string" || !OPEN_LICENSES.has(photo.license_code)) return null;
+  if (!medium || !medium.startsWith("https://")) return null;
+  if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return null;
+  return { medium, credit: text(photo.attribution) };
+}
+
+/** Taxa whose default photo will not do, so their other photos are worth asking for. */
+export function inaturalistWithoutPhoto(body: unknown): number[] {
+  return rows((body as Json | null)?.results)
+    .filter((row) => typeof row.id === "number" && inaturalistPhoto(row.default_photo) === null)
+    .map((row) => row.id as number);
+}
+
+/** Every photo of each taxon in a /v1/taxa/{ids} answer, by taxon id. */
+export function inaturalistPhotos(body: unknown): Map<number, unknown[]> {
+  const photos = new Map<number, unknown[]>();
+  for (const row of rows((body as Json | null)?.results)) {
+    if (typeof row.id === "number") photos.set(row.id, rows(row.taxon_photos).map((one) => one.photo));
+  }
+  return photos;
+}
+
 /**
  * iNaturalist's animals: the common name in the reader's language over the Latin one,
- * which then stands under it. Its photos are cropped into tiles, so a wide one is left out.
+ * which then stands under it. The default photo when its license is open, else the
+ * taxon's first open one; a taxon with none is left out, as is a wide photo.
  */
-export function inaturalistHits(body: unknown): PictureHit[] {
+export function inaturalistHits(body: unknown, others: Map<number, unknown[]> = new Map()): PictureHit[] {
   return rows((body as Json | null)?.results).flatMap((row): PictureHit[] => {
     const latin = text(row.name);
+    if (!latin || typeof row.id !== "number" || row.is_active === false) return [];
+    const photo = [row.default_photo, ...(others.get(row.id) ?? [])].map(inaturalistPhoto).find((one) => one !== null);
+    if (!photo) return [];
     const common = text(row.preferred_common_name);
-    const photo = (row.default_photo ?? {}) as Json;
-    const medium = text(photo.medium_url);
-    const size = (photo.original_dimensions ?? {}) as Json;
-    if (!latin || !medium || !medium.startsWith("https://") || typeof row.id !== "number" || row.is_active === false) return [];
-    if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return [];
     const title = common ? common.charAt(0).toLocaleUpperCase() + common.slice(1) : latin;
     return [{
       id: `inaturalist:${row.id}`,
       title,
       subtitle: common ? latin : null,
-      imageUrl: medium.replace(/\/medium\.(\w+)$/, "/large.$1"),
-      thumbUrl: medium,
+      imageUrl: photo.medium.replace(/\/medium\.(\w+)$/, "/large.$1"),
+      thumbUrl: photo.medium,
       source: "inaturalist",
       kind: "animal",
+      ...(photo.credit ? { credit: photo.credit } : {}),
     }];
   });
 }

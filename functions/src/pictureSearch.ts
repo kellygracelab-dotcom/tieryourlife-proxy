@@ -26,6 +26,8 @@ import {
   IGDB_QUERY_FIELDS,
   igdbHits,
   inaturalistHits,
+  inaturalistPhotos,
+  inaturalistWithoutPhoto,
   mergeHits,
   openLibraryHits,
   PictureHit,
@@ -53,7 +55,7 @@ const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 4;
+const CACHE_SHAPE = 5;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -268,7 +270,13 @@ async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
   if (input.page > 1) return { hits: [], hasMore: false };
   // taxon_id 1 is Animalia: plants and fungi are not what this scope is for.
   const params = new URLSearchParams({ q: input.typed, taxon_id: "1", rank: "species,subspecies,genus", locale: input.language, per_page: "20" });
-  return { hits: inaturalistHits(await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`)), hasMore: false };
+  const found = await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`);
+  // Most default photos are licensed non-commercially or not at all: such a taxon's other photos are looked through.
+  const without = inaturalistWithoutPhoto(found);
+  const others = without.length === 0
+    ? new Map<number, unknown[]>()
+    : await getJson(`https://api.inaturalist.org/v1/taxa/${without.join(",")}`).then(inaturalistPhotos, () => new Map<number, unknown[]>());
+  return { hits: inaturalistHits(found, others), hasMore: false };
 }
 
 async function askSteam(input: SearchInput): Promise<SourceAnswer> {
