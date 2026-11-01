@@ -8,22 +8,26 @@ import type { Identity } from "./auth";
 /** Not a Firebase uid (those are 28 characters with no hyphen), so no sign-in can become it. */
 export const EDITORIAL_UID = "tyl-editorial";
 
+export type StaffRole = "owner" | "moderator";
+
 /** Who a list is stored under: the person publishing, or the house. */
 export interface Byline {
   uid: string;
   name: string;
   photoUrl: string | null;
-  editorial: boolean;
+  /** Set only for the house: the role of whoever speaks for it, for the audit log. */
+  speaker: StaffRole | null;
 }
 
 export function bylineOf(identity: Identity): Byline {
-  return { uid: identity.uid, name: identity.name ?? "Anonymous", photoUrl: identity.picture, editorial: false };
+  return { uid: identity.uid, name: identity.name ?? "Anonymous", photoUrl: identity.picture, speaker: null };
 }
 
-export const EDITORIAL_BYLINE: Byline = { uid: EDITORIAL_UID, name: "", photoUrl: null, editorial: true };
+export function editorialByline(speaker: StaffRole): Byline {
+  return { uid: EDITORIAL_UID, name: "", photoUrl: null, speaker };
+}
 
-/** Only the owner speaks for the house; a moderator is told why, anybody else just no. */
-export function decideEditorialAccess(role: "owner" | "moderator" | null): { ok: true } | { ok: false; detail?: "owner_only" } {
-  if (role === "owner") return { ok: true };
-  return role === null ? { ok: false } : { ok: false, detail: "owner_only" };
+/** The owner and the moderators speak for the house; anybody else is turned away. */
+export function decideEditorialAccess(role: StaffRole | null): { ok: true; speaker: StaffRole } | { ok: false } {
+  return role === null ? { ok: false } : { ok: true, speaker: role };
 }

@@ -28,7 +28,7 @@ import {
   type ListReader,
 } from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
-import { bylineOf, decideEditorialAccess, EDITORIAL_BYLINE, EDITORIAL_UID, type Byline } from "./editorial";
+import { bylineOf, decideEditorialAccess, EDITORIAL_UID, editorialByline, type Byline } from "./editorial";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
   chunked,
@@ -2658,7 +2658,7 @@ async function publish(
 
   // Replacing a list the author already published does not add to their count,
   // and the house has no count.
-  const alreadyPublished = existingId || byline.editorial
+  const alreadyPublished = existingId || byline.speaker !== null
     ? 0
     : (await collection.where("authorUid", "==", identity.uid).count().get()).data().count;
 
@@ -2693,7 +2693,7 @@ async function publish(
   // A list of the author's own being replaced is a republish whatever it says,
   // and the house only ever publishes lists of its own.
   const source = body as Record<string, unknown>;
-  const publication = existingId || byline.editorial
+  const publication = existingId || byline.speaker !== null
     ? ({ kind: "list", basedOn: null } as Publication)
     : await resolvePublication(identity, readTakenFrom(source.takenFrom), decision.draft.items);
   if (publication.kind === "ranking") {
@@ -2730,7 +2730,7 @@ async function publish(
   // Answered after the board is stored, because the answer is a report about
   // a list and there has to be a list to report.
   const words = wordsOf(decision.draft);
-  const wording = !byline.editorial && words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
+  const wording = byline.speaker === null && words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
   const concern = wording === null ? "none" : decideWordingConcern(wording);
 
   // A new list is named before it is written. The pictures have to be copied
@@ -2789,7 +2789,7 @@ async function publish(
     tierColors: list.tierColors,
     tierCounts: tierCountsOf(list.tiers.length, list.items),
     basedOn: publication.basedOn,
-    anonymous: byline.editorial || anonymityAfter(decision.draft.anonymous, previous),
+    anonymous: byline.speaker !== null || anonymityAfter(decision.draft.anonymous, previous),
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
@@ -2832,10 +2832,10 @@ async function publish(
     } else if (topicId !== null && topicId !== previousTopic) {
       transaction.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
     }
-    if (byline.editorial) {
+    if (byline.speaker !== null) {
       // Who spoke for the house lives here and nowhere a reader can reach.
       const what = existingId ? "list.editorial_edit" : "list.editorial_publish";
-      auditInTransaction(transaction, auditEntry(identity.uid, "owner", what, `${PUBLISHED}/${target}`, null, { title: list.title, category: document.category }));
+      auditInTransaction(transaction, auditEntry(identity.uid, byline.speaker, what, `${PUBLISHED}/${target}`, null, { title: list.title, category: document.category }));
     }
     if (existingId) {
       transaction.set(collection.doc(existingId), document, { merge: true });
@@ -3303,8 +3303,8 @@ async function unpublish(response: Response, identity: Identity, id: string, byl
   }
   const batch = getFirestore().batch();
   batch.delete(doc);
-  if (byline.editorial) {
-    auditInBatch(batch, auditEntry(identity.uid, "owner", "list.editorial_unpublish", `${PUBLISHED}/${id}`, { title: stored.title }, null));
+  if (byline.speaker !== null) {
+    auditInBatch(batch, auditEntry(identity.uid, byline.speaker, "list.editorial_unpublish", `${PUBLISHED}/${id}`, { title: stored.title }, null));
   }
   if (stored.topicId) {
     batch.update(getFirestore().collection(TOPICS).doc(stored.topicId), { listCount: FieldValue.increment(-1) });
@@ -4525,8 +4525,8 @@ async function readAdminCounts(response: Response, identity: Identity): Promise<
 }
 
 /**
- * The house's lists (src/editorial.ts), the owner's alone: list them, publish
- * one, replace one, take one down. A published one is read, ranked and found
+ * The house's lists (src/editorial.ts), for the owner and the moderators:
+ * list them, publish one, replace one, take one down. A published one is read, ranked and found
  * like any other list.
  */
 async function routeEditorial(
@@ -4539,15 +4539,16 @@ async function routeEditorial(
 ): Promise<void> {
   const access = decideEditorialAccess(await roleOf(identity));
   if (!access.ok) {
-    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(access.detail ? { detail: access.detail } : {}) });
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
+  const house = editorialByline(access.speaker);
   const [id = "", extra = ""] = rest;
   if (extra === "") {
     if (method === "GET" && id === "") return await readEditorialLists(response, identity, typeof query.after === "string" ? query.after : null);
-    if (method === "POST" && id === "") return await publish(response, identity, body, null, EDITORIAL_BYLINE);
-    if (method === "PUT" && id !== "") return await publish(response, identity, body, id, EDITORIAL_BYLINE);
-    if (method === "DELETE" && id !== "") return await unpublish(response, identity, id, EDITORIAL_BYLINE);
+    if (method === "POST" && id === "") return await publish(response, identity, body, null, house);
+    if (method === "PUT" && id !== "") return await publish(response, identity, body, id, house);
+    if (method === "DELETE" && id !== "") return await unpublish(response, identity, id, house);
   }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
 }
