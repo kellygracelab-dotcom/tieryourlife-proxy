@@ -17,6 +17,8 @@ import type { Identity } from "./auth";
 import {
   ANILIST_QUERY,
   anilistHits,
+  commonsName,
+  commonsUpright,
   decideWeb,
   deezerAlbumHits,
   deezerArtistHits,
@@ -28,11 +30,12 @@ import {
   pictureScopeOf,
   PictureSource,
   sourcesFor,
-  steamHeaderOf,
+  steamAppIds,
   steamHits,
   tmdbHits,
   tmdbKeyOf,
   webHits,
+  WikidataCandidate,
   wikidataCandidates,
 } from "./pictureSources";
 import { dayKey } from "./quota";
@@ -44,7 +47,7 @@ const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 2;
+const CACHE_SHAPE = 3;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -225,19 +228,15 @@ async function askAnilist(input: SearchInput): Promise<SourceAnswer> {
 
 async function askSteam(input: SearchInput): Promise<SourceAnswer> {
   const params = new URLSearchParams({ term: input.typed, l: "english", cc: "US" });
-  const hits = steamHits(await getJson(`https://store.steampowered.com/api/storesearch/?${params}`));
-  // Not every game has the tall cover; the wide header always exists.
-  const checked = await Promise.all(
-    hits.map(async (hit) => {
-      try {
-        const reply = await fetch(hit.imageUrl, { method: "HEAD", signal: AbortSignal.timeout(2_500) });
-        return reply.ok ? hit : steamHeaderOf(hit);
-      } catch {
-        return steamHeaderOf(hit);
-      }
-    }),
-  );
-  return { hits: checked, hasMore: false };
+  const ids = steamAppIds(await getJson(`https://store.steampowered.com/api/storesearch/?${params}`));
+  if (ids.length === 0) return { hits: [], hasMore: false };
+  const request = {
+    ids: ids.map((appid) => ({ appid })),
+    context: { language: "english", country_code: "US" },
+    data_request: { include_assets: true },
+  };
+  const items = await getJson(`https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?${new URLSearchParams({ input_json: JSON.stringify(request) })}`);
+  return { hits: steamHits(ids, items), hasMore: false };
 }
 
 async function askDeezer(input: SearchInput): Promise<SourceAnswer> {
@@ -284,12 +283,26 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     languages: [...new Set([input.language, language, "en"])].join("|"),
     format: "json",
   });
-  const candidates = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language);
+  const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language);
+  const candidates = input.scope === "all" || pictured.length === 0 ? pictured : await onlyUpright(pictured);
   return {
     hits: candidates.map(({ hit }) => hit),
     hasMore: false,
     twins: Object.fromEntries(candidates.map(({ hit, tmdbIds }) => [hit.id, tmdbIds])),
   };
+}
+
+/** A narrow scope fills cover-shaped tiles, where a wide logo or screenshot looks broken; "all" keeps photos of things. */
+async function onlyUpright(candidates: WikidataCandidate[]): Promise<WikidataCandidate[]> {
+  const sizes = new URLSearchParams({
+    action: "query",
+    prop: "imageinfo",
+    iiprop: "size",
+    titles: candidates.map(({ file }) => `File:${file}`).join("|"),
+    format: "json",
+  });
+  const upright = commonsUpright(await getJson(`https://commons.wikimedia.org/w/api.php?${sizes}`));
+  return candidates.filter(({ file }) => upright.has(commonsName(file)));
 }
 
 interface WebOutcome {
