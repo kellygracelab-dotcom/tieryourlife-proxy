@@ -189,6 +189,7 @@ import {
 import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, topicKeyOf } from "./proposalTopic";
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "./adminLists";
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
+import { pictureTmdbToken, routePictures } from "./pictureSearch";
 import {
   cleanTopicName,
   decideAttachment,
@@ -254,6 +255,7 @@ const NAME_CHECK_PATH = "name-check";
 const ADMIN_PATH = "admin";
 const EDITORIAL_PATH = "editorial";
 const SEARCH_MISSES_PATH = "search-misses";
+const PICTURES_PATH = "pictures";
 const SEARCH_MISSES = "searchMisses";
 const CANDIDATES_PATH = "candidates";
 const APPROVE_AS_TOPIC: TopicDecision = "approve-as-topic";
@@ -512,6 +514,8 @@ export const lists = onRequest(
     timeoutSeconds: 30,
     memory: "256MiB",
     maxInstances: 10,
+    // Picture search asks TMDB itself (src/pictureSearch.ts).
+    secrets: [pictureTmdbToken],
     // One copy kept warm: a cold start cost 2-5 s on every first open of
     // Community, a face or a publish. About three dollars a month at this size.
     minInstances: 1,
@@ -551,6 +555,9 @@ export const lists = onRequest(
       }
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
+      }
+      if (segments[0] === PICTURES_PATH) {
+        return await routePictures(request.method, segments.slice(1), query, request.body, response, identity);
       }
       if (segments[0] === SEARCH_MISSES_PATH && segments.length === 1) {
         return await routeSearchMisses(request.method, request.body, response, identity);
