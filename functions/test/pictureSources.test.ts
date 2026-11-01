@@ -91,13 +91,14 @@ describe("the catalogues' answers", () => {
     });
     assert.deepEqual(hits.map((one) => [one.id, one.kind, one.subtitle]), [["tmdb:11", "movie", "1977"], ["tmdb:12", "person", "Acting"]]);
     assert.equal(hits[0]?.imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
+    assert.equal(hits[0]?.thumbUrl, "https://image.tmdb.org/t/p/w342/a.jpg");
   });
 
   it("AniList: titles in English first, characters with their show, never adult or default faces", () => {
     const hits = anilistHits({
       data: {
         media: { media: [
-          { id: 20, type: "ANIME", seasonYear: 2002, title: { english: "Naruto", romaji: "NARUTO" }, coverImage: { large: "https://a/20.jpg" } },
+          { id: 20, type: "ANIME", seasonYear: 2002, title: { english: "Naruto", romaji: "NARUTO" }, coverImage: { extraLarge: "https://a/20xl.jpg", large: "https://a/20.jpg" } },
           { id: 21, type: "ANIME", isAdult: true, title: { romaji: "X" }, coverImage: { large: "https://a/21.jpg" } },
         ] },
         characters: { characters: [
@@ -107,6 +108,7 @@ describe("the catalogues' answers", () => {
       },
     });
     assert.deepEqual(hits.map((one) => [one.id, one.kind, one.subtitle]), [["anilist:20", "anime", "2002"], ["anilist:c17", "character", "Naruto"]]);
+    assert.deepEqual(hits.map((one) => [one.imageUrl, one.thumbUrl]), [["https://a/20xl.jpg", null], ["https://a/c17.jpg", null]]);
   });
 
   it("Steam: apps only, the tall cover asked for first", () => {
@@ -117,15 +119,17 @@ describe("the catalogues' answers", () => {
 
   it("Deezer: an artist without a photo is left out", () => {
     const hits = deezerArtistHits({ data: [
-      { id: 1, name: "Daft Punk", picture_xl: "https://e-cdns-images.dzcdn.net/images/artist/abc/1000x1000.jpg" },
+      { id: 1, name: "Daft Punk", picture_xl: "https://e-cdns-images.dzcdn.net/images/artist/abc/1000x1000.jpg", picture_big: "https://e-cdns-images.dzcdn.net/images/artist/abc/500x500.jpg", picture_medium: "https://e-cdns-images.dzcdn.net/images/artist/abc/250x250.jpg" },
       { id: 2, name: "Nobody", picture_xl: "https://e-cdns-images.dzcdn.net/images/artist//1000x1000.jpg" },
     ] });
     assert.deepEqual(hits.map((one) => one.title), ["Daft Punk"]);
+    assert.equal(hits[0]?.thumbUrl, "https://e-cdns-images.dzcdn.net/images/artist/abc/500x500.jpg");
   });
 
   it("Open Library: covers by id, author and year under the title", () => {
     const hits = openLibraryHits({ docs: [{ key: "/works/OL1W", title: "Dune", author_name: ["Frank Herbert"], first_publish_year: 1965, cover_i: 99 }, { key: "/works/OL2W", title: "No cover" }] });
     assert.deepEqual(hits.map((one) => [one.id, one.subtitle, one.imageUrl]), [["openlibrary:OL1W", "Frank Herbert · 1965", "https://covers.openlibrary.org/b/id/99-L.jpg"]]);
+    assert.equal(hits[0]?.thumbUrl, null);
   });
 
   it("Wikidata: the label in the reader's language, a Commons picture, and its TMDB twins", () => {
@@ -142,6 +146,7 @@ describe("the catalogues' answers", () => {
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0]?.hit.title, "Борщ");
     assert.equal(candidates[0]?.hit.imageUrl, "https://commons.wikimedia.org/wiki/Special:FilePath/Borscht_served.jpg?width=600");
+    assert.equal(candidates[0]?.hit.thumbUrl, "https://commons.wikimedia.org/wiki/Special:FilePath/Borscht_served.jpg?width=400");
     assert.deepEqual(candidates[0]?.tmdbIds, ["movie:77"]);
   });
 
