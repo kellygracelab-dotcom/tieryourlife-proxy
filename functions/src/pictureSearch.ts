@@ -43,6 +43,8 @@ export const pictureTmdbToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
 const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
+/** Raised whenever an answer holds something different, so answers kept from before are not served. */
+const CACHE_SHAPE = 2;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -118,7 +120,7 @@ interface SearchInput {
 export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | null> {
   const db = getFirestore();
   const key = (web: boolean) =>
-    createHash("sha256").update([fold(input.typed), input.scope, input.language, input.page, web ? "web" : ""].join("|")).digest("hex");
+    createHash("sha256").update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : ""].join("|")).digest("hex");
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
     const doc = await db.collection(CACHE).doc(id).get();
     const at = doc.get("at")?.toMillis?.() ?? 0;

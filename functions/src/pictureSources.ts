@@ -19,7 +19,7 @@ export interface PictureHit {
   title: string;
   subtitle: string | null;
   imageUrl: string;
-  /** A smaller copy for the grid, when the source has one apart from [imageUrl]. */
+  /** A smaller copy for the grid, never narrower than a tile (about 320 px on a phone); null when [imageUrl] is the only one that wide. */
   thumbUrl: string | null;
   source: PictureSource;
   kind: PictureKind;
@@ -141,7 +141,7 @@ export function tmdbHits(body: unknown): PictureHit[] {
     if (!kind || !path || !title || typeof row.id !== "number") return [];
     const date = text(row.release_date) ?? text(row.first_air_date);
     const subtitle = kind === "person" ? text(row.known_for_department) : date?.slice(0, 4) ?? null;
-    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w185${path}`, source: "tmdb", kind }];
+    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind }];
   });
 }
 
@@ -155,7 +155,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || typeof row.id !== "number" || row.isAdult === true) return [];
     const kind: PictureKind = row.type === "MANGA" ? "manga" : "anime";
     const year = typeof row.seasonYear === "number" ? String(row.seasonYear) : typeof (row.startDate as Json | undefined)?.year === "number" ? String((row.startDate as Json).year) : null;
-    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: text(cover.medium), source: "anilist", kind }];
+    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind }];
   });
   const characters = rows((data.characters as Json | undefined)?.characters).flatMap((row): PictureHit[] => {
     const title = text((row.name as Json | undefined)?.full);
@@ -164,16 +164,16 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number") return [];
     const from = rows((row.media as Json | undefined)?.nodes)[0];
     const subtitle = from ? text((from.title as Json | undefined)?.english) ?? text((from.title as Json | undefined)?.romaji) : null;
-    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: text(image.medium), source: "anilist", kind: "character" }];
+    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: null, source: "anilist", kind: "character" }];
   });
   return [...media, ...characters];
 }
 
 export const ANILIST_QUERY = `query ($q: String, $page: Int) {
   media: Page(page: $page, perPage: 15) { pageInfo { hasNextPage } media(search: $q, sort: SEARCH_MATCH, isAdult: false) {
-    id type isAdult seasonYear startDate { year } title { english romaji native } coverImage { extraLarge large medium } } }
+    id type isAdult seasonYear startDate { year } title { english romaji native } coverImage { extraLarge large } } }
   characters: Page(page: $page, perPage: 10) { characters(search: $q, sort: SEARCH_MATCH) {
-    id name { full } image { large medium } media(perPage: 1) { nodes { title { english romaji } } } } }
+    id name { full } image { large } media(perPage: 1) { nodes { title { english romaji } } } } }
 }`;
 
 const STEAM_CDN = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/";
@@ -210,7 +210,7 @@ export function deezerArtistHits(body: unknown): PictureHit[] {
     const title = text(row.name);
     const imageUrl = deezerPicture(row.picture_xl) ?? deezerPicture(row.picture_big);
     if (!title || !imageUrl || typeof row.id !== "number") return [];
-    return [{ id: `deezer:a${row.id}`, title, subtitle: null, imageUrl, thumbUrl: deezerPicture(row.picture_medium), source: "deezer", kind: "artist" }];
+    return [{ id: `deezer:a${row.id}`, title, subtitle: null, imageUrl, thumbUrl: deezerPicture(row.picture_big), source: "deezer", kind: "artist" }];
   });
 }
 
@@ -224,7 +224,7 @@ export function deezerAlbumHits(body: unknown): PictureHit[] {
       title,
       subtitle: text((row.artist as Json | undefined)?.name),
       imageUrl,
-      thumbUrl: deezerPicture(row.cover_medium),
+      thumbUrl: deezerPicture(row.cover_big),
       source: "deezer",
       kind: "album",
     }];
@@ -244,7 +244,7 @@ export function openLibraryHits(body: unknown): PictureHit[] {
       title,
       subtitle: [author, year].filter(Boolean).join(" · ") || null,
       imageUrl: `${covers}-L.jpg`,
-      thumbUrl: `${covers}-M.jpg`,
+      thumbUrl: null,
       source: "openlibrary",
       kind: "book",
     }];
@@ -285,7 +285,7 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
         title,
         subtitle: labelIn(entity.descriptions, language),
         imageUrl: commonsThumb(file, 600),
-        thumbUrl: commonsThumb(file, 250),
+        thumbUrl: commonsThumb(file, 400),
         source: "wikidata",
         kind: "thing",
       },
