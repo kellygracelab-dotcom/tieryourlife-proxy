@@ -9,6 +9,8 @@ import {
   fitsTile,
   igdbHits,
   inaturalistHits,
+  inaturalistPhotos,
+  inaturalistWithoutPhoto,
   matchScore,
   mergeHits,
   openLibraryHits,
@@ -184,12 +186,30 @@ describe("the catalogues' answers", () => {
 
   it("iNaturalist: the common name over the Latin one, a large photo, never a wide one or none", () => {
     const hits = inaturalistHits({ results: [
-      { id: 42069, name: "Vulpes vulpes", preferred_common_name: "обыкновенная лисица", default_photo: { medium_url: "https://static.inaturalist.org/photos/1/medium.jpg", original_dimensions: { width: 2048, height: 1638 } } },
-      { id: 2, name: "Panorama", default_photo: { medium_url: "https://static.inaturalist.org/photos/2/medium.jpg", original_dimensions: { width: 3000, height: 1000 } } },
+      { id: 42069, name: "Vulpes vulpes", preferred_common_name: "обыкновенная лисица", default_photo: { license_code: "cc-by", attribution: "(c) Ann, some rights reserved (CC BY)", medium_url: "https://static.inaturalist.org/photos/1/medium.jpg", original_dimensions: { width: 2048, height: 1638 } } },
+      { id: 2, name: "Panorama", default_photo: { license_code: "cc0", medium_url: "https://static.inaturalist.org/photos/2/medium.jpg", original_dimensions: { width: 3000, height: 1000 } } },
       { id: 3, name: "Unseen" },
     ] });
-    assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.thumbUrl]), [
-      ["Обыкновенная лисица", "Vulpes vulpes", "https://static.inaturalist.org/photos/1/large.jpg", "https://static.inaturalist.org/photos/1/medium.jpg"],
+    assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.thumbUrl, one.credit]), [
+      ["Обыкновенная лисица", "Vulpes vulpes", "https://static.inaturalist.org/photos/1/large.jpg", "https://static.inaturalist.org/photos/1/medium.jpg", "(c) Ann, some rights reserved (CC BY)"],
+    ]);
+  });
+
+  it("iNaturalist: a photo licensed non-commercially or not at all gives way to the taxon's first open one", () => {
+    const photo = (id: number, license: string | null) => ({ license_code: license, medium_url: `https://static.inaturalist.org/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
+    const found = { results: [
+      { id: 1, name: "Vulpes vulpes", default_photo: photo(10, null) },
+      { id: 2, name: "Vulpes lagopus", default_photo: photo(20, "cc-by-nc") },
+      { id: 3, name: "Vulpes zerda", default_photo: photo(30, "cc0") },
+    ] };
+    assert.deepEqual(inaturalistWithoutPhoto(found), [1, 2]);
+    const others = inaturalistPhotos({ results: [
+      { id: 1, taxon_photos: [{ photo: photo(11, "cc-by-nc") }, { photo: photo(12, "cc-by-sa") }] },
+      { id: 2, taxon_photos: [{ photo: photo(21, "cc-by-nd") }] },
+    ] });
+    assert.deepEqual(inaturalistHits(found, others).map((one) => one.thumbUrl), [
+      "https://static.inaturalist.org/photos/12/medium.jpg",
+      "https://static.inaturalist.org/photos/30/medium.jpg",
     ]);
   });
 
