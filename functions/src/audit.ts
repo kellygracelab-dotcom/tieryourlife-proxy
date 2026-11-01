@@ -26,6 +26,9 @@ export const AUDIT_ACTIONS = [
   "report.dismiss",
   "ban.set",
   "list.move",
+  "list.editorial_publish",
+  "list.editorial_edit",
+  "list.editorial_unpublish",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
