@@ -3550,11 +3550,12 @@ async function unfollowTopic(response: Response, identity: Identity, topicId: st
   }
   const db = getFirestore();
   const followRef = db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId));
+  const topicRef = db.collection(TOPICS).doc(topicId);
   await db.runTransaction(async (transaction) => {
-    if (!(await transaction.get(followRef)).exists) return;
+    const [follow, topic] = await Promise.all([transaction.get(followRef), transaction.get(topicRef)]);
+    if (!follow.exists) return;
     transaction.delete(followRef);
-    const topicRef = db.collection(TOPICS).doc(topicId);
-    if ((await transaction.get(topicRef)).exists) {
+    if (topic.exists) {
       transaction.update(topicRef, { followerCount: FieldValue.increment(-1) });
     }
   });
