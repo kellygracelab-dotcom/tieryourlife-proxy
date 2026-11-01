@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { bylineOf, decideEditorialAccess, EDITORIAL_BYLINE, EDITORIAL_UID } from "../src/editorial";
+import { bylineOf, decideEditorialAccess, EDITORIAL_UID, editorialByline } from "../src/editorial";
 
 describe("EDITORIAL_UID", () => {
   // Firebase uids are 28 characters of letters and digits; this can never be one,
@@ -11,29 +11,29 @@ describe("EDITORIAL_UID", () => {
   });
 });
 
-describe("EDITORIAL_BYLINE", () => {
-  it("is the house: anonymous, with no name and no face", () => {
-    assert.deepEqual(EDITORIAL_BYLINE, { uid: EDITORIAL_UID, name: "", photoUrl: null, editorial: true });
+describe("editorialByline", () => {
+  it("is the house: anonymous, with no name and no face, and remembers who spoke for it", () => {
+    assert.deepEqual(editorialByline("moderator"), { uid: EDITORIAL_UID, name: "", photoUrl: null, speaker: "moderator" });
   });
 });
 
 describe("bylineOf", () => {
   it("is the person publishing, Anonymous while they have no name", () => {
     const identity = { uid: "u1", isAnonymous: false, name: null, picture: "https://p/face.jpg", email: null };
-    assert.deepEqual(bylineOf(identity), { uid: "u1", name: "Anonymous", photoUrl: "https://p/face.jpg", editorial: false });
+    assert.deepEqual(bylineOf(identity), { uid: "u1", name: "Anonymous", photoUrl: "https://p/face.jpg", speaker: null });
   });
 });
 
 describe("decideEditorialAccess", () => {
   it("lets the owner in", () => {
-    assert.deepEqual(decideEditorialAccess("owner"), { ok: true });
+    assert.deepEqual(decideEditorialAccess("owner"), { ok: true, speaker: "owner" });
   });
 
-  it("tells a moderator it is the owner's alone", () => {
-    assert.deepEqual(decideEditorialAccess("moderator"), { ok: false, detail: "owner_only" });
+  it("lets a moderator in", () => {
+    assert.deepEqual(decideEditorialAccess("moderator"), { ok: true, speaker: "moderator" });
   });
 
-  it("just turns anybody else away", () => {
+  it("turns anybody else away", () => {
     assert.deepEqual(decideEditorialAccess(null), { ok: false });
   });
 });
