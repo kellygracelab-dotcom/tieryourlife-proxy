@@ -63,9 +63,12 @@ export async function keepForProposal(path: string, bytes: Buffer, contentType: 
     .save(bytes, { resumable: false, contentType, metadata: { metadata: { firebaseStorageDownloadTokens: token } } });
 }
 
+/** Every upload gets a new picture id, so a public copy's address never shows other bytes and can be kept for a year. */
+export const PUBLIC_PICTURE_CACHE = "public, max-age=31536000, immutable";
+
 /** Into the public folder, where `storage.rules` lets anybody read it. */
 export async function publishSectionPicture(path: string, bytes: Buffer, contentType: string): Promise<void> {
-  await getStorage().bucket().file(path).save(bytes, { resumable: false, contentType });
+  await getStorage().bucket().file(path).save(bytes, { resumable: false, contentType, metadata: { cacheControl: PUBLIC_PICTURE_CACHE } });
 }
 
 export async function discardProposalPicture(sectionId: string): Promise<void> {
