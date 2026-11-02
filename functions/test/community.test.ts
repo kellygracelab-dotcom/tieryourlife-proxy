@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { isModerator, nextCursor } from "../src/community";
+import { isModerator, nextCursor, segmentsOf } from "../src/community";
+
+describe("segmentsOf", () => {
+  it("drops the function's own name, which Hosting puts first and a direct call does not", () => {
+    assert.deepEqual(segmentsOf("/lists/mine"), ["mine"]);
+    assert.deepEqual(segmentsOf("/mine"), ["mine"]);
+    assert.deepEqual(segmentsOf("/lists"), []);
+    assert.deepEqual(segmentsOf("/"), []);
+  });
+
+  it("keeps a later \"lists\", the admin's listing of a section", () => {
+    assert.deepEqual(segmentsOf("/lists/admin/lists"), ["admin", "lists"]);
+    assert.deepEqual(segmentsOf("/admin/lists/"), ["admin", "lists"]);
+  });
+});
 
 describe("nextCursor", () => {
   it("hands back the last id when the page came back full", () => {

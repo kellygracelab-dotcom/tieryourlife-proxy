@@ -508,6 +508,16 @@ export function toTopic(id: string, data: StoredTopic, following: boolean, reade
   };
 }
 
+/**
+ * The path's segments after /lists. Hosting hands the function its own name
+ * as the first segment, a direct call does not; only that first one goes,
+ * since a later "lists" is a route of its own (/lists/admin/lists).
+ */
+export function segmentsOf(path: string): string[] {
+  const segments = path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part.length > 0);
+  return segments[0] === "lists" ? segments.slice(1) : segments;
+}
+
 export const lists = onRequest(
   {
     region: "europe-west1",
@@ -531,7 +541,7 @@ export const lists = onRequest(
 
     // Everything after /lists: nothing, an id, an id plus a verb, or "reports"
     // and "mine". Firestore ids are twenty characters, so no word can be one.
-    const segments = request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "lists");
+    const segments = segmentsOf(request.path);
     const last = segments[segments.length - 1] ?? "";
     const verb = VERBS.includes(last) ? last : null;
     const id = (verb ? segments[segments.length - 2] : last) ?? "";
