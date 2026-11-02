@@ -7,6 +7,7 @@ import {
   decideWeb,
   deezerArtistHits,
   fitsTile,
+  hasSlowSources,
   igdbHits,
   inaturalistHits,
   inaturalistObservationPhotos,
@@ -18,6 +19,7 @@ import {
   openLibraryHits,
   PictureHit,
   pictureScopeOf,
+  quickSourcesFor,
   sourcesFor,
   steamAppIds,
   wantsCovers,
@@ -52,6 +54,14 @@ describe("pictureScopeOf", () => {
     assert.deepEqual(sourcesFor("animals"), ["inaturalist", "wikidata"]);
     assert.equal(pictureScopeOf("animals"), "animals");
     assert.ok(sourcesFor("games").includes("wikidata"));
+  });
+
+  it("leaves Open Library out of a quick search, and only scopes that ask it have more to wait for", () => {
+    assert.deepEqual(quickSourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "deezer", "inaturalist", "wikidata"]);
+    assert.deepEqual(quickSourcesFor("books"), ["wikidata"]);
+    assert.equal(hasSlowSources("books"), true);
+    assert.equal(hasSlowSources("all"), true);
+    assert.equal(hasSlowSources("film_tv"), false);
   });
 });
 

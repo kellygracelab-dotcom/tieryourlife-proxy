@@ -57,6 +57,18 @@ export function sourcesFor(scope: PictureScope): PictureSource[] {
   }
 }
 
+/** Catalogues that can take many seconds: a quick search leaves them for the whole one. */
+const SLOW_SOURCES: readonly PictureSource[] = ["openlibrary"];
+
+/** What a quick search asks: the scope's catalogues that answer in a second or two. */
+export function quickSourcesFor(scope: PictureScope): PictureSource[] {
+  return sourcesFor(scope).filter((source) => !SLOW_SOURCES.includes(source));
+}
+
+export function hasSlowSources(scope: PictureScope): boolean {
+  return quickSourcesFor(scope).length < sourcesFor(scope).length;
+}
+
 /** Scopes whose tiles are covers and posters, where anything wider than tall looks broken; the others hold photos. */
 export function wantsCovers(scope: PictureScope): boolean {
   return scope !== "all" && scope !== "animals";
