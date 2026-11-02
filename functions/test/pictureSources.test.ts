@@ -9,6 +9,8 @@ import {
   fitsTile,
   igdbHits,
   inaturalistHits,
+  inaturalistObservationPhotos,
+  inaturalistStillWithout,
   inaturalistPhotos,
   inaturalistWithoutPhoto,
   matchScore,
@@ -211,6 +213,43 @@ describe("the catalogues' answers", () => {
       "https://static.inaturalist.org/photos/12/medium.jpg",
       "https://static.inaturalist.org/photos/30/medium.jpg",
     ]);
+  });
+
+  it("iNaturalist: a taxon with no open photo of its own takes one from its observations", () => {
+    const photo = (id: number, license: string) => ({ license_code: license, medium_url: `https://static.inaturalist.org/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
+    const found = { results: [
+      { id: 1, name: "Felis catus", preferred_common_name: "Domestic Cat", matched_term: "Cat", default_photo: photo(10, "cc-by-nc") },
+      { id: 2, name: "Catonephele", preferred_common_name: "Catones", default_photo: photo(20, "cc0") },
+      { id: 3, name: "Ursus arctos", default_photo: photo(30, "cc-by-nc") },
+    ] };
+    const others = new Map<number, unknown[]>([[3, [photo(31, "cc-by-nd")]]]);
+    assert.deepEqual(inaturalistStillWithout(found, others, 1), [1]);
+    assert.deepEqual(inaturalistStillWithout(found, others, 6), [1, 3]);
+    const observed = inaturalistObservationPhotos({ results: [
+      { photos: [{ license_code: "cc-by", url: "https://inaturalist-open-data.s3.amazonaws.com/photos/11/square.jpeg", original_dimensions: { width: 2048, height: 1536 } }, { license_code: "cc0", url: "https://x/photos/12/square.jpg" }] },
+      { photos: [] },
+    ] });
+    others.set(1, observed);
+    const hits = inaturalistHits(found, others);
+    assert.deepEqual(hits.map((one) => [one.title, one.thumbUrl]), [
+      ["Domestic Cat", "https://inaturalist-open-data.s3.amazonaws.com/photos/11/medium.jpeg"],
+      ["Catones", "https://static.inaturalist.org/photos/20/medium.jpg"],
+    ]);
+    // Found by "Cat", the cat ranks as what was typed, above a name that merely starts so; the alias never leaves.
+    const merged = mergeHits("cat", [hits]);
+    assert.deepEqual(merged.map((one) => one.title), ["Domestic Cat", "Catones"]);
+    assert.equal("alias" in (merged[0] ?? {}), false);
+  });
+
+  it("Deezer: a namesake with a sliver of the best-known artist's fans is left out", () => {
+    const pic = (md5: string) => `https://cdn-images.dzcdn.net/images/artist/${md5}/1000x1000-000000-80-0-0.jpg`;
+    const hits = deezerArtistHits({ data: [
+      { id: 1, name: "Lauryn Hill", nb_fan: 1773, picture_xl: pic("a") },
+      { id: 2, name: "Ms. Lauryn Hill", nb_fan: 557000, picture_xl: pic("b") },
+      { id: 3, name: "Laura Hill", nb_fan: 184, picture_xl: pic("c") },
+      { id: 4, name: "Lauryn Hill Tribute", nb_fan: 9000, picture_xl: pic("d") },
+    ] });
+    assert.deepEqual(hits.map((one) => one.title), ["Ms. Lauryn Hill", "Lauryn Hill Tribute"]);
   });
 
   it("Deezer: an artist without a photo is left out", () => {
