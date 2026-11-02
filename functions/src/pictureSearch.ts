@@ -26,6 +26,10 @@ import {
   IGDB_QUERY_FIELDS,
   igdbHits,
   inaturalistHits,
+  inaturalistObservationPhotos,
+  inaturalistPhotos,
+  inaturalistStillWithout,
+  inaturalistWithoutPhoto,
   mergeHits,
   openLibraryHits,
   PictureHit,
@@ -53,12 +57,17 @@ const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 4;
+const CACHE_SHAPE = 6;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
 const WEB_REST_MS = 60 * 60 * 1000;
-const USER_AGENT = "TierYourLife/1.0 (com.artiuillab.tieryourlife; server)";
+// Wikimedia throttles a client that names no way to reach it.
+const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app; com.artiuillab.tieryourlife; server)";
+/** Open Library's search often takes six or seven seconds, and a books search has nothing else to wait for. */
+const OPEN_LIBRARY_TIMEOUT_MS = 9_000;
+/** Taxa whose open photo is looked for among their best-liked observations, one request each. */
+const INATURALIST_OBSERVED = 6;
 const MAX_QUERY = 100;
 const MAX_PAGE = 20;
 
@@ -203,11 +212,11 @@ async function askSource(source: PictureSource, input: SearchInput): Promise<Sou
   }
 }
 
-async function getJson(url: string, init: RequestInit = {}): Promise<unknown> {
+async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_TIMEOUT_MS): Promise<unknown> {
   const reply = await fetch(url, {
     ...init,
     headers: { Accept: "application/json", "User-Agent": USER_AGENT, ...(init.headers ?? {}) },
-    signal: AbortSignal.timeout(SOURCE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!reply.ok) throw new Error(`${new URL(url).host} answered ${reply.status}`);
   return reply.json();
@@ -268,7 +277,20 @@ async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
   if (input.page > 1) return { hits: [], hasMore: false };
   // taxon_id 1 is Animalia: plants and fungi are not what this scope is for.
   const params = new URLSearchParams({ q: input.typed, taxon_id: "1", rank: "species,subspecies,genus", locale: input.language, per_page: "20" });
-  return { hits: inaturalistHits(await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`)), hasMore: false };
+  const found = await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`);
+  // Most default photos are licensed non-commercially or not at all: such a taxon's other photos are looked through.
+  const without = inaturalistWithoutPhoto(found);
+  const others = without.length === 0
+    ? new Map<number, unknown[]>()
+    : await getJson(`https://api.inaturalist.org/v1/taxa/${without.join(",")}`).then(inaturalistPhotos, () => new Map<number, unknown[]>());
+  // The cat, the brown bear, the bald eagle: the best-known animals often have no open photo among their own,
+  // but thousands of openly licensed observations.
+  await Promise.all(inaturalistStillWithout(found, others, INATURALIST_OBSERVED).map(async (id) => {
+    const observed = new URLSearchParams({ taxon_id: String(id), photo_license: "cc0,cc-by,cc-by-sa", quality_grade: "research", order_by: "votes", per_page: "10", photos: "true" });
+    const photos = await getJson(`https://api.inaturalist.org/v1/observations?${observed}`).then(inaturalistObservationPhotos, () => []);
+    others.set(id, [...(others.get(id) ?? []), ...photos]);
+  }));
+  return { hits: inaturalistHits(found, others), hasMore: false };
 }
 
 async function askSteam(input: SearchInput): Promise<SourceAnswer> {
@@ -296,13 +318,15 @@ async function askDeezer(input: SearchInput): Promise<SourceAnswer> {
 }
 
 async function askOpenLibrary(input: SearchInput): Promise<SourceAnswer> {
+  // Open Library refuses a query this short with 422.
+  if (input.typed.trim().length < 3) return { hits: [], hasMore: false };
   const params = new URLSearchParams({
     q: input.typed,
     fields: "key,title,author_name,first_publish_year,cover_i",
     limit: "20",
     page: String(input.page),
   });
-  const body = await getJson(`https://openlibrary.org/search.json?${params}`);
+  const body = await getJson(`https://openlibrary.org/search.json?${params}`, {}, OPEN_LIBRARY_TIMEOUT_MS);
   const found = (body as { numFound?: number }).numFound ?? 0;
   return { hits: openLibraryHits(body), hasMore: found > input.page * 20 };
 }

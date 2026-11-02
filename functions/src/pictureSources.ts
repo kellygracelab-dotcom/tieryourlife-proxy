@@ -23,6 +23,10 @@ export interface PictureHit {
   thumbUrl: string | null;
   source: PictureSource;
   kind: PictureKind;
+  /** Who the picture's license asks to be named beside it; absent when it asks for nobody or the source does not say. */
+  credit?: string;
+  /** Another name the catalogue found it by ("Cat" for the domestic cat): ranked like the title, never sent. */
+  alias?: string;
 }
 
 /** A scope from what a client sent: a known scope, or a section id that means one; anything else is all. */
@@ -128,13 +132,17 @@ export function mergeHits(typed: string, answers: readonly (readonly PictureHit[
     return true;
   });
   return kept
-    .map((hit, order) => ({ hit, order, score: matchScore(hit.title, typed) }))
+    .map((hit, order) => ({ hit, order, score: hitScore(hit, typed) }))
     .sort((left, right) => left.score - right.score || left.order - right.order)
-    .map(({ hit }) => hit);
+    .map(({ hit: { alias: _alias, ...hit } }) => hit);
+}
+
+function hitScore(hit: PictureHit, typed: string): number {
+  return Math.min(matchScore(hit.title, typed), hit.alias ? matchScore(hit.alias, typed) : 3);
 }
 
 export function goodMatches(typed: string, hits: readonly PictureHit[]): number {
-  return hits.filter((hit) => matchScore(hit.title, typed) < 3).length;
+  return hits.filter((hit) => hitScore(hit, typed) < 3).length;
 }
 
 // What each catalogue answers, as hits. Each takes the parsed JSON and trusts nothing in it.
@@ -250,8 +258,14 @@ function deezerPicture(value: unknown): string | null {
   return url && !/\/images\/(artist|cover)\/\//.test(url) ? url : null;
 }
 
+/** An artist with this share of the best-known one's fans is a namesake: "Lauryn Hill" with 1,773 under "Ms. Lauryn Hill" with 557,000. */
+const NAMESAKE_FANS = 0.01;
+
 export function deezerArtistHits(body: unknown): PictureHit[] {
-  return rows((body as Json | null)?.data).flatMap((row): PictureHit[] => {
+  const found = rows((body as Json | null)?.data);
+  const fans = (row: Json) => (typeof row.nb_fan === "number" ? row.nb_fan : 0);
+  const most = Math.max(0, ...found.map(fans));
+  return found.filter((row) => fans(row) >= most * NAMESAKE_FANS).flatMap((row): PictureHit[] => {
     const title = text(row.name);
     const imageUrl = deezerPicture(row.picture_xl) ?? deezerPicture(row.picture_big);
     if (!title || !imageUrl || typeof row.id !== "number") return [];
@@ -297,28 +311,79 @@ export function openLibraryHits(body: unknown): PictureHit[] {
 }
 
 /** The properties a Wikidata item's picture can be in, the most telling first: a poster, a cover, a logo, a photo. */
+/** Licenses that let anybody show and keep a photo, a commercial app included: no NC, no ND, not "all rights reserved". */
+const OPEN_LICENSES = new Set(["cc0", "cc-by", "cc-by-sa", "pd"]);
+
+/** An openly licensed photo a tile can be cut from, or null. */
+function inaturalistPhoto(raw: unknown): { medium: string; credit: string | null } | null {
+  const photo = (raw ?? {}) as Json;
+  const medium = text(photo.medium_url);
+  const size = (photo.original_dimensions ?? {}) as Json;
+  if (typeof photo.license_code !== "string" || !OPEN_LICENSES.has(photo.license_code)) return null;
+  if (!medium || !medium.startsWith("https://")) return null;
+  if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return null;
+  return { medium, credit: text(photo.attribution) };
+}
+
+/** Taxa whose default photo will not do, so their other photos are worth asking for. */
+export function inaturalistWithoutPhoto(body: unknown): number[] {
+  return rows((body as Json | null)?.results)
+    .filter((row) => typeof row.id === "number" && inaturalistPhoto(row.default_photo) === null)
+    .map((row) => row.id as number);
+}
+
+/**
+ * The photos of a /v1/observations answer, shaped as a taxon's photos are:
+ * an observation names its photo's square copy, the tile wants the medium one.
+ */
+export function inaturalistObservationPhotos(body: unknown): unknown[] {
+  return rows((body as Json | null)?.results).flatMap((row) => rows(row.photos).slice(0, 1)).map((photo) => {
+    const url = text(photo.url);
+    return { ...photo, medium_url: url ? url.replace(/\/square\.(\w+)$/, "/medium.$1") : null };
+  });
+}
+
+/** Taxa with no open photo yet, default or curated: the most likely first, as autocomplete ordered them. */
+export function inaturalistStillWithout(body: unknown, others: Map<number, unknown[]>, limit: number): number[] {
+  return rows((body as Json | null)?.results)
+    .filter((row) => typeof row.id === "number" && [row.default_photo, ...(others.get(row.id) ?? [])].every((one) => inaturalistPhoto(one) === null))
+    .map((row) => row.id as number)
+    .slice(0, limit);
+}
+
+/** Every photo of each taxon in a /v1/taxa/{ids} answer, by taxon id. */
+export function inaturalistPhotos(body: unknown): Map<number, unknown[]> {
+  const photos = new Map<number, unknown[]>();
+  for (const row of rows((body as Json | null)?.results)) {
+    if (typeof row.id === "number") photos.set(row.id, rows(row.taxon_photos).map((one) => one.photo));
+  }
+  return photos;
+}
+
 /**
  * iNaturalist's animals: the common name in the reader's language over the Latin one,
- * which then stands under it. Its photos are cropped into tiles, so a wide one is left out.
+ * which then stands under it. The default photo when its license is open, else the
+ * taxon's first open one; a taxon with none is left out, as is a wide photo.
  */
-export function inaturalistHits(body: unknown): PictureHit[] {
+export function inaturalistHits(body: unknown, others: Map<number, unknown[]> = new Map()): PictureHit[] {
   return rows((body as Json | null)?.results).flatMap((row): PictureHit[] => {
     const latin = text(row.name);
+    if (!latin || typeof row.id !== "number" || row.is_active === false) return [];
+    const photo = [row.default_photo, ...(others.get(row.id) ?? [])].map(inaturalistPhoto).find((one) => one !== null);
+    if (!photo) return [];
     const common = text(row.preferred_common_name);
-    const photo = (row.default_photo ?? {}) as Json;
-    const medium = text(photo.medium_url);
-    const size = (photo.original_dimensions ?? {}) as Json;
-    if (!latin || !medium || !medium.startsWith("https://") || typeof row.id !== "number" || row.is_active === false) return [];
-    if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return [];
     const title = common ? common.charAt(0).toLocaleUpperCase() + common.slice(1) : latin;
+    const alias = text(row.matched_term);
     return [{
       id: `inaturalist:${row.id}`,
       title,
       subtitle: common ? latin : null,
-      imageUrl: medium.replace(/\/medium\.(\w+)$/, "/large.$1"),
-      thumbUrl: medium,
+      imageUrl: photo.medium.replace(/\/medium\.(\w+)$/, "/large.$1"),
+      thumbUrl: photo.medium,
       source: "inaturalist",
       kind: "animal",
+      ...(photo.credit ? { credit: photo.credit } : {}),
+      ...(alias && alias !== title ? { alias } : {}),
     }];
   });
 }
