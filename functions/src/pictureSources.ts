@@ -355,14 +355,6 @@ export function inaturalistObservationPhotos(body: unknown): unknown[] {
   });
 }
 
-/** Taxa with no open photo yet, default or curated: the most likely first, as autocomplete ordered them. */
-export function inaturalistStillWithout(body: unknown, others: Map<number, unknown[]>, limit: number): number[] {
-  return rows((body as Json | null)?.results)
-    .filter((row) => typeof row.id === "number" && [row.default_photo, ...(others.get(row.id) ?? [])].every((one) => inaturalistPhoto(one) === null))
-    .map((row) => row.id as number)
-    .slice(0, limit);
-}
-
 /** Every photo of each taxon in a /v1/taxa/{ids} answer, by taxon id. */
 export function inaturalistPhotos(body: unknown): Map<number, unknown[]> {
   const photos = new Map<number, unknown[]>();

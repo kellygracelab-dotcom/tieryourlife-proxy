@@ -11,7 +11,6 @@ import {
   igdbHits,
   inaturalistHits,
   inaturalistObservationPhotos,
-  inaturalistStillWithout,
   inaturalistPhotos,
   inaturalistWithoutPhoto,
   matchScore,
@@ -233,8 +232,7 @@ describe("the catalogues' answers", () => {
       { id: 3, name: "Ursus arctos", default_photo: photo(30, "cc-by-nc") },
     ] };
     const others = new Map<number, unknown[]>([[3, [photo(31, "cc-by-nd")]]]);
-    assert.deepEqual(inaturalistStillWithout(found, others, 1), [1]);
-    assert.deepEqual(inaturalistStillWithout(found, others, 6), [1, 3]);
+    assert.deepEqual(inaturalistWithoutPhoto(found), [1, 3]);
     const observed = inaturalistObservationPhotos({ results: [
       { photos: [{ license_code: "cc-by", url: "https://inaturalist-open-data.s3.amazonaws.com/photos/11/square.jpeg", original_dimensions: { width: 2048, height: 1536 } }, { license_code: "cc0", url: "https://x/photos/12/square.jpg" }] },
       { photos: [] },
