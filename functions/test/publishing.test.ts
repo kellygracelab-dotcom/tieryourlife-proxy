@@ -38,6 +38,21 @@ describe("decidePublish", () => {
     assert.equal(decision.ok && decision.draft.items[0].imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
   });
 
+  it("carries a picture's credit through to the published card, and none where there is none", () => {
+    const decision = publish({
+      items: [
+        { title: "Red fox", imageUrl: "https://static.inaturalist.org/photos/1/large.jpg", credit: "© Jane Doe, CC BY" },
+        { title: "Arrival", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg", credit: "   " },
+      ],
+    });
+
+    assert.equal(decision.ok, true);
+    if (!decision.ok) return;
+    const published = settle(decision.draft, new Map());
+    assert.equal(published.items[0].credit, "© Jane Doe, CC BY");
+    assert.equal("credit" in published.items[1], false);
+  });
+
   // Putting a name on something needs a name; reading and copying do not.
   it("refuses a guest", () => {
     const decision = publish({}, { isAnonymous: true });

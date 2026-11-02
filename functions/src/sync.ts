@@ -22,6 +22,8 @@ export const MAX_TIERS_PER_BOARD = 20;
 export const MAX_BOARDS_PER_ACCOUNT = 200;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
+/** "© Jane Doe, CC BY-SA 4.0, via iNaturalist" with room to spare. */
+export const MAX_CREDIT_LENGTH = 200;
 export const MAX_URL_LENGTH = 2000;
 /** Long enough for any digest a device might use to stand for a board. */
 export const MAX_FINGERPRINT_LENGTH = 128;
@@ -64,6 +66,8 @@ export interface StoredItem {
   source: string;
   /** When it went to the trash, or null while it is on the board. */
   deletedAt: number | null;
+  /** Who the picture's license asks to be named; absent when nobody, so a board without one is stored as it always was. */
+  credit?: string;
 }
 
 export interface StoredBoard {
@@ -394,6 +398,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
       return { ok: false, reason: "invalid", detail: "An item needs a title" };
     }
     itemUids.add(itemUid);
+    const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
     items.push({
       uid: itemUid,
       pictureId: pictureId(item.pictureId),
@@ -403,6 +408,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
       imageUrl: keepableImageUrl(item.imageUrl),
       source: ITEM_SOURCES.find((known) => known === item.source) ?? "MANUAL",
       deletedAt: timestamp(item.deletedAt),
+      ...(credit ? { credit } : {}),
     });
   }
 

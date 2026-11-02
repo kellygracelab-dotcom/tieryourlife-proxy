@@ -22,6 +22,7 @@ export const MAX_TIERS_PER_LIST = 20;
 export const MAX_SNAPSHOT_BYTES = 700_000;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
+export const MAX_CREDIT_LENGTH = 200;
 export const FEED_PAGE_SIZE = 20;
 export const REPORT_PAGE_SIZE = 50;
 export const MAX_PREVIEW_IMAGES = 6;
@@ -45,6 +46,8 @@ export interface PublishedItem {
    * existed, which reads as null: those snapshots genuinely do not know.
    */
   tierIndex: number | null;
+  /** Who the picture's license asks to be named; absent when nobody. */
+  credit?: string;
 }
 
 /**
@@ -58,6 +61,7 @@ export interface DraftItem {
   imageUrl: string | null;
   pictureId: string | null;
   tierIndex: number | null;
+  credit?: string;
 }
 
 export interface PublishDraft {
@@ -221,7 +225,14 @@ export function decidePublish({
     if (!itemTitle && !imageUrl && pictureId === null) {
       return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
-    items.push({ title: itemTitle ?? "", imageUrl, pictureId, tierIndex: tierIndexOf(item.tierIndex, tiers.length) });
+    const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
+    items.push({
+      title: itemTitle ?? "",
+      imageUrl,
+      pictureId,
+      tierIndex: tierIndexOf(item.tierIndex, tiers.length),
+      ...(credit ? { credit } : {}),
+    });
   }
 
   const coverPictureId = isPictureId(source.coverPictureId) ? source.coverPictureId : null;
@@ -272,6 +283,7 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
     title: item.title,
     imageUrl: resolve(item.imageUrl, item.pictureId),
     tierIndex: item.tierIndex,
+    ...(item.credit ? { credit: item.credit } : {}),
   }));
 
   return {
