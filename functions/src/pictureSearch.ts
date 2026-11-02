@@ -1,6 +1,9 @@
 /**
  * GET /lists/pictures: the catalogues a scope names, asked together, each
  * on its own clock, so one that is slow or down only leaves its own gap.
+ * With part=quick only the fast ones are asked and the web is not; `rest`
+ * says whether the whole search would add anything, so a client shows the
+ * quick answer at once and the whole one's new hits below it.
  * The paid web search is asked last and only when it is worth it
  * (src/pictureSources.ts, decideWeb). POST /lists/pictures/keep copies a
  * picture from the web into the person's own folder, for a browser that
@@ -23,6 +26,7 @@ import {
   deezerAlbumHits,
   deezerArtistHits,
   goodMatches,
+  hasSlowSources,
   IGDB_QUERY_FIELDS,
   igdbHits,
   inaturalistHits,
@@ -36,6 +40,7 @@ import {
   PictureScope,
   pictureScopeOf,
   PictureSource,
+  quickSourcesFor,
   sourcesFor,
   steamAppIds,
   steamHits,
@@ -75,6 +80,8 @@ interface PicturesAnswer {
   items: PictureHit[];
   hasMore: boolean;
   notices: string[];
+  /** Quick answers only: whether the whole search can find more. */
+  rest?: boolean;
 }
 
 export async function routePictures(
@@ -98,6 +105,7 @@ export async function routePictures(
       language: typeof query.lang === "string" && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(query.lang) ? query.lang : "en",
       page,
       forcedWeb: query.web === "1" || query.web === "true",
+      quick: query.part === "quick",
       uid: identity.uid,
     });
     if (answer === null) {
@@ -131,14 +139,17 @@ interface SearchInput {
   language: string;
   page: number;
   forcedWeb: boolean;
+  quick: boolean;
   uid: string;
 }
 
 /** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. */
 export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | null> {
   const db = getFirestore();
-  const key = (web: boolean) =>
-    createHash("sha256").update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : ""].join("|")).digest("hex");
+  const key = (web: boolean, quick = false) =>
+    createHash("sha256")
+      .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", quick ? "quick" : ""].join("|"))
+      .digest("hex");
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
     const doc = await db.collection(CACHE).doc(id).get();
     const at = doc.get("at")?.toMillis?.() ?? 0;
@@ -147,20 +158,18 @@ export async function searchPictures(input: SearchInput): Promise<PicturesAnswer
 
   // Somebody already paid for the web on this search: it costs nothing to show again.
   const cachedWithWeb = await fresh(key(true));
-  if (cachedWithWeb) return cachedWithWeb;
+  if (cachedWithWeb) return input.quick ? { ...cachedWithWeb, rest: false } : cachedWithWeb;
   let catalogues = await fresh(key(false));
-
-  if (!catalogues) {
-    const answers = await Promise.all(sourcesFor(input.scope).map((source) => askSource(source, input)));
-    if (answers.every((answer) => answer === null)) return null;
-    const hits = withoutTmdbTwins(answers.map((answer) => answer ?? { hits: [], hasMore: false }));
-    catalogues = { items: mergeHits(input.typed, hits), hasMore: answers.some((answer) => answer?.hasMore === true), notices: [] };
-    // A gap left by a catalogue that failed is not kept for days.
-    if (answers.every((answer) => answer !== null)) {
-      await db.collection(CACHE).doc(key(false)).set({ ...catalogues, at: FieldValue.serverTimestamp() }).catch(() => undefined);
-    }
+  const webLater = input.page === 1 && (input.scope === "all" || input.forcedWeb);
+  if (input.quick && catalogues) return { ...catalogues, rest: webLater };
+  if (input.quick) {
+    const quick = (await fresh(key(false, true))) ?? (await askCatalogues(input, quickSourcesFor(input.scope), key(false, true)));
+    const rest = hasSlowSources(input.scope) || webLater;
+    return quick ? { ...quick, rest } : rest ? { items: [], hasMore: false, notices: [], rest } : null;
   }
 
+  catalogues ??= await askCatalogues(input, sourcesFor(input.scope), key(false));
+  if (!catalogues) return null;
   if (input.page > 1) return catalogues;
   const web = await maybeAskWeb(input, goodMatches(input.typed, catalogues.items));
   if (web.notice) return { ...catalogues, notices: [web.notice] };
@@ -169,6 +178,18 @@ export async function searchPictures(input: SearchInput): Promise<PicturesAnswer
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
   await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: FieldValue.serverTimestamp() }).catch(() => undefined);
   return withWeb;
+}
+
+/** The answer of [sources] merged, kept under [cacheId] when none failed: a gap left by one that did is not kept for days. */
+async function askCatalogues(input: SearchInput, sources: PictureSource[], cacheId: string): Promise<PicturesAnswer | null> {
+  const answers = await Promise.all(sources.map((source) => askSource(source, input)));
+  if (answers.every((answer) => answer === null)) return null;
+  const hits = withoutTmdbTwins(answers.map((answer) => answer ?? { hits: [], hasMore: false }));
+  const merged = { items: mergeHits(input.typed, hits), hasMore: answers.some((answer) => answer?.hasMore === true), notices: [] };
+  if (answers.every((answer) => answer !== null)) {
+    await getFirestore().collection(CACHE).doc(cacheId).set({ ...merged, at: FieldValue.serverTimestamp() }).catch(() => undefined);
+  }
+  return merged;
 }
 
 /** A film Wikidata knows by its TMDB id is TMDB's to show, with TMDB's poster. */
