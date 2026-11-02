@@ -32,7 +32,6 @@ import {
   inaturalistHits,
   inaturalistObservationPhotos,
   inaturalistPhotos,
-  inaturalistStillWithout,
   inaturalistWithoutPhoto,
   mergeHits,
   openLibraryHits,
@@ -301,16 +300,18 @@ async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
   const found = await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`);
   // Most default photos are licensed non-commercially or not at all: such a taxon's other photos are looked through.
   const without = inaturalistWithoutPhoto(found);
-  const others = without.length === 0
-    ? new Map<number, unknown[]>()
-    : await getJson(`https://api.inaturalist.org/v1/taxa/${without.join(",")}`).then(inaturalistPhotos, () => new Map<number, unknown[]>());
   // The cat, the brown bear, the bald eagle: the best-known animals often have no open photo among their own,
-  // but thousands of openly licensed observations.
-  await Promise.all(inaturalistStillWithout(found, others, INATURALIST_OBSERVED).map(async (id) => {
-    const observed = new URLSearchParams({ taxon_id: String(id), photo_license: "cc0,cc-by,cc-by-sa", quality_grade: "research", order_by: "votes", per_page: "10", photos: "true" });
-    const photos = await getJson(`https://api.inaturalist.org/v1/observations?${observed}`).then(inaturalistObservationPhotos, () => []);
-    others.set(id, [...(others.get(id) ?? []), ...photos]);
-  }));
+  // but thousands of openly licensed observations. Both are asked at once, the taxon's own photos coming first.
+  const [others, observed] = await Promise.all([
+    without.length === 0
+      ? new Map<number, unknown[]>()
+      : getJson(`https://api.inaturalist.org/v1/taxa/${without.join(",")}`).then(inaturalistPhotos, () => new Map<number, unknown[]>()),
+    Promise.all(without.slice(0, INATURALIST_OBSERVED).map(async (id) => {
+      const params = new URLSearchParams({ taxon_id: String(id), photo_license: "cc0,cc-by,cc-by-sa", quality_grade: "research", order_by: "votes", per_page: "10", photos: "true" });
+      return [id, await getJson(`https://api.inaturalist.org/v1/observations?${params}`).then(inaturalistObservationPhotos, () => [])] as const;
+    })),
+  ]);
+  for (const [id, photos] of observed) others.set(id, [...(others.get(id) ?? []), ...photos]);
   return { hits: inaturalistHits(found, others), hasMore: false };
 }
 
