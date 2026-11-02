@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   MAX_BOARDS_PER_ACCOUNT,
+  MAX_CREDIT_LENGTH,
   MAX_ITEMS_PER_BOARD,
   MAX_TIERS_PER_BOARD,
   decideStore,
@@ -100,6 +101,22 @@ describe("decideStore", () => {
 
     assert.equal(decision.ok, true);
     assert.equal(decision.ok && decision.board.items[0].deletedAt, 1_700_000_000_000);
+  });
+
+  it("keeps a picture's credit, trimmed, and adds no field to a card without one", () => {
+    const decision = store({
+      items: [
+        { uid: "item-1", tierUid: TIER_UID, position: 0, title: "Red fox", credit: "  © Jane   Doe, CC BY " },
+        { uid: "item-2", tierUid: TIER_UID, position: 1, title: "Badger", credit: "x".repeat(500) },
+        { uid: "item-3", tierUid: TIER_UID, position: 2, title: "Arrival", credit: 7 },
+      ],
+    });
+
+    assert.equal(decision.ok, true);
+    if (!decision.ok) return;
+    assert.equal(decision.board.items[0].credit, "© Jane Doe, CC BY");
+    assert.equal(decision.board.items[1].credit?.length, MAX_CREDIT_LENGTH);
+    assert.equal("credit" in decision.board.items[2], false);
   });
 
   it("keeps a board that is itself in the trash", () => {
