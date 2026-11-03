@@ -11,3 +11,4 @@ export { tmdb } from "./tmdb";
 export { sweepGuests } from "./sweep";
 export { sweepPictures } from "./sweepPictures";
 export { sweepSearch } from "./sweepSearch";
+export { houseFill } from "./houseFillJobs";

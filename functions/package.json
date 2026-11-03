@@ -16,6 +16,7 @@
     "search-keys": "tsc -p tsconfig.test.json && node lib-test/scripts/search-keys.js",
     "search-rekey": "tsc -p tsconfig.test.json && node lib-test/scripts/search-rekey.js",
     "house-translations": "tsc -p tsconfig.test.json && node lib-test/scripts/house-translations.js",
+    "house-fill": "tsc -p tsconfig.test.json && node lib-test/scripts/house-fill.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
