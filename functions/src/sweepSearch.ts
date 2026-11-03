@@ -1,6 +1,7 @@
 import { getFirestore } from "firebase-admin/firestore";
 import { defineSecret } from "firebase-functions/params";
 import { onSchedule } from "firebase-functions/v2/scheduler";
+import { titleNames } from "./editorial";
 import { parseTranslations, searchKeysFor, SEARCH_TRANSLATED, translationPrompt } from "./search";
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
@@ -43,7 +44,10 @@ export const sweepSearch = onSchedule(
         if (translated === null) continue;
         await Promise.all(
           docs.map(async (doc, at) => {
-            const own = Object.values((doc.get("names") as Record<string, unknown> | undefined) ?? {}).filter((one): one is string => typeof one === "string");
+            const own = [
+              ...Object.values((doc.get("names") as Record<string, unknown> | undefined) ?? {}),
+              ...Object.values(titleNames(names[at], doc.get("translations"))),
+            ].filter((one): one is string => typeof one === "string");
             const keys = searchKeysFor([names[at], ...own, ...translated[at]]);
             // Only if nobody renamed it meanwhile: a rename starts the keys again.
             await doc.ref

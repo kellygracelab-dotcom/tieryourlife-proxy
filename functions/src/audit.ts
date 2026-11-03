@@ -29,6 +29,7 @@ export const AUDIT_ACTIONS = [
   "list.editorial_publish",
   "list.editorial_edit",
   "list.editorial_unpublish",
+  "list.editorial_translate",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

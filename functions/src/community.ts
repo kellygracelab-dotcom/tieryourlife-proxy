@@ -28,7 +28,20 @@ import {
   type ListReader,
 } from "./anonymous";
 import { auditEntry, changedFields, type AuditAction, type AuditEntry } from "./audit";
-import { bylineOf, decideEditorialAccess, EDITORIAL_UID, editorialByline, type Byline } from "./editorial";
+import {
+  bylineOf,
+  decideEditorialAccess,
+  decideTranslations,
+  EDITORIAL_UID,
+  editorialByline,
+  pruneTranslations,
+  searchAfterTranslations,
+  titleNames,
+  translatableStrings,
+  type Byline,
+  type StaffRole,
+  type Translations,
+} from "./editorial";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
   chunked,
@@ -254,6 +267,7 @@ const ORDER_PATH = "order";
 const NAME_CHECK_PATH = "name-check";
 const ADMIN_PATH = "admin";
 const EDITORIAL_PATH = "editorial";
+const TRANSLATIONS_PATH = "translations";
 const SEARCH_MISSES_PATH = "search-misses";
 const PICTURES_PATH = "pictures";
 const SEARCH_MISSES = "searchMisses";
@@ -388,6 +402,8 @@ interface StoredList {
   anonymous?: boolean;
   /** Cards per tier in tier order, the unranked last; worked out on read for lists published before it was kept. */
   tierCounts?: number[];
+  /** A house list's texts in the readers' languages (src/editorial.ts). */
+  translations?: Translations;
 }
 
 interface StoredRanking {
@@ -440,6 +456,7 @@ export function toSummary(
   return {
     id,
     title: data.title,
+    names: titleNames(data.title, data.translations),
     ...shownAuthor(data),
     ...mineFor(data, reader),
     ...viewerFollowsFor(data, reader, followed),
@@ -2662,6 +2679,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     ...toSummary(doc.id, data, identity, followed),
     tiers: data.tiers,
     items: data.items,
+    translations: data.translations ?? {},
   });
 }
 
@@ -2832,6 +2850,10 @@ async function publish(
   // somebody else's topic already holds stays theirs; this one waits beside
   // it, as waiting twins always have, for a moderator to merge.
   await db.runTransaction(async (transaction) => {
+    // The house's translations stay with a replaced list, as far as it still shows what they translate.
+    const keptTranslations = existingId && byline.speaker !== null
+      ? pruneTranslations((await transaction.get(collection.doc(existingId))).get("translations"), translatableStrings(list)).translations
+      : null;
     const reserve = topicRef !== null && attachment.kind === "create"
       ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
       : false;
@@ -2868,7 +2890,11 @@ async function publish(
       const what = existingId ? "list.editorial_edit" : "list.editorial_publish";
       auditInTransaction(transaction, auditEntry(identity.uid, byline.speaker, what, `${PUBLISHED}/${target}`, null, { title: list.title, category: document.category }));
     }
-    if (existingId) {
+    if (existingId && keptTranslations !== null) {
+      // Named fields are written whole, so a translation dropped here does not survive in a merge.
+      const fields = { ...document, translations: keptTranslations };
+      transaction.set(collection.doc(existingId), fields, { mergeFields: Object.keys(fields) });
+    } else if (existingId) {
       transaction.set(collection.doc(existingId), document, { merge: true });
     } else {
       // Only on a new list: republishing merges, and a count written here would
@@ -4610,7 +4636,7 @@ async function routeSearchMisses(method: string, body: unknown, response: Respon
 
 /**
  * The house's lists (src/editorial.ts), for the owner and the moderators:
- * list them, publish one, replace one, take one down. A published one is read, ranked and found
+ * list them, publish one, replace one, translate one, take one down. A published one is read, ranked and found
  * like any other list.
  */
 async function routeEditorial(
@@ -4634,7 +4660,51 @@ async function routeEditorial(
     if (method === "PUT" && id !== "") return await publish(response, identity, body, id, house);
     if (method === "DELETE" && id !== "") return await unpublish(response, identity, id, house);
   }
+  if (extra === TRANSLATIONS_PATH && method === "PUT" && id !== "" && rest.length === 2) {
+    return await putTranslations(response, identity, id, body, access.speaker);
+  }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+/**
+ * Replaces a house list's translations whole, keeping only what the list
+ * shows, and gives its title's names to search at once.
+ */
+async function putTranslations(response: Response, identity: Identity, id: string, body: unknown, speaker: StaffRole): Promise<void> {
+  const db = getFirestore();
+  const ref = db.collection(PUBLISHED).doc(id);
+  const raw = (body as { translations?: unknown } | null)?.translations;
+  const outcome = await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(ref);
+    if (!doc.exists || doc.get("authorUid") !== EDITORIAL_UID) return null;
+    const { translations: _old, ...list } = doc.data() as StoredList;
+    const decision = decideTranslations({
+      raw,
+      strings: translatableStrings(list),
+      listBytes: Buffer.byteLength(JSON.stringify(list)),
+    });
+    if (!decision.ok) return decision;
+    transaction.update(ref, {
+      translations: decision.translations,
+      ...searchAfterTranslations(list.title, titleNames(list.title, decision.translations)),
+    });
+    const counts = Object.fromEntries(Object.entries(decision.translations).map(([locale, entries]) => [locale, Object.keys(entries).length]));
+    auditInTransaction(transaction, auditEntry(identity.uid, speaker, "list.editorial_translate", `${PUBLISHED}/${id}`, null, { title: list.title, entries: counts, dropped: decision.dropped }));
+    return decision;
+  });
+  if (outcome === null) {
+    response.status(404).json({ error: "No such house list", code: "NOT_FOUND" });
+    return;
+  }
+  if (!outcome.ok) {
+    response.status(outcome.status).json({
+      error: outcome.status === 413 ? "Translations too large" : "Translations not as expected",
+      code: outcome.status === 413 ? "TOO_LARGE" : "INVALID",
+      detail: outcome.detail,
+    });
+    return;
+  }
+  response.status(200).json({ id, translations: outcome.translations, dropped: outcome.dropped });
 }
 
 /** The house's lists, the latest change first, a page at a time. */
