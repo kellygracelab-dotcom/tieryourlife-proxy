@@ -13,15 +13,20 @@ function card(title: string, imageUrl: string | null = `https://i/${title}.jpg`)
 }
 
 describe("readJob", () => {
-  it("keeps the searches it can run, a job's worth, and a spacing within bounds", () => {
+  it("keeps each search in its place, null where it cannot run, a job's worth, and a spacing within bounds", () => {
     const queries = [{ typed: " Up ", scope: "film_tv" }, { typed: "x", scope: "film_tv" }, { typed: 3 }, { typed: "Felis catus", scope: "nonsense" }];
     assert.deepEqual(readJob({ queries, spacingMs: 99_999 }), {
-      queries: [{ typed: "Up", scope: "film_tv" }, { typed: "Felis catus", scope: "all" }],
+      queries: [{ typed: "Up", scope: "film_tv" }, null, null, { typed: "Felis catus", scope: "all" }],
       spacingMs: MAX_SPACING_MS,
     });
     const many = Array.from({ length: MAX_JOB_QUERIES + 5 }, () => ({ typed: "Up", scope: "film_tv" }));
     assert.equal(readJob({ queries: many }).queries.length, MAX_JOB_QUERIES);
     assert.deepEqual(readJob(null), { queries: [], spacingMs: 0 });
+  });
+
+  it("asks IGDB by exact name only for games", () => {
+    const queries = [{ typed: "Doom", scope: "games", exact: true }, { typed: "Up", scope: "film_tv", exact: true }];
+    assert.deepEqual(readJob({ queries }).queries, [{ typed: "Doom", scope: "games", exact: true }, { typed: "Up", scope: "film_tv" }]);
   });
 });
 
@@ -41,6 +46,12 @@ describe("pickHit", () => {
     assert.ok(pickHit({ title: "House Cat", scope: "animals", kind: "animal", name: "", subtitle: "Felis catus" }, [cat]));
     assert.ok(pickHit({ title: "House Cat", scope: "animals", kind: "animal", name: "Domestic Cat" }, [cat]));
     assert.equal(pickHit({ title: "House Cat", scope: "animals", kind: "animal" }, [cat]), null);
+  });
+
+  it("takes the hit of a known id, whatever its name and year", () => {
+    const hits = [hit({ id: "steam:71", kind: "game", title: "Half-Life", subtitle: null }), hit({ id: "steam:70", kind: "game", title: "Half-Life", subtitle: null })];
+    assert.equal(pickHit({ title: "Half-Life", scope: "games", kind: "game", subtitle: "1998", id: "steam:70" }, hits), hits[1]);
+    assert.equal(pickHit({ title: "Half-Life", scope: "games", kind: "movie", id: "steam:70" }, hits), null);
   });
 
   it("would rather find nothing than something near", () => {

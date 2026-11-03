@@ -85,7 +85,7 @@ async function ask(db: Firestore, plan: { id: string; cards: PlannedCard[] }[], 
 }
 
 async function answered(db: Firestore, cards: PlannedCard[]): Promise<{ ok: boolean; hits: unknown[] }[]> {
-  const queries = cards.map((card) => ({ typed: card.typed ?? card.title, scope: card.scope }));
+  const queries = cards.map((card) => ({ typed: card.typed ?? card.title, scope: card.scope, ...(card.exact ? { exact: true } : {}) }));
   const ref = await db.collection(HOUSE_FILL_JOBS).add({
     queries,
     spacingMs: Math.max(0, ...queries.map((query) => SPACING_MS[query.scope] ?? 0)),
@@ -96,6 +96,7 @@ async function answered(db: Firestore, cards: PlannedCard[]): Promise<{ ok: bool
   while (Date.now() < until) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     const answers = (await ref.get()).get("answers");
+    if (Array.isArray(answers) && answers.length !== cards.length) throw new Error(`${HOUSE_FILL_JOBS}/${ref.id}: answers do not line up with the cards`);
     if (Array.isArray(answers)) return answers;
   }
   throw new Error(`${HOUSE_FILL_JOBS}/${ref.id} was not answered in time`);

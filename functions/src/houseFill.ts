@@ -25,14 +25,22 @@ export const HITS_KEPT = 8;
 export interface FillQuery {
   typed: string;
   scope: PictureScope;
+  /** Games only: IGDB's games of exactly this name, instead of the app's search. */
+  exact?: true;
 }
 
-/** A job's searches as the script wrote them, at most a job's worth; anything malformed is left out. */
-export function readJob(raw: unknown): { queries: FillQuery[]; spacingMs: number } {
+/**
+ * A job's searches as the script wrote them, at most a job's worth, each in
+ * its place: one the app would not run either is null, so the answers still
+ * line up with the cards.
+ */
+export function readJob(raw: unknown): { queries: (FillQuery | null)[]; spacingMs: number } {
   const job = (raw ?? {}) as { queries?: unknown; spacingMs?: unknown };
-  const queries = (Array.isArray(job.queries) ? job.queries : []).flatMap((one): FillQuery[] => {
-    const { typed, scope } = (one ?? {}) as { typed?: unknown; scope?: unknown };
-    return typeof typed === "string" && [...typed.trim()].length >= 2 ? [{ typed: typed.trim().slice(0, 100), scope: pictureScopeOf(scope) }] : [];
+  const queries = (Array.isArray(job.queries) ? job.queries : []).map((one): FillQuery | null => {
+    const { typed, scope, exact } = (one ?? {}) as { typed?: unknown; scope?: unknown; exact?: unknown };
+    if (typeof typed !== "string" || [...typed.trim()].length < 2) return null;
+    const query: FillQuery = { typed: typed.trim().slice(0, 100), scope: pictureScopeOf(scope) };
+    return exact === true && query.scope === "games" ? { ...query, exact: true } : query;
   });
   const spacing = typeof job.spacingMs === "number" && Number.isFinite(job.spacingMs) ? job.spacingMs : 0;
   return { queries: queries.slice(0, MAX_JOB_QUERIES), spacingMs: Math.min(MAX_SPACING_MS, Math.max(0, spacing)) };
@@ -48,6 +56,10 @@ export interface PlannedCard {
   name?: string;
   /** How the catalogue's subtitle starts: a year, a Latin name, the series a character is from. */
   subtitle?: string;
+  /** The hit's own id (`steam:70`) when it is known: then nothing else needs to agree. */
+  id?: string;
+  /** Games only: see [FillQuery.exact]. */
+  exact?: true;
 }
 
 export function sameName(left: string, right: string): boolean {
@@ -56,6 +68,7 @@ export function sameName(left: string, right: string): boolean {
 
 /** The first hit that is surely this card: its kind, its name, its subtitle. None is better than a near one. */
 export function pickHit(card: PlannedCard, hits: readonly PictureHit[]): PictureHit | null {
+  if (card.id !== undefined) return hits.find((hit) => hit.id === card.id && hit.kind === card.kind) ?? null;
   const name = card.name ?? card.title;
   return hits.find((hit) =>
     hit.kind === card.kind &&

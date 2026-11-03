@@ -292,6 +292,20 @@ async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
   return { hits: igdbHits(body), hasMore: Array.isArray(body) && body.length >= IGDB_PAGE };
 }
 
+/** IGDB's games called exactly this, oldest first: the original, which its search can rank below the remakes. */
+export async function igdbNamed(name: string): Promise<PictureHit[]> {
+  const id = igdbClientId.value().trim();
+  const secret = igdbClientSecret.value().trim();
+  if (!id || !secret) return [];
+  const exact = name.replace(/["\\]/g, " ").trim();
+  const body = await getJson("https://api.igdb.com/v4/games", {
+    method: "POST",
+    headers: { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" },
+    body: `fields ${IGDB_QUERY_FIELDS}; where name ~ "${exact}" & cover != null; sort first_release_date asc; limit ${IGDB_PAGE};`,
+  });
+  return igdbHits(body);
+}
+
 /** Autocomplete ranks the tiger above the tiger moths; it has one page, so the next one is empty. */
 async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
   if (input.page > 1) return { hits: [], hasMore: false };
