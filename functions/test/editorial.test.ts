@@ -13,7 +13,7 @@ import {
   translatableStrings,
   TRANSLATION_LOCALES,
 } from "../src/editorial";
-import { SEARCH_TRANSLATED, SEARCH_WORDS_ONLY } from "../src/search";
+import { SEARCH_WORDS_ONLY } from "../src/search";
 
 describe("EDITORIAL_UID", () => {
   // Firebase uids are 28 characters of letters and digits; this can never be one,
@@ -140,8 +140,8 @@ describe("searchAfterTranslations", () => {
     assert.equal(after.searchVersion, SEARCH_WORDS_ONLY);
   });
 
-  it("leaves the sweep nothing to do once every language is named", () => {
+  it("leaves the sweep to run even once every language is named", () => {
     const names = Object.fromEntries(TRANSLATION_LOCALES.map((locale) => [locale, `Pixar ${locale}`]));
-    assert.equal(searchAfterTranslations("Pixar", names).searchVersion, SEARCH_TRANSLATED);
+    assert.equal(searchAfterTranslations("Pixar", names).searchVersion, SEARCH_WORDS_ONLY);
   });
 });

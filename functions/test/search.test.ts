@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fold, matchesSearch, missOf, parseTranslations, searchKeysFor, searchQueryOf, wordsOf } from "../src/search";
+import { sweptKeys } from "../src/sweepSearch";
 
 describe("fold", () => {
   it("makes ё an е, é an e, and capitals small", () => {
@@ -12,13 +13,39 @@ describe("fold", () => {
 describe("wordsOf", () => {
   it("splits on anything not a letter or a digit", () => {
     assert.deepEqual(wordsOf("Star Wars: Episode IV"), ["star", "wars", "episode", "iv"]);
-    assert.deepEqual(wordsOf("スター・ウォーズ"), ["スター", "ウォース"]);
+    assert.deepEqual(wordsOf("スター・ウォーズ"), ["スター", "ウォーズ"]);
+  });
+
+  it("keeps the voicing marks of kana, half-width or not", () => {
+    assert.deepEqual(wordsOf("ｼﾞﾌﾞﾘ"), ["ジブリ"]);
+    assert.notEqual(fold("ジブリ"), fold("シフリ"));
   });
 });
 
 describe("searchKeysFor", () => {
   it("holds every start of every word, once", () => {
     assert.deepEqual(searchKeysFor(["Star Wars", "star"]), ["s", "st", "sta", "star", "w", "wa", "war", "wars"]);
+  });
+
+  it("holds every start from the middle of an unspaced word, two letters or more", () => {
+    const keys = searchKeysFor(["スタジオジブリ作品"]);
+    for (const key of ["ス", "スタジオ", "ジブリ", "ジブ", "作品", "ブリ作"]) assert.ok(keys.includes(key), key);
+    assert.equal(keys.includes("リ"), false);
+  });
+
+  it("starts from where an unspaced script meets another, too", () => {
+    const keys = searchKeysFor(["ポケモンGO", "最終幻想7"]);
+    assert.ok(keys.includes("go") && keys.includes("幻想7"));
+  });
+
+  it("gives Latin words only their starts", () => {
+    assert.equal(searchKeysFor(["Ghibli"]).includes("hibli"), false);
+  });
+
+  it("stays small for a long unspaced title", () => {
+    const keys = searchKeysFor([Array.from({ length: 200 }, (_, at) => String.fromCodePoint(0x4e00 + at)).join("")]);
+    assert.ok(keys.length < 700, `${keys.length}`);
+    assert.ok(keys.every((key) => [...key].length <= 20));
   });
 });
 
@@ -50,6 +77,24 @@ describe("matchesSearch", () => {
 
   it("is never true for a document without keys", () => {
     assert.equal(matchesSearch(undefined, searchQueryOf("star")!), false);
+  });
+
+  it("finds a Japanese title by a word from its middle", () => {
+    const ghibli = searchKeysFor(["Studio Ghibli Movies", "スタジオジブリ作品"]);
+    assert.ok(matchesSearch(ghibli, searchQueryOf("ジブリ")!));
+    assert.ok(matchesSearch(ghibli, searchQueryOf("ジブリ 作品")!));
+    assert.equal(matchesSearch(ghibli, searchQueryOf("シフリ")!), false);
+  });
+});
+
+describe("sweptKeys", () => {
+  it("keeps the names already given and adds the model's", () => {
+    const keys = sweptKeys("Studio Ghibli Movies", undefined, { ru: { "Studio Ghibli Movies": "Фильмы студии Ghibli" } }, ["Фильмы студии Гибли"]);
+    for (const key of ["ghibli", "фильмы", "гибли"]) assert.ok(keys.includes(key), key);
+  });
+
+  it("keeps a topic's names", () => {
+    assert.ok(sweptKeys("Pixar", { ja: "ピクサー" }, undefined, []).includes("ピクサー"));
   });
 });
 

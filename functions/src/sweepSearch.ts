@@ -44,11 +44,7 @@ export const sweepSearch = onSchedule(
         if (translated === null) continue;
         await Promise.all(
           docs.map(async (doc, at) => {
-            const own = [
-              ...Object.values((doc.get("names") as Record<string, unknown> | undefined) ?? {}),
-              ...Object.values(titleNames(names[at], doc.get("translations"))),
-            ].filter((one): one is string => typeof one === "string");
-            const keys = searchKeysFor([names[at], ...own, ...translated[at]]);
+            const keys = sweptKeys(names[at], doc.get("names"), doc.get("translations"), translated[at]);
             // Only if nobody renamed it meanwhile: a rename starts the keys again.
             await doc.ref
               .update({ searchKeys: keys, searchVersion: SEARCH_TRANSLATED }, { lastUpdateTime: doc.updateTime })
@@ -68,6 +64,14 @@ export const sweepSearch = onSchedule(
     console.log(`Search sweep: translated ${done}, dropped ${stale.size} old picture answers`);
   },
 );
+
+/** The keys of a name, of the names it was already given (a topic's, or a house list's translations), and of the model's. */
+export function sweptKeys(name: string, names: unknown, translations: unknown, translated: readonly string[]): string[] {
+  const own = [...Object.values((names as Record<string, unknown> | undefined) ?? {}), ...Object.values(titleNames(name, translations))].filter(
+    (one): one is string => typeof one === "string",
+  );
+  return searchKeysFor([name, ...own, ...translated]);
+}
 
 async function translate(names: readonly string[]): Promise<string[][] | null> {
   try {

@@ -5,7 +5,7 @@
  * Pure: `community.ts` does the I/O.
  */
 import type { Identity } from "./auth";
-import { SEARCH_LANGUAGES, SEARCH_TRANSLATED, SEARCH_WORDS_ONLY, searchKeysFor } from "./search";
+import { SEARCH_LANGUAGES, SEARCH_WORDS_ONLY, searchKeysFor } from "./search";
 
 /** Not a Firebase uid (those are 28 characters with no hyphen), so no sign-in can become it. */
 export const EDITORIAL_UID = "tyl-editorial";
@@ -123,15 +123,12 @@ export function titleNames(title: string, translations: unknown): Record<string,
 
 /**
  * Search keys straight after the house names a title: its own words and every
- * name it was given. Once every language is named the sweep has nothing to
- * add; until then it is asked to fill the rest.
+ * name it was given. The sweep still runs, even with every language named: a
+ * name can keep a word in Latin letters (ru «Студия Ghibli»), and only the
+ * sweep adds how people spell it (Гибли). It keeps these names as it does.
  */
 export function searchAfterTranslations(title: string, names: Record<string, string>): { searchKeys: string[]; searchVersion: number } {
-  const everyLanguage = TRANSLATION_LOCALES.every((locale) => names[locale] !== undefined);
-  return {
-    searchKeys: searchKeysFor([title, ...Object.values(names)]),
-    searchVersion: everyLanguage ? SEARCH_TRANSLATED : SEARCH_WORDS_ONLY,
-  };
+  return { searchKeys: searchKeysFor([title, ...Object.values(names)]), searchVersion: SEARCH_WORDS_ONLY };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -2,8 +2,10 @@
  * Search by words rather than by the start of a title. A list or a topic
  * stores `searchKeys`: every word of its name, of its name in the app's other
  * languages once those are known, and every start of each of those words, all
- * folded the same way. A search asks for one typed word with `array-contains`
- * and keeps what holds every other typed word too. Pure: the I/O is elsewhere.
+ * folded the same way. Kana, Han and Hangul go without spaces, so a word in
+ * them also gets every start from its middle. A search asks for one typed word
+ * with `array-contains` and keeps what holds every other typed word too.
+ * Pure: the I/O is elsewhere.
  */
 
 /** Keys made from the name alone. The sweep (src/sweepSearch.ts) raises it once the translations are in. */
@@ -16,31 +18,49 @@ export const SEARCH_LANGUAGES = ["en", "ru", "uk", "de", "es", "fr", "ja", "pl",
 /** A word longer than this is looked for by its first this many letters. */
 const MAX_KEY_LENGTH = 20;
 /** Far above what eleven translations of a title make; a guard, not a budget. */
-const MAX_KEYS = 1500;
+export const MAX_KEYS = 1500;
+/** Scripts written without spaces between words. */
+const UNSPACED = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}]/u;
+/** A start from the middle of an unspaced word is two letters at least, and no further in than this. */
+const MIN_INNER_KEY = 2;
+const MAX_INNER_START = 30;
 
 /**
  * Lower case, with accents and marks gone, so ё is е and é is e on both sides
- * of a search. Й stays: it is a letter of its own, not и with a mark.
+ * of a search. Й stays: it is a letter of its own, not и with a mark; so do
+ * the voicing marks of kana, since ジ is not シ.
  */
 export function fold(text: string): string {
-  return [...text.toLowerCase()].map((char) => (char === "й" ? char : char.normalize("NFKD").replace(/\p{M}+/gu, ""))).join("");
+  return [...text.toLowerCase()]
+    .map((char) => (char === "й" ? char : char.normalize("NFKD").replace(/[^\P{M}\u3099\u309A]+/gu, "")))
+    .join("")
+    .normalize("NFC");
+}
+
+function foldedWords(text: string): string[] {
+  return fold(text)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length > 0);
 }
 
 /** The words of a text, folded; anything not a letter or a digit separates them. */
 export function wordsOf(text: string): string[] {
-  return fold(text)
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word.length > 0)
-    .map((word) => [...word].slice(0, MAX_KEY_LENGTH).join(""));
+  return foldedWords(text).map((word) => [...word].slice(0, MAX_KEY_LENGTH).join(""));
 }
 
-/** Every word of every text, and every start of each. */
+/** Every word of every text, every start of each, and in unspaced scripts every start from the middle too. */
 export function searchKeysFor(texts: readonly string[]): string[] {
   const keys = new Set<string>();
   for (const text of texts) {
-    for (const word of wordsOf(text)) {
+    for (const word of foldedWords(text)) {
       const letters = [...word];
-      for (let end = 1; end <= letters.length; end++) keys.add(letters.slice(0, end).join(""));
+      for (let end = 1; end <= Math.min(letters.length, MAX_KEY_LENGTH); end++) keys.add(letters.slice(0, end).join(""));
+      for (let start = 1; start <= Math.min(letters.length - MIN_INNER_KEY, MAX_INNER_START); start++) {
+        if (!UNSPACED.test(letters[start]) && !UNSPACED.test(letters[start - 1])) continue;
+        for (let end = start + MIN_INNER_KEY; end <= Math.min(letters.length, start + MAX_KEY_LENGTH); end++) {
+          keys.add(letters.slice(start, end).join(""));
+        }
+      }
     }
   }
   return [...keys].slice(0, MAX_KEYS);
