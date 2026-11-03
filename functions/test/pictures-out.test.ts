@@ -33,6 +33,12 @@ describe("toSummary", () => {
     tierColors: [],
   };
 
+  it("carries the title's translations as names, as topics do", () => {
+    const translations = { ru: { "Oscar films 2025": "Оскар 2025", Other: "Другое" }, de: { Other: "Andere" } };
+    assert.deepEqual(toSummary("a", { ...stored, translations } as never).names, { ru: "Оскар 2025" });
+    assert.deepEqual(toSummary("a", stored as never).names, {});
+  });
+
   it("sends no cover for one stored as the word null, so the app draws the mosaic", () => {
     const summary = toSummary("a", { ...stored, coverImageUrl: "null", previewImages: ["https://p/1.jpg", "null"] } as never);
 
