@@ -15,6 +15,7 @@
     "cache-public-pictures": "tsc -p tsconfig.test.json && node lib-test/scripts/cache-public-pictures.js",
     "search-keys": "tsc -p tsconfig.test.json && node lib-test/scripts/search-keys.js",
     "house-translations": "tsc -p tsconfig.test.json && node lib-test/scripts/house-translations.js",
+    "house-fill": "tsc -p tsconfig.test.json && node lib-test/scripts/house-fill.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
