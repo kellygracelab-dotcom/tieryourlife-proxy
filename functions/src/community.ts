@@ -70,6 +70,7 @@ import {
   MAX_TITLE_LENGTH,
   decidePublish,
   picturesWanted,
+  readBoardUid,
   settle,
   tierCountsOf,
   type PublishDecision,
@@ -134,6 +135,7 @@ import {
   OTHER,
   pickCollage,
   pickSectionId,
+  proposalAllowance,
   readSectionEdits,
   recentProposals,
   releasedNames,
@@ -210,6 +212,7 @@ import {
   decideTopicCreation,
   decideTopicDeletion,
   decideTopicEdit,
+  followsAfterMerge,
   impliedTopic,
   MAX_TOPIC_HOPS,
   topicHop,
@@ -404,6 +407,8 @@ interface StoredList {
   tierCounts?: number[];
   /** A house list's texts in the readers' languages (src/editorial.ts). */
   translations?: Translations;
+  /** The device's uid of the board it was published from; absent when the device did not say. */
+  boardUid?: string;
 }
 
 interface StoredRanking {
@@ -1304,6 +1309,7 @@ async function routeSections(
     if (first === QUEUE_PATH && second === "" && method === "GET") return await readSectionQueue(response, identity);
     if (first === ORDER_PATH && second === "" && method === "PUT") return await putSectionOrder(response, identity, body);
     if (first === PROPOSALS_PATH) {
+      if (second === "" && method === "GET") return await readProposalAllowance(response, identity);
       if (second === "" && method === "POST") return await proposeSection(response, identity, body);
       if (second !== "" && method === "DELETE") return await withdrawProposal(response, identity, second);
     } else if (first !== "") {
@@ -1603,6 +1609,19 @@ async function paletteFor(bytes: Buffer): Promise<string[]> {
     console.warn("No palette for a proposal", error);
     return [];
   }
+}
+
+/** How many proposals the caller has waiting and made today, read before a picture is uploaded for one. */
+async function readProposalAllowance(response: Response, identity: Identity): Promise<void> {
+  if (await refuseWriter(response, identity)) return;
+  const db = getFirestore();
+  const [mine, used] = await Promise.all([
+    db.collection(SECTIONS).where("proposerUid", "==", identity.uid).select("status").get(),
+    db.collection(SECTION_PROPOSERS).doc(identity.uid).get(),
+  ]);
+  const pending = mine.docs.filter((doc) => doc.get("status") === "pending").length;
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json(proposalAllowance(pending, recentProposals(used.get("recent"), Date.now())));
 }
 
 type Created = { code: null; record: SectionRecord } | SectionRefusal;
@@ -2515,6 +2534,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
         ...toSummary(doc.id, data, identity, identity.isAnonymous ? null : new Set()),
         ...ownAuthor(data),
         ...waitingFor(data.proposedSection, proposals),
+        ...(typeof data.boardUid === "string" ? { boardUid: data.boardUid } : {}),
       };
     }),
   });
@@ -2702,6 +2722,17 @@ async function publish(
     return;
   }
 
+  // A board published once is answered with its list, ahead of the count, so
+  // an author at the limit gets theirs back. Unpublished, it is gone, and this publishes it anew.
+  const boardUid = readBoardUid((body as Record<string, unknown> | null)?.boardUid);
+  const fromBoard = existingId === null && boardUid !== null
+    ? collection.where("authorUid", "==", byline.uid).where("boardUid", "==", boardUid).limit(1)
+    : null;
+  if (fromBoard !== null) {
+    const earlier = await fromBoard.get();
+    if (!earlier.empty) return answerRepeat(response, earlier.docs[0]);
+  }
+
   // Replacing a list the author already published does not add to their count,
   // and the house has no count.
   const alreadyPublished = existingId || byline.speaker !== null
@@ -2753,7 +2784,7 @@ async function publish(
     response.status(400).json({ error: "That section does not take new lists", code: "INVALID", detail: "category" });
     return;
   }
-  const asked = readTopicRequest(source.topicId, source.newTopic);
+  const asked = readTopicRequest(source.topicId, source.newTopic, source.noTopic);
   if (!asked.ok) {
     refuseTopicRequest(response, asked.reason);
     return;
@@ -2836,6 +2867,7 @@ async function publish(
     previewImages: list.previewImages,
     tierColors: list.tierColors,
     tierCounts: tierCountsOf(list.tiers.length, list.items),
+    ...(boardUid === null ? {} : { boardUid }),
     basedOn: publication.basedOn,
     anonymous: byline.speaker !== null || anonymityAfter(decision.draft.anonymous, previous),
     updatedAt: FieldValue.serverTimestamp(),
@@ -2849,7 +2881,12 @@ async function publish(
   // moderator's is, and two claims to one name meet in one document. A name
   // somebody else's topic already holds stays theirs; this one waits beside
   // it, as waiting twins always have, for a moderator to merge.
-  await db.runTransaction(async (transaction) => {
+  const earlier = await db.runTransaction(async (transaction) => {
+    // The same board's first request got here first: its list stands, and this one writes nothing.
+    if (fromBoard !== null) {
+      const there = await transaction.get(fromBoard);
+      if (!there.empty) return there.docs[0];
+    }
     // The house's translations stay with a replaced list, as far as it still shows what they translate.
     const keptTranslations = existingId && byline.speaker !== null
       ? pruneTranslations((await transaction.get(collection.doc(existingId))).get("translations"), translatableStrings(list)).translations
@@ -2906,7 +2943,13 @@ async function publish(
         rankingCount: 0,
       });
     }
+    return null;
   });
+  if (earlier !== null) {
+    // Its pictures were copied into a folder no list names.
+    await discardPublished(target);
+    return answerRepeat(response, earlier);
+  }
   await noteWordingConcern(target, document.title, identity, concern);
 
   if (existingId) {
@@ -2918,6 +2961,10 @@ async function publish(
     return;
   }
   response.status(201).json({ id: target, topicId });
+}
+
+function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
+  response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true });
 }
 
 /**
@@ -3172,7 +3219,7 @@ async function discardRankings(listId: string): Promise<void> {
 function refuseTopicRequest(response: Response, reason: "both" | "bad_name" | "bad_id"): void {
   switch (reason) {
     case "both":
-      response.status(400).json({ error: "Pick a topic or name a new one, not both", code: "INVALID" });
+      response.status(400).json({ error: "Pick a topic, name a new one, or ask for none", code: "INVALID" });
       return;
     case "bad_name":
       response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID" });
@@ -3229,7 +3276,7 @@ async function liveTopic(topicId: string): Promise<KnownTopic | null> {
 
 /** What the deciding needs to know about the topic a publication asked for. */
 async function resolveAttachment(identity: Identity, request: TopicRequest, chosen: string): Promise<Attachment> {
-  if (request.kind === "none") {
+  if (request.kind === "none" || request.kind === "clear") {
     return { kind: "none" };
   }
   const topics = getFirestore().collection(TOPICS);
@@ -3706,6 +3753,7 @@ async function settleTopic(
     update.decidedAt = FieldValue.serverTimestamp();
     update.decidedBy = identity.uid;
   }
+  if (action === "merge" && into !== null) await moveTopicFollows(topicId, into.id);
   const batch = db.batch();
   if (action === "merge" && into !== null) {
     update.listCount = 0;
@@ -3719,12 +3767,51 @@ async function settleTopic(
   const change = changedFields(stored as unknown as Record<string, unknown>, update);
   auditInBatch(batch, auditEntry(identity.uid, role, what, `${TOPICS}/${topicId}`, change.before, change.after));
   await batch.commit();
+  // Again once the topic is merged and takes no new follows: one made in between is not left behind.
+  if (action === "merge" && into !== null) await moveTopicFollows(topicId, into.id);
 
   const [fresh, follow] = await Promise.all([
     ref.get(),
     db.collection(TOPIC_FOLLOWS).doc(followId(identity.uid, topicId)).get(),
   ]);
   response.status(200).json(toTopic(topicId, fresh.data() as StoredTopic, follow.exists, { uid: identity.uid, staff: true }));
+}
+
+/**
+ * A merged topic's followers follow the topic it went into, a page per
+ * transaction so both counts move with the follows. Somebody following both
+ * ends up with one. Cut short, it is finished by merging again.
+ */
+async function moveTopicFollows(from: string, into: string): Promise<void> {
+  const db = getFirestore();
+  const follows = db.collection(TOPIC_FOLLOWS);
+  // Two writes a follow, and the two counts.
+  const pageSize = WRITES_PER_BATCH / 2;
+  const page = follows.where("topicId", "==", from).orderBy(FieldPath.documentId()).limit(pageSize);
+  for (;;) {
+    const moved = await db.runTransaction(async (transaction) => {
+      const read = await transaction.get(page);
+      if (read.empty) return 0;
+      const rows = read.docs.map((doc) => ({
+        ref: doc.ref,
+        follower: doc.get("follower") as string,
+        createdAt: doc.get("createdAt") ?? FieldValue.serverTimestamp(),
+      }));
+      const there = await transaction.getAll(...rows.map((row) => follows.doc(followId(row.follower, into))));
+      const already = new Set(rows.filter((_, at) => there[at].exists).map((row) => row.follower));
+      const landing = followsAfterMerge(rows, already);
+      for (const row of landing) {
+        transaction.set(follows.doc(followId(row.follower, into)), { follower: row.follower, topicId: into, createdAt: row.createdAt });
+      }
+      rows.forEach((row) => transaction.delete(row.ref));
+      transaction.update(db.collection(TOPICS).doc(from), { followerCount: FieldValue.increment(-rows.length) });
+      if (landing.length > 0) {
+        transaction.update(db.collection(TOPICS).doc(into), { followerCount: FieldValue.increment(landing.length) });
+      }
+      return read.size;
+    });
+    if (moved < pageSize) return;
+  }
 }
 
 /** A topic name's reservation: hashed, because a name may hold characters a document id may not. */

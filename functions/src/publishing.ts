@@ -320,6 +320,17 @@ export function tierCountsOf(tierCount: number, items: readonly { tierIndex?: un
   return counts;
 }
 
+/**
+ * The board a publication comes from, by the device's own uid: present and
+ * small, never parsed. The same author publishing the same board again is
+ * answered with the list it already made.
+ */
+export function readBoardUid(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 100 ? trimmed : null;
+}
+
 /** Every own photograph a draft names, each one once. */
 export function picturesWanted(draft: PublishDraft): string[] {
   return [...new Set(
