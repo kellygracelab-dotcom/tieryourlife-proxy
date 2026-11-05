@@ -1,6 +1,7 @@
 import { getAppCheck } from "firebase-admin/app-check";
 import type { Request } from "firebase-functions/https";
 import type { Response } from "express";
+import { isDemoEmulator } from "./emulator";
 
 /**
  * Sent with both refusals so the app can tell them from the other 401 it can
@@ -13,6 +14,9 @@ export async function requireAppCheck(
   request: Request,
   response: Response,
 ): Promise<boolean> {
+  if (isDemoEmulator()) {
+    return true;
+  }
   const token = request.header("X-Firebase-AppCheck");
   if (!token) {
     response.status(401).json({ error: "Missing App Check token", code: APP_UNVERIFIED });

@@ -17,6 +17,7 @@ import { defineSecret } from "firebase-functions/params";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import type { Identity } from "./auth";
+import { isDemoEmulator, STUB_PICTURE } from "./emulator";
 import {
   ANILIST_QUERY,
   anilistHits,
@@ -144,6 +145,7 @@ interface SearchInput {
 
 /** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. */
 export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | null> {
+  if (isDemoEmulator()) return { items: [], hasMore: false, notices: [], ...(input.quick ? { rest: false } : {}) };
   const db = getFirestore();
   const key = (web: boolean, quick = false) =>
     createHash("sha256")
@@ -294,6 +296,7 @@ async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
 
 /** IGDB's games called exactly this, oldest first: the original, which its search can rank below the remakes. */
 export async function igdbNamed(name: string): Promise<PictureHit[]> {
+  if (isDemoEmulator()) return [];
   const id = igdbClientId.value().trim();
   const secret = igdbClientSecret.value().trim();
   if (!id || !secret) return [];
@@ -513,6 +516,16 @@ async function keepPicture(raw: string, uid: string): Promise<Kept> {
   const usage = db.doc(`${WEB_USAGE}/${dayKey(Date.now())}/keeps/${uid}`);
   if (((await usage.get()).get("count") ?? 0) >= KEEP_DAILY_PER_USER) return { error: "KEEP_LIMIT" };
 
+  const fetched = isDemoEmulator() ? { bytes: STUB_PICTURE, type: "image/png" } : await downloadPicture(url);
+  if ("error" in fetched) return fetched;
+  const pictureId = randomUUID();
+  await getStorage().bucket().file(`users/${uid}/pictures/${pictureId}`).save(fetched.bytes, { contentType: fetched.type, resumable: false });
+  await usage.set({ count: FieldValue.increment(1) }, { merge: true });
+  return { pictureId };
+}
+
+async function downloadPicture(start: URL): Promise<{ bytes: Buffer; type: string } | { error: string }> {
+  let url = start;
   let reply: globalThis.Response | null = null;
   for (let hop = 0; hop <= KEEP_MAX_REDIRECTS; hop++) {
     if (!(await safeToFetch(url))) return { error: "NOT_ALLOWED" };
@@ -532,9 +545,5 @@ async function keepPicture(raw: string, uid: string): Promise<Kept> {
   if (Number(reply.headers.get("content-length") ?? "0") > KEEP_MAX_BYTES) return { error: "TOO_BIG" };
   const bytes = Buffer.from(await reply.arrayBuffer());
   if (bytes.length === 0 || bytes.length > KEEP_MAX_BYTES) return { error: "TOO_BIG" };
-
-  const pictureId = randomUUID();
-  await getStorage().bucket().file(`users/${uid}/pictures/${pictureId}`).save(bytes, { contentType: type, resumable: false });
-  await usage.set({ count: FieldValue.increment(1) }, { merge: true });
-  return { pictureId };
+  return { bytes, type };
 }

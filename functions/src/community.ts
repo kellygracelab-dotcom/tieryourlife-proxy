@@ -5,6 +5,7 @@ import { getAuth } from "firebase-admin/auth";
 import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { requireAppCheck } from "./appCheck";
+import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
 import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
@@ -549,7 +550,7 @@ export const lists = onRequest(
     memory: "256MiB",
     maxInstances: 10,
     // Picture search asks TMDB itself (src/pictureSearch.ts).
-    secrets: [pictureTmdbToken, igdbClientId, igdbClientSecret],
+    secrets: secretsOutsideDemo([pictureTmdbToken, igdbClientId, igdbClientSecret]),
     // One copy kept warm: a cold start cost 2-5 s on every first open of
     // Community, a face or a publish. About three dollars a month at this size.
     minInstances: 1,

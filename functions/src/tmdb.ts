@@ -1,6 +1,7 @@
 import { onRequest } from "firebase-functions/v2/https";
 import { defineSecret } from "firebase-functions/params";
 import { requireAppCheck } from "./appCheck";
+import { EMPTY_TMDB_SEARCH, isDemoEmulator, secretsOutsideDemo } from "./emulator";
 
 const tmdbReadAccessToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
 
@@ -13,7 +14,7 @@ const ALLOWED_PATHS = ["/3/search/multi", "/3/search/movie"];
 export const tmdb = onRequest(
   {
     region: "europe-west1",
-    secrets: [tmdbReadAccessToken],
+    secrets: secretsOutsideDemo([tmdbReadAccessToken]),
     timeoutSeconds: 30,
     memory: "256MiB",
     maxInstances: 10,
@@ -27,9 +28,14 @@ export const tmdb = onRequest(
       return;
     }
 
-    const path = request.path;
+    // Hosting hands the function its own name as the first segment, a direct call does not.
+    const path = request.path.replace(/^\/tmdb(?=\/)/, "");
     if (!ALLOWED_PATHS.includes(path)) {
       response.status(404).json({ error: "Unknown path" });
+      return;
+    }
+    if (isDemoEmulator()) {
+      response.status(200).json(EMPTY_TMDB_SEARCH);
       return;
     }
 

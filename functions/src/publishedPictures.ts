@@ -6,6 +6,7 @@
  */
 import { getStorage } from "firebase-admin/storage";
 import { decideSafe, type Likelihood, type SafeSearchVerdict, type SafetyRefusal } from "./safety";
+import { isDemoEmulator, SAFE_VERDICT } from "./emulator";
 
 /** Where a person's own pictures live, readable by them alone. */
 export function privatePath(uid: string, pictureId: string): string {
@@ -41,6 +42,7 @@ export type PictureOutcome =
 export type LookAtPictures = (images: Buffer[]) => Promise<SafeSearchVerdict[]>;
 
 export async function realSafeSearch(images: Buffer[]): Promise<SafeSearchVerdict[]> {
+  if (isDemoEmulator()) return images.map(() => SAFE_VERDICT);
   // Imported here rather than at the top: a cold start that never publishes
   // anything should not pay to load the Vision client.
   const { ImageAnnotatorClient } = await import("@google-cloud/vision");

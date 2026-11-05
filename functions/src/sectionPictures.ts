@@ -8,6 +8,7 @@
 import { getStorage } from "firebase-admin/storage";
 import { addressOf, privatePath } from "./publishedPictures";
 import type { WeightedColour } from "./sectionColours";
+import { isDemoEmulator } from "./emulator";
 
 export function proposalPath(sectionId: string, pictureId: string): string {
   return `proposals/${sectionId}/${pictureId}`;
@@ -149,6 +150,7 @@ export function replacedSectionPicture(sectionId: string, before: unknown, after
  * PNG and WebP here would take a dependency for every format.
  */
 export async function realPictureColours(image: Buffer): Promise<WeightedColour[]> {
+  if (isDemoEmulator()) return [];
   // Imported here rather than at the top, as in publishedPictures.ts: most calls never need it.
   const { ImageAnnotatorClient } = await import("@google-cloud/vision");
   const client = new ImageAnnotatorClient();

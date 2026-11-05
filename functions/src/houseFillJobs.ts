@@ -1,5 +1,6 @@
 import { FieldValue } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { secretsOutsideDemo } from "./emulator";
 import { HITS_KEPT, HOUSE_FILL_JOBS, HOUSE_FILL_UID, readJob } from "./houseFill";
 import { igdbClientId, igdbClientSecret, igdbNamed, pictureTmdbToken, searchPictures } from "./pictureSearch";
 
@@ -13,7 +14,7 @@ export const houseFill = onDocumentCreated(
   {
     document: `${HOUSE_FILL_JOBS}/{id}`,
     region: "europe-west1",
-    secrets: [pictureTmdbToken, igdbClientId, igdbClientSecret],
+    secrets: secretsOutsideDemo([pictureTmdbToken, igdbClientId, igdbClientSecret]),
     timeoutSeconds: 540,
     memory: "512MiB",
     maxInstances: 1,
