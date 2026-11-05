@@ -148,11 +148,23 @@ export async function copyForPublication(
   ];
 }
 
-/** Everything the feed was holding for this list. Called when it comes down. */
-export async function discardPublished(listId: string): Promise<void> {
-  await getStorage()
-    .bucket()
-    .deleteFiles({ prefix: `published/${listId}/`, force: true });
+/**
+ * The folders that show a list to the world: the feed's copies of its
+ * pictures, and the share cards the site draws for it. A ranking's cards,
+ * under `share/r/`, are the site's own to clear.
+ */
+export function publicFoldersOf(listId: string): string[] {
+  return [`published/${listId}/`, `share/l/${listId}/`];
+}
+
+/** Only what `discardPublished` asks of a bucket, so a test can hand it another. */
+export interface FolderDeleter {
+  deleteFiles(options: { prefix: string; force: boolean }): Promise<unknown>;
+}
+
+/** Everything the feed and the site were holding for this list. Called when it comes down. */
+export async function discardPublished(listId: string, bucket: FolderDeleter = getStorage().bucket()): Promise<void> {
+  await Promise.all(publicFoldersOf(listId).map((prefix) => bucket.deleteFiles({ prefix, force: true })));
 }
 
 /**

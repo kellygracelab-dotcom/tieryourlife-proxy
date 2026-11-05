@@ -762,6 +762,23 @@ export function decideWithdrawal(section: SectionRecord | null, callerUid: strin
   return "settled";
 }
 
+export type WithdrawalAnswer =
+  | { code: 200; body: { outcome: "withdrawn" | "dismissed"; status: SectionStatus } }
+  | { code: 409; body: { error: string; code: "SETTLED"; status: SectionStatus } }
+  | { code: 404 };
+
+/**
+ * What the proposer is told: whether the proposal was taken back or only its
+ * notice put away, and what it is now. A withdrawn proposal is kept as
+ * declined, so that is what it says; one approved meanwhile says so.
+ */
+export function withdrawalAnswer(what: Withdrawal, status: SectionStatus | null): WithdrawalAnswer {
+  if (what === "missing" || status === null) return { code: 404 };
+  if (what === "settled") return { code: 409, body: { error: "That section has been decided already", code: "SETTLED", status } };
+  if (what === "withdraw") return { code: 200, body: { outcome: "withdrawn", status: "declined" } };
+  return { code: 200, body: { outcome: "dismissed", status } };
+}
+
 export type ReaderAnswer = "view" | "merged" | "missing";
 
 /**

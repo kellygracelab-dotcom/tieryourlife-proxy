@@ -198,6 +198,17 @@ export function topicsPageSize(raw: unknown): number {
   return Math.min(Math.trunc(asked), MAX_TOPICS_PAGE_SIZE);
 }
 
+/**
+ * Where the next page of a section's topics starts, as `listCount:id`: a value
+ * rather than a document, so a moderator deleting the last topic shown does
+ * not lose the place. Ties go by id, descending, as the index already keeps them.
+ */
+export function topicsCursor(page: { id: string; listCount: number }[], pageSize: number): string | null {
+  if (page.length < pageSize) return null;
+  const last = page[page.length - 1];
+  return `${last.listCount}:${last.id}`;
+}
+
 export const TOPIC_ACTIONS = ["approve", "rename", "merge", "reject"] as const;
 export type TopicAction = (typeof TOPIC_ACTIONS)[number];
 

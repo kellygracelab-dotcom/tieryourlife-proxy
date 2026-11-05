@@ -18,9 +18,11 @@ import {
   similarTopics,
   topicReservationClash,
   TOPICS_PAGE_SIZE,
+  topicsCursor,
   topicsPageSize,
   type KnownTopic,
 } from "../src/topics";
+import { readCursor } from "../src/follows";
 
 function topic(some: Partial<KnownTopic> & { id: string }): KnownTopic {
   return {
@@ -219,6 +221,30 @@ describe("topicsPageSize", () => {
     assert.equal(topicsPageSize("0"), TOPICS_PAGE_SIZE);
     assert.equal(topicsPageSize("7"), 7);
     assert.equal(topicsPageSize("500"), MAX_TOPICS_PAGE_SIZE);
+  });
+});
+
+describe("topicsCursor", () => {
+  const page = (count: number) =>
+    Array.from({ length: count }, (_, at) => ({ id: `t${at}`, listCount: 100 - at }));
+
+  it("is null on a short page: that was the last one", () => {
+    assert.equal(topicsCursor(page(3), 50), null);
+    assert.equal(topicsCursor([], 50), null);
+  });
+
+  it("names the last topic's count and id on a full page", () => {
+    assert.equal(topicsCursor(page(50), 50), "51:t49");
+  });
+
+  it("reaches topics with no lists, the ones a moderator may delete", () => {
+    assert.equal(topicsCursor([{ id: "a", listCount: 1 }, { id: "b", listCount: 0 }], 2), "0:b");
+  });
+
+  it("is read back by the feed's cursor reader as a value and an id", () => {
+    assert.deepEqual(readCursor(topicsCursor(page(50), 50)), { value: 51, id: "t49" });
+    assert.deepEqual(readCursor("0:b"), { value: 0, id: "b" });
+    assert.equal(readCursor("garbage"), null);
   });
 });
 
