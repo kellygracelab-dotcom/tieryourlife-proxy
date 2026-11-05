@@ -170,6 +170,7 @@ import {
   TOPIC_DECISIONS,
   type TopicDecision,
   type Viewer,
+  withdrawalAnswer,
 } from "./sections";
 import {
   coloursFromChosenTint,
@@ -224,6 +225,7 @@ import {
   similarTopics,
   SIMILAR_TOPICS,
   topicReservationClash,
+  topicsCursor,
   topicsPageSize,
   TOPIC_ACTIONS,
   type Attachment,
@@ -1726,9 +1728,10 @@ async function withdrawProposal(response: Response, identity: Identity, id: stri
     }
     return { what, status: section?.status ?? null };
   });
-  if (outcome.what === "missing") return noSuchSection(response);
-  if (outcome.what === "settled") {
-    response.status(409).json({ error: "That section has been decided already", code: "SETTLED" });
+  const answer = withdrawalAnswer(outcome.what, outcome.status);
+  if (answer.code === 404) return noSuchSection(response);
+  if (answer.code === 409) {
+    response.status(409).json(answer.body);
     return;
   }
   // A declined proposal's lists stop waiting; doing it again is doing nothing.
@@ -1738,7 +1741,7 @@ async function withdrawProposal(response: Response, identity: Identity, id: stri
   }
   await discardProposalPicture(id);
   if (outcome.what === "withdraw") claimedSectionsCache.invalidate();
-  response.status(204).send();
+  response.status(200).json(answer.body);
 }
 
 /**
@@ -3476,6 +3479,7 @@ async function routeTopics(
         prefix: searchTerm(query.q),
         section: categoryFilter(query.section),
         limit: topicsPageSize(query.limit),
+        after: readCursor(singleParam(query.cursor)),
       });
     }
     if (first === "mine") return await readMyTopics(response, identity);
@@ -3506,6 +3510,8 @@ interface TopicFilters {
   prefix: string | null;
   section: string | null;
   limit: number;
+  /** Where the biggest-first pages resume; a search answers one page and none after it. */
+  after: Cursor | null;
 }
 
 /**
@@ -3518,6 +3524,7 @@ async function readTopics(response: Response, identity: Identity, filters: Topic
   const search = searchQueryOf(filters.prefix);
   let docs: FirebaseFirestore.QueryDocumentSnapshot[];
   let followed: string[];
+  let next: string | null = null;
   if (filters.prefix !== null) {
     // The status is checked here rather than asked: with the word it would need an index of its own.
     const found = search === null
@@ -3533,16 +3540,21 @@ async function readTopics(response: Response, identity: Identity, filters: Topic
     if (filters.section) {
       query = query.where("section", "==", filters.section);
     }
-    query = query.orderBy("listCount", "desc");
+    query = query.orderBy("listCount", "desc").orderBy(FieldPath.documentId(), "desc");
+    if (filters.after) {
+      query = query.startAfter(filters.after.value, filters.after.id);
+    }
     const [snapshot, mineFollowed] = await Promise.all([query.limit(filters.limit).get(), followedTopicIds(identity.uid)]);
     docs = snapshot.docs;
     followed = mineFollowed;
+    next = topicsCursor(docs.map((doc) => ({ id: doc.id, listCount: Number(doc.get("listCount") ?? 0) })), filters.limit);
   }
 
   const mine = new Set(followed);
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     topics: docs.map((doc) => toTopic(doc.id, doc.data() as StoredTopic, mine.has(doc.id), { uid: identity.uid, staff: false })),
+    nextCursor: next,
   });
 }
 

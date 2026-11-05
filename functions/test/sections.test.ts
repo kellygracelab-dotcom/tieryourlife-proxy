@@ -20,6 +20,7 @@ import {
   decideSectionAction,
   decideSectionChoice,
   decideWithdrawal,
+  withdrawalAnswer,
   DEFAULT_ICON,
   findClash,
   followedSectionRun,
@@ -783,6 +784,38 @@ describe("decideWithdrawal", () => {
     assert.equal(decideWithdrawal(section({ id: "a", status: "pending", proposerUid: "somebody" }), "me"), "missing");
     assert.equal(decideWithdrawal(builtInRecord(BUILT_IN_SECTIONS[0]), "me"), "missing");
     assert.equal(decideWithdrawal(null, "me"), "missing");
+  });
+});
+
+describe("withdrawalAnswer", () => {
+  it("says a waiting proposal was withdrawn, and is now declined by its proposer", () => {
+    assert.deepEqual(withdrawalAnswer("withdraw", "pending"), { code: 200, body: { outcome: "withdrawn", status: "declined" } });
+  });
+
+  it("says a declined or merged proposal was only dismissed, not withdrawn", () => {
+    assert.deepEqual(withdrawalAnswer("dismiss", "declined"), { code: 200, body: { outcome: "dismissed", status: "declined" } });
+    assert.deepEqual(withdrawalAnswer("dismiss", "merged"), { code: 200, body: { outcome: "dismissed", status: "merged" } });
+  });
+
+  it("tells somebody too late what the moderator decided", () => {
+    assert.deepEqual(withdrawalAnswer("settled", "approved"), {
+      code: 409,
+      body: { error: "That section has been decided already", code: "SETTLED", status: "approved" },
+    });
+  });
+
+  it("finds nothing where there is nothing of theirs", () => {
+    assert.deepEqual(withdrawalAnswer("missing", null), { code: 404 });
+    assert.deepEqual(withdrawalAnswer("missing", "pending"), { code: 404 });
+  });
+
+  it("answers every way the decision can go, from the section as it was read", () => {
+    const mine = (status: "approved" | "pending" | "declined" | "merged") =>
+      section({ id: "a", status, proposerUid: "me", ...(status === "merged" ? { mergedInto: "food" } : {}) });
+    const codes = (["pending", "declined", "merged", "approved"] as const).map(
+      (status) => withdrawalAnswer(decideWithdrawal(mine(status), "me"), status).code,
+    );
+    assert.deepEqual(codes, [200, 200, 200, 409]);
   });
 });
 
