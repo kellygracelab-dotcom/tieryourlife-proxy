@@ -82,19 +82,27 @@ export function isTopicId(value: unknown): value is string {
 
 export type TopicRequest =
   | { kind: "none" }
+  /** The author took the topic off: nothing is implied from the list's past. */
+  | { kind: "clear" }
   | { kind: "existing"; topicId: string }
   | { kind: "new"; name: string; nameLower: string };
 
 export type TopicRequestRefusal = "both" | "bad_name" | "bad_id";
 
-/** What a publication asks for about its topic: nothing, one that exists, or a new word. */
+/**
+ * What a publication asks for about its topic: nothing, one that exists, a new
+ * word, or none at all. A bare null is "nothing" and lets a republish keep its
+ * topic, as old phones expect; only `noTopic: true` takes it off.
+ */
 export function readTopicRequest(
   topicId: unknown,
   newTopic: unknown,
+  noTopic: unknown = undefined,
 ): { ok: true; request: TopicRequest } | { ok: false; reason: TopicRequestRefusal } {
   const hasId = topicId !== undefined && topicId !== null && topicId !== "";
   const hasName = newTopic !== undefined && newTopic !== null && newTopic !== "";
   if (hasId && hasName) return { ok: false, reason: "both" };
+  if (noTopic === true) return hasId || hasName ? { ok: false, reason: "both" } : { ok: true, request: { kind: "clear" } };
   if (hasId) {
     return isTopicId(topicId) ? { ok: true, request: { kind: "existing", topicId } } : { ok: false, reason: "bad_id" };
   }
@@ -135,7 +143,7 @@ export interface AttachmentInput {
  */
 export function decideAttachment(input: AttachmentInput): Attachment {
   const { request } = input;
-  if (request.kind === "none") return { kind: "none" };
+  if (request.kind === "none" || request.kind === "clear") return { kind: "none" };
 
   if (request.kind === "existing") {
     const topic = input.byId;
@@ -251,6 +259,19 @@ export function decideTopicAction(action: TopicAction, topic: KnownTopic, input:
       return { ok: true, topic: { status: "rejected" }, lists: { topicId: null, topicName: null }, decided: true };
     }
   }
+}
+
+/**
+ * The follows of a merged topic that land on the one it went into: one per
+ * follower, and none for somebody who already follows the target.
+ */
+export function followsAfterMerge<T extends { follower: string }>(page: readonly T[], alreadyAtTarget: ReadonlySet<string>): T[] {
+  const landing = new Set(alreadyAtTarget);
+  return page.filter((row) => {
+    if (landing.has(row.follower)) return false;
+    landing.add(row.follower);
+    return true;
+  });
 }
 
 export type TopicCreation =

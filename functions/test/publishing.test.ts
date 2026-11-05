@@ -8,6 +8,7 @@ import {
   MAX_TITLE_LENGTH,
   decidePublish,
   picturesWanted,
+  readBoardUid,
 } from "../src/publishing";
 import { MAX_OWN_PICTURES_PER_LIST } from "../src/safety";
 
@@ -395,6 +396,19 @@ describe("an anonymous list", () => {
     for (const anonymous of ["true", 1, undefined]) {
       const decision = publish({ anonymous });
       assert.equal(decision.ok && decision.draft.anonymous, null, String(anonymous));
+    }
+  });
+});
+
+describe("readBoardUid", () => {
+  it("keeps the device's board uid as it was given, trimmed", () => {
+    assert.equal(readBoardUid("3f2b9c1e-7a4d-4e0b-9a51-2f3c4d5e6f70"), "3f2b9c1e-7a4d-4e0b-9a51-2f3c4d5e6f70");
+    assert.equal(readBoardUid("  board-1 "), "board-1");
+  });
+
+  it("reads anything else as no board, so a client that does not say publishes as before", () => {
+    for (const value of [undefined, null, "", "   ", 42, {}, "x".repeat(101)]) {
+      assert.equal(readBoardUid(value), null, String(value));
     }
   });
 });

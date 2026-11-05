@@ -16,6 +16,7 @@ import {
   decideOrder,
   decideProposal,
   decideProposalQuota,
+  proposalAllowance,
   decideSectionAction,
   decideSectionChoice,
   decideWithdrawal,
@@ -342,6 +343,12 @@ describe("decideProposal", () => {
     assert.deepEqual(propose({}, [...sections, ...mine(MAX_PENDING_SECTIONS_PER_ACCOUNT)]), { ok: false, code: "TOO_MANY_PENDING" });
     assert.equal(propose({}, [...sections, ...mine(5, "declined")]).ok, true);
   });
+
+  it("says three are waiting before it asks for the picture", () => {
+    const waiting = Array.from({ length: MAX_PENDING_SECTIONS_PER_ACCOUNT }, (_, at) =>
+      section({ id: `mine-${at}`, name: `Mine ${at}`, status: "pending", proposerUid: "me" }));
+    assert.deepEqual(propose({ pictureId: undefined }, [...sections, ...waiting]), { ok: false, code: "TOO_MANY_PENDING" });
+  });
 });
 
 describe("recentProposals and decideProposalQuota", () => {
@@ -360,6 +367,19 @@ describe("recentProposals and decideProposalQuota", () => {
     assert.equal(decideProposalQuota(MAX_PENDING_SECTIONS_PER_ACCOUNT - 1, day(MAX_PROPOSALS_PER_DAY - 1)), null);
     assert.equal(decideProposalQuota(MAX_PENDING_SECTIONS_PER_ACCOUNT, day(0)), "TOO_MANY_PENDING");
     assert.equal(decideProposalQuota(0, day(MAX_PROPOSALS_PER_DAY)), "TOO_MANY_PROPOSALS");
+  });
+
+  it("tells an account what it may still propose, with the refusal a proposal would meet", () => {
+    const day = (n: number) => Array.from({ length: n }, (_, at) => now - at);
+    assert.deepEqual(proposalAllowance(1, day(2)), {
+      pending: 1,
+      maxPending: MAX_PENDING_SECTIONS_PER_ACCOUNT,
+      proposalsToday: 2,
+      maxPerDay: MAX_PROPOSALS_PER_DAY,
+      refusal: null,
+    });
+    assert.equal(proposalAllowance(MAX_PENDING_SECTIONS_PER_ACCOUNT, day(0)).refusal, "TOO_MANY_PENDING");
+    assert.equal(proposalAllowance(0, day(MAX_PROPOSALS_PER_DAY)).refusal, "TOO_MANY_PROPOSALS");
   });
 });
 

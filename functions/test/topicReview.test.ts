@@ -71,6 +71,12 @@ describe("a republish of a list moved into a topic", () => {
     assert.equal(impliedTopic({ request: { kind: "existing", topicId: "t2" }, viaTopic: topic(), chosenCategory: "food", previous }), null);
     assert.equal(impliedTopic({ request: { kind: "new", name: "Tacos", nameLower: "tacos" }, viaTopic: null, chosenCategory: "food", previous }), null);
   });
+
+  it("brings nothing back when the author took the topic off, even in the same section", () => {
+    const previous = { category: "food", topicId: "t1", topicName: "Street food" };
+    assert.equal(impliedTopic({ request: { kind: "clear" }, viaTopic: null, chosenCategory: "food", previous }), null);
+    assert.equal(impliedTopic({ request: { kind: "clear" }, viaTopic: topic({ section: "food" }), chosenCategory: "food", previous }), null);
+  });
 });
 
 describe("topicHop", () => {

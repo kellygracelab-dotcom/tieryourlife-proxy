@@ -37,7 +37,7 @@ export const BOARD_PAGE_SIZE = 100;
 export const MAX_DEVICE_NAME_LENGTH = 40;
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
-const DISPLAY_MODES = ["WRAP", "RANKED"] as const;
+const DISPLAY_MODES = ["WRAP", "HORIZONTAL_SCROLL", "FLAT_RANKED"] as const;
 const ITEM_SOURCES = ["MANUAL", "TMDB", "GENERATED"] as const;
 
 export interface StoredTier {
@@ -298,6 +298,12 @@ function uid(value: unknown): string | null {
   return trimmed.length > 0 && trimmed.length <= 100 ? trimmed : null;
 }
 
+/** How a board is laid out. "RANKED" is what the first builds called the flat ranked list. */
+export function displayModeOf(value: unknown): string {
+  if (value === "RANKED") return "FLAT_RANKED";
+  return DISPLAY_MODES.find((known) => known === value) ?? "WRAP";
+}
+
 export function cleanDeviceName(value: unknown): string | null {
   return cleanText(value, MAX_DEVICE_NAME_LENGTH);
 }
@@ -415,7 +421,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
   const board: StoredBoard = {
     fingerprint: cleanText(source.fingerprint, MAX_FINGERPRINT_LENGTH),
     title,
-    displayMode: DISPLAY_MODES.find((known) => known === source.displayMode) ?? "WRAP",
+    displayMode: displayModeOf(source.displayMode),
     category: cleanText(source.category, MAX_TITLE_LENGTH),
     coverImageUrl: keepableImageUrl(source.coverImageUrl),
     coverImageUrls: chosenPictures(source.coverImageUrls),

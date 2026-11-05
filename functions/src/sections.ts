@@ -473,9 +473,9 @@ export function decideProposal({ body, callerUid, sections }: ProposalInput): Pr
   if (!isSectionIcon(icon)) return { ok: false, code: "BAD_ICON" };
   const fileUnder = sections.find((one) => one.id === source.fileUnder && isOpen(one));
   if (!fileUnder) return { ok: false, code: "BAD_FILE_UNDER" };
-  if (!isPictureId(source.pictureId)) return { ok: false, code: "BAD_PICTURE", why: "missing" };
   const pending = sections.filter((one) => one.proposerUid === callerUid && one.status === "pending").length;
   if (pending >= MAX_PENDING_SECTIONS_PER_ACCOUNT) return { ok: false, code: "TOO_MANY_PENDING" };
+  if (!isPictureId(source.pictureId)) return { ok: false, code: "BAD_PICTURE", why: "missing" };
   return { ok: true, name, icon, fileUnder: fileUnder.id, pictureId: source.pictureId };
 }
 
@@ -699,6 +699,26 @@ export function decideProposalQuota(pending: number, recent: readonly number[]):
   if (pending >= MAX_PENDING_SECTIONS_PER_ACCOUNT) return "TOO_MANY_PENDING";
   if (recent.length >= MAX_PROPOSALS_PER_DAY) return "TOO_MANY_PROPOSALS";
   return null;
+}
+
+export interface ProposalAllowance {
+  pending: number;
+  maxPending: number;
+  proposalsToday: number;
+  maxPerDay: number;
+  /** What a proposal made now would be refused with, or null when it may be made. */
+  refusal: "TOO_MANY_PENDING" | "TOO_MANY_PROPOSALS" | null;
+}
+
+/** What an account may still propose, asked before a picture is uploaded for a proposal that would be refused. */
+export function proposalAllowance(pending: number, recent: readonly number[]): ProposalAllowance {
+  return {
+    pending,
+    maxPending: MAX_PENDING_SECTIONS_PER_ACCOUNT,
+    proposalsToday: recent.length,
+    maxPerDay: MAX_PROPOSALS_PER_DAY,
+    refusal: decideProposalQuota(pending, recent),
+  };
 }
 
 /** A name held by a section, as its reservation says. */

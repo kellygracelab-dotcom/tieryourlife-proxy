@@ -7,6 +7,7 @@ import {
   decideTopicCreation,
   decideTopicDeletion,
   decideTopicEdit,
+  followsAfterMerge,
   MAX_PENDING_TOPICS_PER_ACCOUNT,
   MAX_TOPIC_NAME_LENGTH,
   MAX_TOPICS_PAGE_SIZE,
@@ -66,6 +67,20 @@ describe("readTopicRequest", () => {
     assert.deepEqual(readTopicRequest("abc123", "Oscars"), { ok: false, reason: "both" });
   });
 
+  it("reads noTopic as taking the topic off, and a bare null still as nothing", () => {
+    assert.deepEqual(readTopicRequest(null, undefined, true), { ok: true, request: { kind: "clear" } });
+    assert.deepEqual(readTopicRequest(undefined, undefined, true), { ok: true, request: { kind: "clear" } });
+    assert.deepEqual(readTopicRequest(null, undefined), { ok: true, request: { kind: "none" } });
+    for (const noTopic of [false, "true", 1, null]) {
+      assert.deepEqual(readTopicRequest(null, undefined, noTopic), { ok: true, request: { kind: "none" } }, String(noTopic));
+    }
+  });
+
+  it("refuses noTopic beside a topic or a new name", () => {
+    assert.deepEqual(readTopicRequest("abc123", undefined, true), { ok: false, reason: "both" });
+    assert.deepEqual(readTopicRequest(undefined, "Oscars", true), { ok: false, reason: "both" });
+  });
+
   it("lower-cases a new name for finding, and keeps it for showing", () => {
     assert.deepEqual(readTopicRequest(undefined, " Oscars  2025 "), {
       ok: true,
@@ -91,6 +106,10 @@ describe("decideAttachment", () => {
 
   it("attaches nothing when nothing was asked", () => {
     assert.deepEqual(decideAttachment({ ...base, request: { kind: "none" } }), { kind: "none" });
+  });
+
+  it("attaches nothing when the topic was taken off", () => {
+    assert.deepEqual(decideAttachment({ ...base, request: { kind: "clear" } }), { kind: "none" });
   });
 
   it("an approved topic by id carries its own section, whatever the author chose", () => {
@@ -413,5 +432,21 @@ describe("mayKnowProposer", () => {
     assert.equal(mayKnowProposer("author-1", { uid: "author-1", staff: false }), true);
     assert.equal(mayKnowProposer("author-1", { uid: "mod", staff: true }), true);
     assert.equal(mayKnowProposer("author-1", { uid: "reader", staff: false }), false);
+  });
+});
+
+describe("followsAfterMerge", () => {
+  const row = (follower: string) => ({ follower, createdAt: 1 });
+
+  it("lands every follower of the merged topic on the target", () => {
+    assert.deepEqual(followsAfterMerge([row("a"), row("b")], new Set()), [row("a"), row("b")]);
+  });
+
+  it("leaves one follow for somebody who already followed both", () => {
+    assert.deepEqual(followsAfterMerge([row("a"), row("b")], new Set(["a"])), [row("b")]);
+  });
+
+  it("writes one follow per follower even if a page names one twice", () => {
+    assert.deepEqual(followsAfterMerge([row("a"), row("a")], new Set()), [row("a")]);
   });
 });

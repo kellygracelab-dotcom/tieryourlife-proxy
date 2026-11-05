@@ -38,7 +38,7 @@ function play(some: Record<string, unknown> = {}) {
 function board(extra: Record<string, unknown> = {}) {
   return {
     title: "Sci-fi films",
-    displayMode: "RANKED",
+    displayMode: "FLAT_RANKED",
     tiers: [{ uid: "tier-1", position: 0, label: "S", colorLight: "#B03A32", colorDark: "#F1948C" }],
     items: [{ uid: "item-1", tierUid: "tier-1", position: 0, title: "Arrival", source: "TMDB" }],
     ...extra,
@@ -211,7 +211,7 @@ describe("toFullBoard", () => {
     deleted: false,
     fingerprint: "f",
     title: "Sci-fi films",
-    displayMode: "RANKED",
+    displayMode: "FLAT_RANKED",
     category: "film_tv",
     coverImageUrl: null,
     coverImageUrls: [],
@@ -234,7 +234,7 @@ describe("toFullBoard", () => {
         deleted: false,
         fingerprint: "f",
         title: "Sci-fi films",
-        displayMode: "RANKED",
+        displayMode: "FLAT_RANKED",
         category: "film_tv",
         coverImageUrl: null,
         coverImageUrls: [],
@@ -255,6 +255,12 @@ describe("toFullBoard", () => {
   it("leaves out a game nobody stored for a month, as if there were none", () => {
     const game = readPlay(play()) as Play;
     assert.equal("play" in toFullBoard("b1", { ...stored, play: playToDocument(game, NOW - PLAY_LIFETIME_MS - 1) }, NOW), false);
+  });
+
+  it("hands a board stored as RANKED back as FLAT_RANKED, and an unknown layout as WRAP", () => {
+    assert.equal(toFullBoard("b1", { ...stored, displayMode: "RANKED" }, NOW).displayMode, "FLAT_RANKED");
+    assert.equal(toFullBoard("b1", { ...stored, displayMode: "HORIZONTAL_SCROLL" }, NOW).displayMode, "HORIZONTAL_SCROLL");
+    assert.equal(toFullBoard("b1", { ...stored, displayMode: undefined }, NOW).displayMode, "WRAP");
   });
 
   it("never hands the stamp back to the device", () => {
@@ -305,7 +311,7 @@ describe("a board published without its author's name", () => {
         deleted: false,
         fingerprint: null,
         title: "Sci-fi films",
-        displayMode: "RANKED",
+        displayMode: "FLAT_RANKED",
         category: null,
         coverImageUrl: null,
         coverImageUrls: [],

@@ -7,6 +7,7 @@ import {
   MAX_TIERS_PER_BOARD,
   decideStore,
   decideWrite,
+  displayModeOf,
 } from "../src/sync";
 
 const TIER_UID = "tier-1";
@@ -15,7 +16,7 @@ const POOL_UID = "tier-pool";
 function body(overrides: Record<string, unknown> = {}) {
   return {
     title: "Sci-fi films",
-    displayMode: "RANKED",
+    displayMode: "FLAT_RANKED",
     tiers: [
       {
         uid: TIER_UID,
@@ -68,7 +69,7 @@ describe("decideStore", () => {
     assert.equal(decision.ok, true);
     if (!decision.ok) return;
     assert.equal(decision.board.title, "Sci-fi films");
-    assert.equal(decision.board.displayMode, "RANKED");
+    assert.equal(decision.board.displayMode, "FLAT_RANKED");
     assert.equal(decision.board.tiers.length, 2);
     assert.equal(decision.board.tiers[1].isPool, true);
     assert.equal(decision.board.items[0].tierUid, TIER_UID);
@@ -297,6 +298,27 @@ describe("decideStore", () => {
     assert.equal(decision.ok, true);
     assert.equal(decision.ok && decision.board.displayMode, "WRAP");
     assert.equal(decision.ok && decision.board.items[0].source, "MANUAL");
+  });
+
+  it("keeps every layout the app and the site know as it was sent", () => {
+    for (const displayMode of ["WRAP", "HORIZONTAL_SCROLL", "FLAT_RANKED"]) {
+      const decision = store({ displayMode });
+      assert.equal(decision.ok && decision.board.displayMode, displayMode);
+    }
+  });
+
+  it("stores the first builds' RANKED as the flat ranked list", () => {
+    const decision = store({ displayMode: "RANKED" });
+    assert.equal(decision.ok && decision.board.displayMode, "FLAT_RANKED");
+  });
+});
+
+describe("displayModeOf", () => {
+  it("hands a stored RANKED back under the name devices know", () => {
+    assert.equal(displayModeOf("RANKED"), "FLAT_RANKED");
+    assert.equal(displayModeOf("HORIZONTAL_SCROLL"), "HORIZONTAL_SCROLL");
+    assert.equal(displayModeOf(undefined), "WRAP");
+    assert.equal(displayModeOf("flat_ranked"), "WRAP");
   });
 });
 
