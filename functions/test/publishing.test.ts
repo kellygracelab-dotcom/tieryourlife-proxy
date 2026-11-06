@@ -5,6 +5,7 @@ import {
   MAX_ITEMS_PER_LIST,
   MAX_LISTS_PER_AUTHOR,
   MAX_PREVIEW_IMAGES,
+  MAX_RANKED_TIERS,
   MAX_TITLE_LENGTH,
   decidePublish,
   picturesWanted,
@@ -22,7 +23,10 @@ function body(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function publish(overrides: Record<string, unknown> = {}, extras: Partial<{ isAnonymous: boolean; listsAlreadyPublished: number }> = {}) {
+function publish(
+  overrides: Record<string, unknown> = {},
+  extras: Partial<{ isAnonymous: boolean; listsAlreadyPublished: number; storedTierCount: number }> = {},
+) {
   return decidePublish({
     body: body(overrides),
     isAnonymous: false,
@@ -164,6 +168,31 @@ describe("decidePublish", () => {
 
     assert.equal(decision.ok, false);
     assert.equal(decision.ok === false && decision.reason, "invalid");
+  });
+
+  function tiers(count: number) {
+    return Array.from({ length: count }, (_, i) => ({ label: `T${i}`, colorLight: "#B03A32", colorDark: "#F1948C" }));
+  }
+
+  it("takes nineteen ranked tiers on a new list and refuses a twentieth by name", () => {
+    assert.equal(publish({ tiers: tiers(MAX_RANKED_TIERS) }).ok, true);
+
+    const decision = publish({ tiers: tiers(MAX_RANKED_TIERS + 1) });
+
+    assert.equal(decision.ok === false && decision.reason, "too_many_tiers");
+  });
+
+  it("lets a replaced list keep the twenty tiers it was published with, and no more", () => {
+    assert.equal(publish({ tiers: tiers(20) }, { storedTierCount: 20 }).ok, true);
+
+    const decision = publish({ tiers: tiers(21) }, { storedTierCount: 20 });
+
+    assert.equal(decision.ok === false && decision.reason, "too_many_tiers");
+  });
+
+  it("gives a replaced list with few tiers the same nineteen as a new one", () => {
+    assert.equal(publish({ tiers: tiers(MAX_RANKED_TIERS) }, { storedTierCount: 3 }).ok, true);
+    assert.equal(publish({ tiers: tiers(MAX_RANKED_TIERS + 1) }, { storedTierCount: 3 }).ok, false);
   });
 
   it("refuses more items than the cap allows", () => {

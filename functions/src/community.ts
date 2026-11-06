@@ -206,6 +206,7 @@ import {
 } from "./sectionPictures";
 import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, topicKeyOf } from "./proposalTopic";
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "./adminLists";
+import { holdStaffMoves, readMovedByStaff, recordStaffMove, stillMoved, type MovedByStaff } from "./staffMoves";
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
 import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
 import {
@@ -413,6 +414,8 @@ interface StoredList {
   translations?: Translations;
   /** The device's uid of the board it was published from; absent when the device did not say. */
   boardUid?: string;
+  /** Where staff moved the list from and to (src/staffMoves.ts); absent when it sits where its author put it. */
+  movedByStaff?: MovedByStaff;
 }
 
 interface StoredRanking {
@@ -434,6 +437,9 @@ function refuse(response: Response, decision: Exclude<PublishDecision, { ok: tru
       return;
     case "too_many_lists":
       response.status(409).json({ error: "Too many published lists", code: "TOO_MANY_LISTS" });
+      return;
+    case "too_many_tiers":
+      response.status(400).json({ error: decision.detail, code: "TOO_MANY_TIERS" });
       return;
     // Its own status so the app can name the limit instead of saying
     // "something went wrong" to someone with three hundred cards.
@@ -2767,19 +2773,8 @@ async function publish(
     ? 0
     : (await collection.where("authorUid", "==", identity.uid).count().get()).data().count;
 
-  const decision = decidePublish({
-    body,
-    isAnonymous: identity.isAnonymous,
-    listsAlreadyPublished: alreadyPublished,
-    uploaderUid: identity.uid,
-  });
-  if (!decision.ok) {
-    refuse(response, decision);
-    return;
-  }
-
-  // Whose list this is, settled before any picture is read: replacing somebody
-  // else's list should cost nothing and reach nothing.
+  // Whose list this is, settled before the body is judged (a replaced list's
+  // tiers set its limit): replacing somebody else's list should cost nothing.
   let previous: StoredList | null = null;
   if (existingId) {
     const existing = await collection.doc(existingId).get();
@@ -2792,6 +2787,18 @@ async function publish(
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
       return;
     }
+  }
+
+  const decision = decidePublish({
+    body,
+    isAnonymous: identity.isAnonymous,
+    listsAlreadyPublished: alreadyPublished,
+    uploaderUid: identity.uid,
+    storedTierCount: previous?.tiers?.length,
+  });
+  if (!decision.ok) {
+    refuse(response, decision);
+    return;
   }
 
   // Where the board came from, settled before the pictures: the same cards
@@ -2808,24 +2815,25 @@ async function publish(
 
   // Which section, and which topic, settled before the pictures as well: a
   // refusal of either should cost nothing.
-  const section = await resolveSectionChoice(identity, decision.draft.category, previous?.category ?? null);
-  if (!section.ok) {
-    response.status(400).json({ error: "That section does not take new lists", code: "INVALID", detail: "category" });
-    return;
-  }
   const asked = readTopicRequest(source.topicId, source.newTopic, source.noTopic);
   if (!asked.ok) {
     refuseTopicRequest(response, asked.reason);
     return;
   }
-  const attachment = await resolveAttachment(identity, asked.request, section.category);
+  const placed = holdStaffMoves(readMovedByStaff(previous?.movedByStaff), { category: decision.draft.category, topic: asked.request });
+  const section = await resolveSectionChoice(identity, placed.category, previous?.category ?? null);
+  if (!section.ok) {
+    response.status(400).json({ error: "That section does not take new lists", code: "INVALID", detail: "category" });
+    return;
+  }
+  const attachment = await resolveAttachment(identity, placed.topic, section.category);
   if (attachment.kind === "refuse") {
     refuseAttachment(response, attachment.reason);
     return;
   }
-  const implied = asked.request.kind === "none"
+  const implied = placed.topic.kind === "none"
     ? impliedTopic({
-        request: asked.request,
+        request: placed.topic,
         viaTopic: section.viaTopic === undefined ? null : await liveTopic(section.viaTopic),
         chosenCategory: section.category,
         previous,
@@ -2873,6 +2881,10 @@ async function publish(
     : attachment.kind === "create"
       ? attachment.name
       : implied?.topicName ?? null;
+  // A topic decides the section: an approved one brings its own, a waiting
+  // one holds the list under "other" until somebody has looked. So a list
+  // with a topic never waits for a proposed section as well.
+  const category = attachment.kind === "none" ? implied?.category ?? section.category : attachment.category;
 
   const document = {
     authorUid: byline.uid,
@@ -2882,10 +2894,7 @@ async function publish(
     titleLower: list.titleLower,
     // A title kept keeps its keys, translations and all; a new one starts from its own words.
     ...(previous?.title === list.title && previous.searchKeys !== undefined ? {} : searchFieldsFor([list.title])),
-    // A topic decides the section: an approved one brings its own, a waiting
-    // one holds the list under "other" until somebody has looked. So a list
-    // with a topic never waits for a proposed section as well.
-    category: attachment.kind === "none" ? implied?.category ?? section.category : attachment.category,
+    category,
     proposedSection: attachment.kind === "none" && implied === null ? section.proposedSection : null,
     topicId,
     topicName,
@@ -2897,6 +2906,7 @@ async function publish(
     tierColors: list.tierColors,
     tierCounts: tierCountsOf(list.tiers.length, list.items),
     ...(boardUid === null ? {} : { boardUid }),
+    ...(previous === null ? {} : { movedByStaff: stillMoved(placed.held, { category, topicId }) ?? FieldValue.delete() }),
     basedOn: publication.basedOn,
     anonymous: byline.speaker !== null || anonymityAfter(decision.draft.anonymous, previous),
     updatedAt: FieldValue.serverTimestamp(),
@@ -3469,6 +3479,10 @@ async function unpublish(response: Response, identity: Identity, id: string, byl
       untilMs: Date.now() + HOLD_MS,
       createdAt: FieldValue.serverTimestamp(),
     });
+    // So the website can tell this from a takedown: either way the list is gone while it was hidden.
+    if (byline.speaker === null) {
+      auditInBatch(batch, auditEntry(stored.authorUid, "author", "list.withdrawn_hidden", `${PUBLISHED}/${id}`, { underReview: true }, null));
+    }
   }
   if (byline.speaker !== null) {
     auditInBatch(batch, auditEntry(identity.uid, byline.speaker, "list.editorial_unpublish", `${PUBLISHED}/${id}`, { title: stored.title }, null));
@@ -4250,7 +4264,12 @@ async function moveList(response: Response, identity: Identity, listId: string, 
         : { category, topicId: null, topicName: null, proposedSection: null };
     }
 
-    transaction.update(ref, update);
+    const movedByStaff = recordStaffMove(
+      readMovedByStaff(stored.movedByStaff),
+      { category: stored.category, topicId: from },
+      { category: update.category, topicId: update.topicId },
+    );
+    transaction.update(ref, { ...update, movedByStaff: movedByStaff ?? FieldValue.delete() });
     const change = changedFields(stored as unknown as Record<string, unknown>, update);
     auditInTransaction(transaction, auditEntry(identity.uid, role, "list.move", `${PUBLISHED}/${listId}`, change.before, change.after));
     if (from !== null && from !== update.topicId) {

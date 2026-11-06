@@ -30,6 +30,8 @@ export const AUDIT_ACTIONS = [
   "list.editorial_edit",
   "list.editorial_unpublish",
   "list.editorial_translate",
+  /** Not staff: an author withdrawing a list while it was out of the feed. */
+  "list.withdrawn_hidden",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

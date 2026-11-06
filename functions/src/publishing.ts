@@ -18,7 +18,10 @@ export const MAX_LISTS_PER_AUTHOR = 50;
  * document, which a count cannot express, so the assembled snapshot is weighed as well.
  */
 export const MAX_ITEMS_PER_LIST = 2000;
+/** The most tiers any stored list has: lists published before the limit below may have twenty. */
 export const MAX_TIERS_PER_LIST = 20;
+/** Ranked tiers a new publication may bring: a board's nineteen, its pool being the unranked cards. */
+export const MAX_RANKED_TIERS = 19;
 export const MAX_SNAPSHOT_BYTES = 700_000;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
@@ -101,6 +104,7 @@ export interface PublishedList {
 export type PublishRejection =
   | { reason: "not_signed_in" }
   | { reason: "too_many_lists" }
+  | { reason: "too_many_tiers"; detail: string }
   | { reason: "too_large"; detail: string }
   | { reason: "invalid"; detail: string };
 
@@ -182,6 +186,13 @@ export interface PublishInput {
   listsAlreadyPublished: number;
   /** Whose folder the list's own pictures are copied from. */
   uploaderUid: string;
+  /** How many tiers the list being replaced already has; absent for a new list. */
+  storedTierCount?: number;
+}
+
+/** A replaced list may keep the tiers it was published with, when that was more than a new one may have. */
+export function tierLimitFor(storedTierCount: number | undefined): number {
+  return Math.max(MAX_RANKED_TIERS, storedTierCount ?? 0);
 }
 
 export function decidePublish({
@@ -189,6 +200,7 @@ export function decidePublish({
   isAnonymous,
   listsAlreadyPublished,
   uploaderUid,
+  storedTierCount,
 }: PublishInput): PublishDecision {
   // Reading and copying stay open to everyone; putting your name on something
   // does not.
@@ -218,8 +230,9 @@ export function decidePublish({
   if (!rawTiers || rawTiers.length === 0) {
     return { ok: false, reason: "invalid", detail: "A list needs at least one tier" };
   }
-  if (rawTiers.length > MAX_TIERS_PER_LIST) {
-    return { ok: false, reason: "too_large", detail: "Too many tiers" };
+  const tierLimit = tierLimitFor(storedTierCount);
+  if (rawTiers.length > tierLimit) {
+    return { ok: false, reason: "too_many_tiers", detail: `At most ${tierLimit} ranked tiers` };
   }
 
   const tiers: PublishedTier[] = [];

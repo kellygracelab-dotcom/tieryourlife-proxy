@@ -14,6 +14,12 @@ import { PROJECT, assertEmulatorsOnly, call, identity, ownerToken, seed } from "
 
 const TIER = { label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" };
 
+/** An account of its own: the smoke's main one is banned along the way. */
+async function newAuthor(prefix: string): Promise<string> {
+  const guest = (await identity("signUp", {})).idToken;
+  return (await identity("update", { idToken: guest, email: `${prefix}-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
+}
+
 describe("the proxy under the demo emulators", () => {
   let guest = "";
   let token = "";
@@ -148,6 +154,13 @@ describe("the proxy under the demo emulators", () => {
     const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-again")).collection("publishedLists");
     await lists.doc(String(first.body.id)).set({ underReview: true }, { merge: true });
     assert.equal((await call(author, "DELETE", `/lists/${first.body.id}`)).status, 204);
+    const marker = await getFirestore(initializeApp({ projectId: PROJECT }, "smoke-marker")).collection("auditLog")
+      .where("target", "==", `publishedLists/${first.body.id}`).where("what", "==", "list.withdrawn_hidden").get();
+    assert.equal(marker.size, 1);
+    assert.deepEqual(
+      (({ role, before, after }) => ({ role, before, after }))(marker.docs[0].data()),
+      { role: "author", before: { underReview: true }, after: null },
+    );
 
     const again = await call(author, "POST", "/lists", { ...body, boardUid: `copy-${Date.now().toString(36)}` });
     assert.equal(again.status, 201, JSON.stringify(again.body));
@@ -164,6 +177,50 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await call(owner, "POST", `/lists/${first.body.id}/dismiss`, {})).status, 204);
     const fourth = await call(author, "POST", "/lists", { ...body, boardUid: `fourth-${Date.now().toString(36)}` });
     assert.equal((await lists.doc(String(fourth.body.id)).get()).get("underReview"), false);
+  });
+
+  it("takes nineteen ranked tiers on a new list, and lets a list of twenty keep its twenty", async () => {
+    const author = await newAuthor("tiers");
+    const tiers = (count: number) => Array.from({ length: count }, (_unused, index) => ({ ...TIER, label: `T${index}` }));
+    const body = { title: "Tiers smoke list", category: "film_tv", tiers: tiers(19), items: [{ title: "Card", tierIndex: 0 }] };
+    const refused = await call(author, "POST", "/lists", { ...body, tiers: tiers(20) });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.code, "TOO_MANY_TIERS");
+    const published = await call(author, "POST", "/lists", body);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const id = String(published.body.id);
+
+    assert.equal((await call(author, "POST", `/lists/${id}`, { ...body, tiers: tiers(20) })).body.code, "TOO_MANY_TIERS");
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-tiers")).collection("publishedLists");
+    await lists.doc(id).set({ tiers: tiers(20) }, { merge: true });
+    assert.equal((await call(author, "POST", `/lists/${id}`, { ...body, tiers: tiers(20) })).status, 200);
+    assert.equal((await call(author, "POST", `/lists/${id}`, { ...body, tiers: tiers(21) })).body.code, "TOO_MANY_TIERS");
+  });
+
+  it("keeps a list where staff moved it when its author republishes the same board, until the author says otherwise", async () => {
+    const { topic } = await seed();
+    const author = await newAuthor("moved");
+    const body = { title: "Moved smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
+    const published = await call(author, "POST", "/lists", body);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const id = String(published.body.id);
+    assert.equal((await call(await ownerToken(), "POST", `/lists/${id}/move`, { topicId: topic.id })).status, 204);
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-move")).collection("publishedLists");
+    assert.deepEqual((await lists.doc(id).get()).get("movedByStaff"), {
+      category: { from: "film_tv", to: topic.section },
+      topicId: { from: null, to: topic.id },
+    });
+
+    assert.deepEqual(await call(author, "POST", `/lists/${id}`, body), { status: 200, body: { id, topicId: topic.id, underReview: false } });
+    const kept = await lists.doc(id).get();
+    assert.equal(kept.get("category"), topic.section);
+    assert.equal(kept.get("topicId"), topic.id);
+
+    assert.deepEqual(await call(author, "POST", `/lists/${id}`, { ...body, category: "games" }), { status: 200, body: { id, topicId: null, underReview: false } });
+    const chosen = await lists.doc(id).get();
+    assert.equal(chosen.get("category"), "games");
+    assert.equal(chosen.get("topicId"), null);
+    assert.equal(chosen.get("movedByStaff"), undefined);
   });
 
   it("answers every catalogue empty, with no keys", async () => {
