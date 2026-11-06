@@ -149,6 +149,13 @@ describe("decideStore", () => {
     assert.deepEqual(decision.ok && decision.board.coverImageUrls, ["https://example.test/b.jpg", "https://example.test/a.jpg"]);
   });
 
+  it("keeps the owner's own pictures in the collage of their own backup", () => {
+    const own = "https://firebasestorage.googleapis.com/v0/b/x/o/users%2Fu1%2Fpictures%2Fp1?alt=media&token=t";
+    const decision = store({ coverImageUrls: [own, "https://example.test/a.jpg"] });
+
+    assert.deepEqual(decision.ok && decision.board.coverImageUrls, [own, "https://example.test/a.jpg"]);
+  });
+
   // A card pointing at a tier that is not here would come back invisible,
   // which reads as losing it rather than as a bad write.
   it("refuses a card that names a tier the board does not have", () => {

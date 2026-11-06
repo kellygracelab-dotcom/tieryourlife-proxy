@@ -2765,6 +2765,7 @@ async function publish(
     body,
     isAnonymous: identity.isAnonymous,
     listsAlreadyPublished: alreadyPublished,
+    uploaderUid: identity.uid,
   });
   if (!decision.ok) {
     refuse(response, decision);
