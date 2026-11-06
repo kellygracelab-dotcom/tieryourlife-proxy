@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import {
   decideHide,
   groupReports,
+  weighsOnHiding,
+  banTarget,
   REPORTS_BEFORE_HIDING,
   type ListStanding,
   type QueuedReport,
@@ -17,9 +19,32 @@ function standing(some: Partial<ListStanding>): ListStanding {
     coverImageUrl: null,
     authorUid: null,
     authorPhotoUrl: null,
+    anonymous: false,
     ...some,
   };
 }
+
+describe("banTarget", () => {
+  it("bans the author the list names, though its complaints name nobody", () => {
+    assert.equal(banTarget("author-1", ["", ""]), "author-1");
+  });
+
+  it("falls back on a complaint once the list is gone", () => {
+    assert.equal(banTarget(undefined, ["", "author-1"]), "author-1");
+  });
+
+  it("bans nobody when nothing names anybody", () => {
+    assert.equal(banTarget(undefined, [""]), null);
+  });
+});
+
+describe("weighsOnHiding", () => {
+  it("counts an account's complaint, not a guest's or a banned account's", () => {
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: false }), true);
+    assert.equal(weighsOnHiding({ isAnonymous: true, banned: false }), false);
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: true }), false);
+  });
+});
 
 describe("decideHide", () => {
   it("leaves a list up while one person has complained", () => {

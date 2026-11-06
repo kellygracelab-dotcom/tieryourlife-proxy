@@ -57,11 +57,16 @@ export interface Topic {
 export interface TopicReader {
   uid: string;
   staff: boolean;
+  owner?: boolean;
 }
 
-/** Whether the reader may be told who proposed a topic: the proposer themselves, and the staff. */
-export function mayKnowProposer(createdBy: string, reader: TopicReader): boolean {
-  return reader.staff || createdBy === reader.uid;
+/**
+ * Whether the reader may be told who proposed a topic: the proposer themselves,
+ * and the staff; a topic first named by an anonymous list, only the owner.
+ */
+export function mayKnowProposer(topic: { createdBy: string; proposedAnonymously?: unknown }, reader: TopicReader): boolean {
+  if (topic.createdBy === reader.uid) return true;
+  return topic.proposedAnonymously === true ? reader.owner === true : reader.staff;
 }
 
 /**

@@ -23,6 +23,26 @@ export const NEVER_HIDES: Reason = "wrong_category";
 export const REPORTS_BEFORE_HIDING = 3;
 export const HIDES_ON_FIRST: Reason = "sexual";
 
+/**
+ * Whether a complaint counts towards taking a list out of the feed. A guest is
+ * one request away and a banned account has shown what it does, so theirs are
+ * kept for the staff to read but move nothing.
+ */
+export function weighsOnHiding(reporter: { isAnonymous: boolean; banned: boolean }): boolean {
+  return !reporter.isAnonymous && !reporter.banned;
+}
+
+/**
+ * Whom a takedown bans: the author the list itself names, and only when the
+ * list is gone, the one a complaint kept. A complaint about an anonymous list
+ * names nobody, so the list has to be asked first.
+ */
+export function banTarget(listAuthorUid: unknown, filedAuthorUids: unknown[]): string | null {
+  const named = (uid: unknown): uid is string => typeof uid === "string" && uid.length > 0;
+  if (named(listAuthorUid)) return listAuthorUid;
+  return filedAuthorUids.find(named) ?? null;
+}
+
 export interface HideInput {
   reasons: Reason[];
   /** True once somebody has looked at this snapshot and left it up. */
@@ -62,6 +82,8 @@ export interface ListStanding {
   coverImageUrl: string | null;
   authorUid: string | null;
   authorPhotoUrl: string | null;
+  /** Published without a name: its author goes only to the owner. */
+  anonymous: boolean;
 }
 
 export interface QueuedList {
@@ -70,6 +92,8 @@ export interface QueuedList {
   authorName: string;
   authorUid: string | null;
   authorPhotoUrl: string | null;
+  /** Published without a name: its author goes only to the owner. */
+  anonymous: boolean;
   coverImageUrl: string | null;
   /** Newest first, because the last thing said is the most useful. */
   reasons: Reason[];
@@ -106,6 +130,7 @@ export function groupReports(
         coverImageUrl: null,
         authorUid: null,
         authorPhotoUrl: null,
+        anonymous: false,
       };
       return {
         listId: newest[0].listId,
@@ -113,6 +138,7 @@ export function groupReports(
         authorName: newest[0].authorName,
         authorUid: known.authorUid,
         authorPhotoUrl: known.authorPhotoUrl,
+        anonymous: known.anonymous,
         coverImageUrl: known.coverImageUrl,
         reasons: newest.map((one) => one.reason),
         notes: newest.map((one) => one.note).filter((note): note is string => note !== null),

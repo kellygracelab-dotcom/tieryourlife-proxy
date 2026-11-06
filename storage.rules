@@ -9,7 +9,8 @@ rules_version = '2';
 // it does nothing with.
 //
 // The opening is as narrow as it goes: one person's own folder, one file size,
-// images only. Nothing here can reach Firestore.
+// images only. Nothing here can reach Firestore. A rule sees only the type the
+// client declares, so `checkUpload` reads the bytes and the daily count after.
 //
 // Written as two rules rather than one because allow clauses are ORed, so a
 // broad `allow read, write` beside a careful one is simply the broad one.
@@ -24,7 +25,7 @@ service firebase.storage {
         && request.auth.uid == uid
         && pictureId.matches('^[A-Za-z0-9_-]+$')
         && request.resource.size < 4 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
+        && request.resource.contentType.matches('image/(jpeg|png|webp|gif)');
     }
 
     // The feed's own copies. Published means published: anybody may look,

@@ -515,12 +515,13 @@ async function keepPicture(raw: string, uid: string): Promise<Kept> {
   const db = getFirestore();
   const usage = db.doc(`${WEB_USAGE}/${dayKey(Date.now())}/keeps/${uid}`);
   if (((await usage.get()).get("count") ?? 0) >= KEEP_DAILY_PER_USER) return { error: "KEEP_LIMIT" };
+  // Counted before the fetch: a refused address costs the server a fetch too.
+  await usage.set({ count: FieldValue.increment(1) }, { merge: true });
 
   const fetched = isDemoEmulator() ? { bytes: STUB_PICTURE, type: "image/png" } : await downloadPicture(url);
   if ("error" in fetched) return fetched;
   const pictureId = randomUUID();
   await getStorage().bucket().file(`users/${uid}/pictures/${pictureId}`).save(fetched.bytes, { contentType: fetched.type, resumable: false });
-  await usage.set({ count: FieldValue.increment(1) }, { merge: true });
   return { pictureId };
 }
 
@@ -543,7 +544,30 @@ async function downloadPicture(start: URL): Promise<{ bytes: Buffer; type: strin
   const type = (reply.headers.get("content-type") ?? "").split(";")[0]?.trim() ?? "";
   if (!/^image\/(jpeg|png|webp|gif)$/.test(type)) return { error: "NOT_A_PICTURE" };
   if (Number(reply.headers.get("content-length") ?? "0") > KEEP_MAX_BYTES) return { error: "TOO_BIG" };
-  const bytes = Buffer.from(await reply.arrayBuffer());
-  if (bytes.length === 0 || bytes.length > KEEP_MAX_BYTES) return { error: "TOO_BIG" };
+  let bytes: Buffer | null;
+  try {
+    bytes = await readAtMost(reply, KEEP_MAX_BYTES);
+  } catch {
+    return { error: "UNREACHABLE" };
+  }
+  if (bytes === null || bytes.length === 0) return { error: "TOO_BIG" };
   return { bytes, type };
+}
+
+/** The body, or null as soon as it passes [max]: a missing or lying content-length must not decide the memory. */
+export async function readAtMost(reply: globalThis.Response, max: number): Promise<Buffer | null> {
+  if (!reply.body) return Buffer.alloc(0);
+  const reader = reply.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks);
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
 }

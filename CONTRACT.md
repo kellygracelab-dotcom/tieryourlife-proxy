@@ -73,7 +73,8 @@ The one description of what the proxy answers, read by the website and by the An
 | House translations | 2000 per locale, 200 characters a side, the list document 1 000 000 bytes with them | `editorial.ts` |
 | Picture search query | 2–100 characters, page 1–20 | `pictureSearch.ts` |
 | Web picture search | asked only when fewer than 6 good hits; 30 per account per day; 50 000 a month for everyone | `pictureSources.ts` |
-| Kept web picture | 4 MB, 3 redirects, 300 per account per day | `pictureSearch.ts` |
+| Kept web picture | 4 MB (read no further), 3 redirects, 300 attempts per account per day, refused ones too | `pictureSearch.ts` |
+| Own picture in Storage (`users/{uid}/pictures/`) | under 4 MB, declared `image/jpeg`, `png`, `webp` or `gif` (rules); the bytes must start as JPEG, PNG, GIF or WebP; 2000 uploads per account per UTC day; otherwise `checkUpload` removes it right after it lands | `storage.rules`, `pictureBytes.ts` |
 | Generation prompt | 1000 | `generate.ts` |
 | Free generations, daily ceiling, lease | 3 per account, 100 a UTC day, 6 minutes | `quota.ts` |
 | Page sizes | feed, house, anonymous, admin lists 20; topics 20 (max 50); rankings 30; board index 100; reports read 50; own topics, pending topics 100 | |
@@ -145,9 +146,9 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 ### Reports and moderation
 
-**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot.
+**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests and banned accounts are filed and shown to staff but do not count towards that.
 
-**`GET /lists/reports`**: staff. `200 {reports: QueuedList[]}` from the 50 newest reports, one row per list, hidden lists first: `{listId, listTitle, authorName, authorUid, authorPhotoUrl, coverImageUrl, reasons, notes, reportCount, newestAtMs, hidden, reviewed}`.
+**`GET /lists/reports`**: staff. `200 {reports: QueuedList[]}` from the 50 newest reports, one row per list, hidden lists first: `{listId, listTitle, authorName, authorUid, authorPhotoUrl, anonymous, coverImageUrl, reasons, notes, reportCount, newestAtMs, hidden, reviewed}`. On an anonymous list (`anonymous: true`) only the owner is told the author; a moderator gets `authorName: ""`, `authorUid: null`, `authorPhotoUrl: null`.
 
 **`POST /lists/{id}/takedown`**: staff. Body `{ban?}`, `ban` one of `week`, `month`, `three_months`, `six_months`, `forever` (a month is 30 days). Deletes the list and its reports, and bans the author when asked: `204`.
 
@@ -194,7 +195,7 @@ A reader's own placing of somebody's list, kept beside it.
 
 **`GET /lists/topics/mine`**: what the caller proposed, waiting ones first: `200 {topics: Topic[]}`.
 
-**`GET /lists/topics/pending`**: staff. Oldest first: `200 {topics: (Topic + {proposerName, requestedSection, similar: Topic[]})[]}`.
+**`GET /lists/topics/pending`**: staff. Oldest first: `200 {topics: (Topic + {proposerName, requestedSection, similar: Topic[]})[]}`. A topic first named by an anonymous list gives a moderator `proposerName: ""` and no `createdBy`; the owner is told both.
 
 **`GET /lists/topics/{id}`**: `200 Topic`. `400 INVALID`, `404 NOT_FOUND`.
 
@@ -323,6 +324,7 @@ Not callable:
 - `sweepPictures`: daily, deletes own pictures no board names, after their first day.
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `houseFill`: answers picture-search jobs that `scripts/house-fill.ts` writes to `houseFillJobs`.
+- `checkUpload` (us-east1, beside the bucket): on every file landing in `users/{uid}/pictures/`, removes it if its first bytes are not JPEG, PNG, GIF or WebP, or if it is the account's 2001st upload that UTC day. The client is not told; its download URL then answers 404, and `keep` or publishing treat the picture as missing.
 
 ## Shapes
 
@@ -337,7 +339,7 @@ Not callable:
 
 **Ranking** `{uid, authorName, authorPhotoUrl, arrangement, rows, tierLabels, updatedAtMs, mine?}`.
 
-**Topic** `{id, name, names, section, status: "pending" | "approved" | "rejected" | "merged", listCount, followerCount, following, createdBy?, mergedInto, pictureUrl}`. `createdBy` goes only to its proposer and staff.
+**Topic** `{id, name, names, section, status: "pending" | "approved" | "rejected" | "merged", listCount, followerCount, following, createdBy?, mergedInto, pictureUrl}`. `createdBy` goes only to its proposer and staff, and for a topic first named by an anonymous list only to its proposer and the owner.
 
 **SectionView** `{id, name, names, icon, pictureUrl, tint, topicBg, topicIcon, status: "approved" | "pending" | "declined" | "merged", builtIn, hidden, rank, approvedAt, listCount, lists30d, newThisWeek, followerCount, following, collage}`. Each colour is `{light, dark}`; `collage` is four picture addresses or none.
 - Its proposer, while it is not approved, also gets `fileUnder`, `proposerUid`, `declineNote`, `mergedInto`, `mergedTopicId` and `waitingLists`.

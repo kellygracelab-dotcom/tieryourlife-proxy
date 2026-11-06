@@ -8,7 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
-import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
+import { banTarget, decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
   ENOUGH_TO_JUDGE,
@@ -494,6 +494,8 @@ interface StoredTopic {
   requestedSection: string | null;
   createdBy: string;
   proposerName: string;
+  /** Named by a list published anonymously, so its proposer is that list's author. */
+  proposedAnonymously?: boolean;
   createdAt?: FirebaseFirestore.Timestamp;
   decidedAt?: FirebaseFirestore.Timestamp | null;
   decidedBy?: string | null;
@@ -527,7 +529,7 @@ export function toTopic(id: string, data: StoredTopic, following: boolean, reade
     listCount: data.listCount ?? 0,
     followerCount: data.followerCount ?? 0,
     following,
-    ...(mayKnowProposer(data.createdBy, reader) ? { createdBy: data.createdBy } : {}),
+    ...(mayKnowProposer(data, reader) ? { createdBy: data.createdBy } : {}),
     mergedInto: data.mergedInto ?? null,
     pictureUrl: data.picture?.url ?? null,
   };
@@ -2560,7 +2562,8 @@ async function proposalsWaitedFor(docs: readonly FirebaseFirestore.DocumentSnaps
  * would hide how many there were, which is the useful part.
  */
 async function readReports(response: Response, identity: Identity): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
+  const role = await roleOf(identity);
+  if (role === null) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
@@ -2577,7 +2580,7 @@ async function readReports(response: Response, identity: Identity): Promise<void
     return {
       listId: data.listId,
       listTitle: data.listTitle,
-      authorName: data.authorName,
+      authorName: data.anonymous === true ? "" : data.authorName,
       reason: data.reason,
       note: data.note ?? null,
       createdAtMs: data.createdAt?.toMillis?.() ?? 0,
@@ -2591,9 +2594,14 @@ async function readReports(response: Response, identity: Identity): Promise<void
   const lists = listIds.length > 0 ? await db.getAll(
     ...listIds.map((id) => db.collection(PUBLISHED).doc(id)),
   ) : [];
+  // An anonymous list's author is the owner's to know, as in admin/lists, and
+  // read from the list itself: reports filed before this kept the name.
+  const named = new Map<string, string>();
   const state = new Map(
     lists.map((doc) => {
       const data = (doc.data() ?? {}) as StoredList;
+      const shown = !doc.exists || !isAnonymous(data) || role === "owner";
+      if (doc.exists) named.set(doc.id, shown ? data.authorName : "");
       return [doc.id, {
         hidden: data.underReview === true,
         reviewed: data.reviewed === true,
@@ -2601,11 +2609,13 @@ async function readReports(response: Response, identity: Identity): Promise<void
         // otherwise -- the feed shows the same thing, so this is what the
         // person complaining was looking at.
         coverImageUrl: collageImage({ coverImageUrl: data.coverImageUrl ?? null, previewImages: data.previewImages ?? [] }),
-        authorUid: data.authorUid ?? null,
-        authorPhotoUrl: data.authorPhotoUrl ?? null,
+        authorUid: shown ? data.authorUid ?? null : null,
+        authorPhotoUrl: shown ? data.authorPhotoUrl ?? null : null,
+        anonymous: isAnonymous(data),
       }];
     }),
   );
+  for (const one of filed) one.authorName = named.get(one.listId) ?? one.authorName;
 
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({ reports: groupReports(filed, state) });
@@ -2636,15 +2646,14 @@ async function settleReports(
   ]);
   // The topic's count of lists comes down with the list; read before the batch removes it.
   const topicId = listDoc.exists ? (listDoc.data() as StoredList).topicId ?? null : null;
-  // Read before the batch deletes them: the author is on the complaint, and
-  // after the batch there is nothing left to ask.
-  const authorUid = filed.docs.map((doc) => doc.data().authorUid as string).find(Boolean) ?? null;
+  const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
+  // Read before the batch deletes the list and the complaints.
+  const authorUid = banTarget(listed?.authorUid, filed.docs.map((doc) => doc.data().authorUid));
   // What they were reported for, kept on the ban so the moderator's own
   // memory of why is not the only record of it.
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
   const batch = db.batch();
   filed.docs.forEach((doc) => batch.delete(doc.ref));
-  const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
   const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
   if (takeDown) {
     auditInBatch(batch, auditEntry(identity.uid, role, "report.takedown", `${PUBLISHED}/${listId}`,
@@ -2915,6 +2924,7 @@ async function publish(
         requestedSection: attachment.requestedSection,
         createdBy: identity.uid,
         proposerName: identity.name ?? "Anonymous",
+        ...(document.anonymous ? { proposedAnonymously: true } : {}),
         createdAt: FieldValue.serverTimestamp(),
         decidedAt: null,
         decidedBy: null,
@@ -3369,12 +3379,16 @@ async function report(
 
   // One report per person per list: a second is the same complaint, not a
   // stronger one.
+  const anonymous = isAnonymous(stored);
+  const banned = !identity.isAnonymous && isBanned(await readBan(identity.uid), Date.now());
   await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
     listId,
     listTitle: stored.title,
-    authorUid: stored.authorUid,
-    authorName: stored.authorName,
+    authorUid: anonymous ? "" : stored.authorUid,
+    authorName: anonymous ? "" : stored.authorName,
+    anonymous,
     reporterUid: identity.uid,
+    weighs: weighsOnHiding({ isAnonymous: identity.isAnonymous, banned }),
     reason,
     note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
     createdAt: FieldValue.serverTimestamp(),
@@ -3383,7 +3397,7 @@ async function report(
   // Read back rather than counted up: reports are one per person, and a second
   // one from the same person replaced the first rather than adding to it.
   const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
-  const reasons = filed.docs.map((doc) => doc.data().reason as typeof reason);
+  const reasons = filed.docs.filter((doc) => doc.get("weighs") !== false).map((doc) => doc.data().reason as typeof reason);
   if (decideHide({ reasons, reviewed: stored.reviewed === true })) {
     await list.ref.set({ underReview: true }, { merge: true });
   }
@@ -3585,10 +3599,12 @@ async function readMyTopics(response: Response, identity: Identity): Promise<voi
  * approved topics it might be a twin of -- the three things a decision needs.
  */
 async function readPendingTopics(response: Response, identity: Identity): Promise<void> {
-  if (!(await isModeratorNow(identity))) {
+  const role = await roleOf(identity);
+  if (role === null) {
     response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
     return;
   }
+  const reader = { uid: identity.uid, staff: true, owner: role === "owner" };
   const db = getFirestore();
   const snapshot = await db.collection(TOPICS).where("status", "==", "pending").limit(TOPICS_READ).get();
   const waiting = snapshot.docs
@@ -3613,11 +3629,11 @@ async function readPendingTopics(response: Response, identity: Identity): Promis
           ).docs.map((doc) => ({ doc, known: knownTopic(doc.id, doc.data() as StoredTopic) }));
       const similar = similarTopics(pending, candidates.map((one) => one.known)).map((known) => {
         const found = candidates.find((one) => one.known.id === known.id)!;
-        return toTopic(found.doc.id, found.doc.data() as StoredTopic, false, { uid: identity.uid, staff: true });
+        return toTopic(found.doc.id, found.doc.data() as StoredTopic, false, reader);
       });
       return {
-        ...toTopic(id, data, false, { uid: identity.uid, staff: true }),
-        proposerName: data.proposerName,
+        ...toTopic(id, data, false, reader),
+        proposerName: mayKnowProposer(data, reader) ? data.proposerName : "",
         requestedSection: data.requestedSection ?? null,
         similar,
       };
