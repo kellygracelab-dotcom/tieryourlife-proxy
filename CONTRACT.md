@@ -98,7 +98,7 @@ All routes: App Check and user. `lists` keeps one instance warm.
 
 Answer `200 {lists: ListSummary[], nextCursor: string | null}`, plus `followingNobody: true` when `following=1` and the caller follows nothing. Lists under review are left out. **Cursor:** without `following=1` it is the last list's id; with it, `"<updatedAt or takeCount>:<id>"`. A short page is the last; a full page may be followed by an empty one. `409 CURSOR_GONE` when the list an id cursor names was taken down meanwhile: start again from the top.
 
-**`GET /lists/{id}`**: `200 ListSummary + {tiers: PublishedTier[], items: PublishedItem[], translations}`. `404 NOT_FOUND` when there is none, or it is under review and the caller is not staff.
+**`GET /lists/{id}`**: `200 ListSummary + {tiers: PublishedTier[], items: PublishedItem[], translations, picturesFrom}`. `picturesFrom`: the ids of the lists whose pictures this one holds copies of, as `published/{id}/{original}-{name}`; a client editing its own list sends those addresses back as they are, and copies everything else in its folder as its own photos. `404 NOT_FOUND` when there is none, or it is under review and the caller is not staff.
 
 **`GET /lists/mine`**: the caller's own lists, newest first, not paged: `200 {lists: (ListSummary + {authorUid, authorName, authorPhotoUrl, anonymous} as stored + {proposedSection, proposedSectionName} + boardUid? + underReview)[]}`. `underReview: true` means the list is out of the feed for moderation: its author sees it, nobody else does. `proposedSection` is the waiting proposal the list will move into, or `null`. `boardUid` is present when the publication said it.
 

@@ -395,6 +395,7 @@ interface StoredList {
    * before any of this existed, which reads as false and is correct.
    */
   underReview?: boolean;
+  picturesFrom?: string[];
   /**
    * Somebody looked at this snapshot and left it up, so complaints about it no
    * longer take it out of the feed. Per snapshot: republishing makes a new one.
@@ -2736,6 +2737,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     tiers: data.tiers,
     items: data.items,
     translations: data.translations ?? {},
+    picturesFrom: Array.isArray(data.picturesFrom) ? data.picturesFrom : [],
   });
 }
 
