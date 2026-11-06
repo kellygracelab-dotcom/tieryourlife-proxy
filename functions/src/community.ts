@@ -64,6 +64,7 @@ import {
   copyForPublication,
   discardPublished,
   discardUnusedPublished,
+  adoptForeignCopies,
   publishedNamesIn,
 } from "./publishedPictures";
 import {
@@ -2871,7 +2872,7 @@ async function publish(
   const addresses = new Map(
     outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
   );
-  const list = settle(decision.draft, addresses);
+  const list = await adoptForeignCopies(target, settle(decision.draft, addresses));
 
   // A new topic is named here, with the list, so the two are written together.
   const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
