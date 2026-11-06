@@ -64,6 +64,7 @@ import {
   copyForPublication,
   discardPublished,
   discardUnusedPublished,
+  publishedNamesIn,
 } from "./publishedPictures";
 import {
   FEED_PAGE_SIZE,
@@ -2987,7 +2988,14 @@ async function publish(
     await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
-    await discardUnusedPublished(existingId, [...addresses.keys()]);
+    await discardUnusedPublished(existingId, [
+      ...addresses.keys(),
+      ...publishedNamesIn(existingId, [
+        ...document.items.map((item) => item.imageUrl),
+        document.coverImageUrl,
+        ...document.previewImages,
+      ]),
+    ]);
     response.status(200).json({ id: existingId, topicId, underReview: document.underReview });
     return;
   }
