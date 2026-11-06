@@ -64,6 +64,7 @@ import {
   copyForPublication,
   discardPublished,
   discardUnusedPublished,
+  publishedNamesIn,
 } from "./publishedPictures";
 import {
   FEED_PAGE_SIZE,
@@ -2987,7 +2988,14 @@ async function publish(
     await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
-    await discardUnusedPublished(existingId, [...addresses.keys()]);
+    await discardUnusedPublished(existingId, [
+      ...addresses.keys(),
+      ...publishedNamesIn(existingId, [
+        ...document.items.map((item) => item.imageUrl),
+        document.coverImageUrl,
+        ...document.previewImages,
+      ]),
+    ]);
     response.status(200).json({ id: existingId, topicId, underReview: document.underReview });
     return;
   }
@@ -3314,7 +3322,9 @@ async function resolveAttachment(identity: Identity, request: TopicRequest, chos
   const base = { request, chosenCategory: chosen, callerUid: identity.uid };
   if (request.kind === "existing") {
     const snapshot = await topics.doc(request.topicId).get();
-    const byId = snapshot.exists ? knownTopic(snapshot.id, snapshot.data() as StoredTopic) : null;
+    const named = snapshot.exists ? knownTopic(snapshot.id, snapshot.data() as StoredTopic) : null;
+    // A board still names the topic its list was merged out of; it means where that went.
+    const byId = named?.status === "merged" ? await liveTopic(request.topicId) : named;
     return decideAttachment({ ...base, byId, approvedByName: null, ownPendingByName: null, pendingCount: 0 });
   }
   const [approved, ownPending, pending] = await Promise.all([

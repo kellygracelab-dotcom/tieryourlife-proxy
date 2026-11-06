@@ -170,6 +170,25 @@ export async function discardPublished(listId: string, bucket: FolderDeleter = g
 }
 
 /**
+ * The files of `published/{listId}/` these addresses point at. A replaced
+ * snapshot names the copies it keeps by their address, not by a pictureId.
+ */
+export function publishedNamesIn(listId: string, urls: readonly (string | null | undefined)[]): string[] {
+  const marker = `/o/${encodeURIComponent(`published/${listId}/`)}`;
+  return urls.flatMap((url) => {
+    if (typeof url !== "string") return [];
+    const at = url.indexOf(marker);
+    if (at < 0) return [];
+    const rest = url.slice(at + marker.length).split(/[?#]/)[0];
+    try {
+      return [decodeURIComponent(rest)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
  * The copies this list no longer names, after a republish.
  *
  * A board somebody edited for a month can leave a great many behind, and they
