@@ -104,7 +104,7 @@ Answer `200 {lists: ListSummary[], nextCursor: string | null}`, plus `followingN
 
 ### Publishing
 
-**`POST /lists`**: publish a board. **`POST /lists/{id}`**: replace a list the caller published. Account, not banned. A list out of the feed (`underReview`) stays out after it is replaced, until staff dismiss its reports; the new snapshot is not kept (`reviewed` false). Withdrawn while out of the feed and published again from the same `boardUid`, the new list starts out of the feed with a note in the reports queue.
+**`POST /lists`**: publish a board. **`POST /lists/{id}`**: replace a list the caller published. Account, not banned. A list out of the feed (`underReview`) stays out after it is replaced, until staff dismiss its reports; the new snapshot is not kept (`reviewed` false). An author who withdraws a list while it is out of the feed has their next new list start out of the feed, with a note in the reports queue.
 
 Body:
 - `title`: string, required.

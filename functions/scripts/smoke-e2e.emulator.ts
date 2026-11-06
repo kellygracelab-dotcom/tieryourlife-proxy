@@ -138,7 +138,7 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await lists.doc(String(published.body.id)).get()).exists, false);
   });
 
-  it("keeps a hidden list hidden when its author withdraws it and publishes the board again", async () => {
+  it("keeps a hidden list hidden when its author withdraws it and publishes it again from another board", async () => {
     const guest = (await identity("signUp", {})).idToken;
     const author = (await identity("update", { idToken: guest, email: `again-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
     const body = { title: "Withdrawn smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }], boardUid: `held-${Date.now().toString(36)}` };
@@ -148,7 +148,7 @@ describe("the proxy under the demo emulators", () => {
     await lists.doc(String(first.body.id)).set({ underReview: true }, { merge: true });
     assert.equal((await call(author, "DELETE", `/lists/${first.body.id}`)).status, 204);
 
-    const again = await call(author, "POST", "/lists", body);
+    const again = await call(author, "POST", "/lists", { ...body, boardUid: `copy-${Date.now().toString(36)}` });
     assert.equal(again.status, 201, JSON.stringify(again.body));
     assert.equal((await lists.doc(String(again.body.id)).get()).get("underReview"), true);
     const queue = await call(await ownerToken(), "GET", "/lists/reports");

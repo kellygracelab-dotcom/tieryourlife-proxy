@@ -2599,6 +2599,8 @@ async function readReports(response: Response, identity: Identity): Promise<void
   // An anonymous list's author is the owner's to know, as in admin/lists, and
   // read from the list itself: reports filed before this kept the name.
   const named = new Map<string, string>();
+  // A removed list leaves only its reports, and one that does not say it was named may not have been.
+  const unnamed = new Set(snapshot.docs.filter((doc) => doc.get("anonymous") !== false).map((doc) => doc.get("listId") as string));
   const state = new Map(
     lists.map((doc) => {
       const data = (doc.data() ?? {}) as StoredList;
@@ -2613,7 +2615,7 @@ async function readReports(response: Response, identity: Identity): Promise<void
         coverImageUrl: collageImage({ coverImageUrl: data.coverImageUrl ?? null, previewImages: data.previewImages ?? [] }),
         authorUid: shown ? data.authorUid ?? null : null,
         authorPhotoUrl: shown ? data.authorPhotoUrl ?? null : null,
-        anonymous: isAnonymous(data),
+        anonymous: doc.exists ? isAnonymous(data) : unnamed.has(doc.id),
       }];
     }),
   );
@@ -2744,8 +2746,7 @@ async function publish(
     const earlier = await fromBoard.get();
     if (!earlier.empty) return answerRepeat(response, earlier.docs[0]);
   }
-  const held = fromBoard !== null && boardUid !== null &&
-    (await getFirestore().collection(PUBLISH_HOLDS).doc(holdId(byline.uid, boardUid)).get()).exists;
+  const held = existingId === null && (await getFirestore().collection(PUBLISH_HOLDS).doc(byline.uid).get()).exists;
 
   // Replacing a list the author already published does not add to their count,
   // and the house has no count.
@@ -2967,7 +2968,7 @@ async function publish(
     return answerRepeat(response, earlier);
   }
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
-  if (held) await noteHeld(target, document.title, identity, document.anonymous, boardUid);
+  if (held) await noteHeld(target, document.title, identity, document.anonymous, byline.uid);
 
   if (existingId) {
     await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
@@ -3404,7 +3405,10 @@ async function report(
   // Read back rather than counted up: reports are one per person, and a second
   // one from the same person replaced the first rather than adding to it.
   const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
-  const reasons = filed.docs.filter((doc) => doc.get("weighs") !== false).map((doc) => doc.data().reason as typeof reason);
+  // The classifier's notes filed before they said `weighs` count for nothing either.
+  const reasons = filed.docs
+    .filter((doc) => doc.get("weighs") !== false && doc.get("reporterUid") !== WATCHER)
+    .map((doc) => doc.data().reason as typeof reason);
   if (weighs && decideHide({ reasons, reviewed: stored.reviewed === true })) {
     await list.ref.set({ underReview: true }, { merge: true });
   }
@@ -3432,9 +3436,10 @@ async function unpublish(response: Response, identity: Identity, id: string, byl
   }
   const batch = getFirestore().batch();
   batch.delete(doc);
-  // Withdrawing is the author's right; coming back from the same board out of sight of the queue is not.
-  if (stored.underReview === true && typeof stored.boardUid === "string") {
-    batch.set(getFirestore().collection(PUBLISH_HOLDS).doc(holdId(stored.authorUid, stored.boardUid)), {
+  // Withdrawing is the author's right; coming back as a new list out of sight of the queue is not,
+  // whichever board it comes from: a board is one copy away from another.
+  if (stored.underReview === true) {
+    batch.set(getFirestore().collection(PUBLISH_HOLDS).doc(stored.authorUid), {
       listId: id,
       authorUid: stored.authorUid,
       createdAt: FieldValue.serverTimestamp(),
@@ -3495,7 +3500,7 @@ async function noteWordingConcern(
 const WATCHER = "__wording__";
 
 /** Files the list a hidden one was withdrawn and published again as, so the queue still shows it. */
-async function noteHeld(listId: string, listTitle: string, identity: Identity, anonymous: boolean, boardUid: string | null): Promise<void> {
+async function noteHeld(listId: string, listTitle: string, identity: Identity, anonymous: boolean, holder: string): Promise<void> {
   const db = getFirestore();
   await db.collection(REPORTS).doc(`${listId}_${HELD}`).set({
     listId,
@@ -3506,18 +3511,15 @@ async function noteHeld(listId: string, listTitle: string, identity: Identity, a
     reporterUid: HELD,
     weighs: false,
     reason: "other",
-    note: "Withdrawn while hidden by reports and published again from the same board.",
+    note: "Its author withdrew a list hidden by reports and then published this one.",
     createdAt: FieldValue.serverTimestamp(),
   });
-  if (boardUid !== null) await db.collection(PUBLISH_HOLDS).doc(holdId(identity.uid, boardUid)).delete();
+  await db.collection(PUBLISH_HOLDS).doc(holder).delete();
 }
 
 const HELD = "__held__";
 const PUBLISH_HOLDS = "publishHolds";
 
-function holdId(uid: string, boardUid: string): string {
-  return `${uid}_${boardUid}`;
-}
 
 /**
  * Everything under lists/topics: the approved ones to pick from, somebody's
