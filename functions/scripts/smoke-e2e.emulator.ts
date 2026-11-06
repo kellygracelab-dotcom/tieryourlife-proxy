@@ -109,6 +109,35 @@ describe("the proxy under the demo emulators", () => {
     assert.ok(ban.exists, "the anonymous author was not banned");
   });
 
+  it("keeps a hidden list hidden when its author publishes it again", async () => {
+    // Its own author: the one above was banned with its anonymous list.
+    const guest = (await identity("signUp", {})).idToken;
+    const author = (await identity("update", { idToken: guest, email: `hold-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
+    const body = { title: "Hidden smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
+    const published = await call(author, "POST", "/lists", body);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const id = String(published.body.id);
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-hold")).collection("publishedLists");
+    await lists.doc(id).set({ underReview: true }, { merge: true });
+
+    const again = await call(author, "POST", `/lists/${id}`, { ...body, title: "Hidden smoke list, again" });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal((await lists.doc(id).get()).get("underReview"), true);
+  });
+
+  it("leaves a list its author removed removed when staff dismiss its reports", async () => {
+    const published = await call(token, "POST", "/lists", {
+      title: "Removed smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }],
+    });
+    const reporter = (await identity("signUp", {})).idToken;
+    assert.equal((await call(reporter, "POST", `/lists/${published.body.id}/report`, { reason: "spam" })).status, 204);
+    assert.equal((await call(token, "DELETE", `/lists/${published.body.id}`)).status, 204);
+
+    assert.equal((await call(await ownerToken(), "POST", `/lists/${published.body.id}/dismiss`, {})).status, 204);
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-husk")).collection("publishedLists");
+    assert.equal((await lists.doc(String(published.body.id)).get()).exists, false);
+  });
+
   it("answers every catalogue empty, with no keys", async () => {
     for (const path of ["/tmdb/3/search/multi?query=alien", "/tmdb/tmdb/3/search/multi?query=alien"]) {
       assert.deepEqual(await call(token, "GET", path), { status: 200, body: { page: 1, results: [], total_pages: 0, total_results: 0 } });

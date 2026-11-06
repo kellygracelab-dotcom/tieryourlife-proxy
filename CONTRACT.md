@@ -104,7 +104,7 @@ Answer `200 {lists: ListSummary[], nextCursor: string | null}`, plus `followingN
 
 ### Publishing
 
-**`POST /lists`**: publish a board. **`POST /lists/{id}`**: replace a list the caller published. Account, not banned.
+**`POST /lists`**: publish a board. **`POST /lists/{id}`**: replace a list the caller published. Account, not banned. A list out of the feed (`underReview`) stays out after it is replaced, until staff dismiss its reports; the new snapshot is not kept (`reviewed` false).
 
 Body:
 - `title`: string, required.
@@ -146,13 +146,13 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 ### Reports and moderation
 
-**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests and banned accounts are filed and shown to staff but do not count towards that.
+**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests, banned accounts and accounts younger than 7 days are filed and shown to staff but do not count towards that.
 
 **`GET /lists/reports`**: staff. `200 {reports: QueuedList[]}` from the 50 newest reports, one row per list, hidden lists first: `{listId, listTitle, authorName, authorUid, authorPhotoUrl, anonymous, coverImageUrl, reasons, notes, reportCount, newestAtMs, hidden, reviewed}`. On an anonymous list (`anonymous: true`) only the owner is told the author; a moderator gets `authorName: ""`, `authorUid: null`, `authorPhotoUrl: null`.
 
 **`POST /lists/{id}/takedown`**: staff. Body `{ban?}`, `ban` one of `week`, `month`, `three_months`, `six_months`, `forever` (a month is 30 days). Deletes the list and its reports, and bans the author when asked: `204`.
 
-**`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`.
+**`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`. A list already removed stays removed; only its reports go.
 
 **`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`.
 
