@@ -32,6 +32,17 @@ export function weighsOnHiding(reporter: { isAnonymous: boolean; banned: boolean
   return !reporter.isAnonymous && !reporter.banned;
 }
 
+/**
+ * Whom a takedown bans: the author the list itself names, and only when the
+ * list is gone, the one a complaint kept. A complaint about an anonymous list
+ * names nobody, so the list has to be asked first.
+ */
+export function banTarget(listAuthorUid: unknown, filedAuthorUids: unknown[]): string | null {
+  const named = (uid: unknown): uid is string => typeof uid === "string" && uid.length > 0;
+  if (named(listAuthorUid)) return listAuthorUid;
+  return filedAuthorUids.find(named) ?? null;
+}
+
 export interface HideInput {
   reasons: Reason[];
   /** True once somebody has looked at this snapshot and left it up. */

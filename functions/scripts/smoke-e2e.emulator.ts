@@ -7,9 +7,10 @@
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { STUB_PICTURE } from "../src/emulator";
-import { PROJECT, assertEmulatorsOnly, call, identity, seed } from "./seed-e2e";
+import { PROJECT, assertEmulatorsOnly, call, identity, ownerToken, seed } from "./seed-e2e";
 
 const TIER = { label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" };
 
@@ -87,6 +88,25 @@ describe("the proxy under the demo emulators", () => {
     }
     assert.ok(gone, "the fake picture is still there");
     assert.ok((await real.exists())[0]);
+  });
+
+  it("bans the author of an anonymous list taken down with a ban", async () => {
+    const published = await call(token, "POST", "/lists", {
+      title: "Anonymous smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }], anonymous: true,
+    });
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const reporter = (await identity("signUp", {})).idToken;
+    assert.equal((await call(reporter, "POST", `/lists/${published.body.id}/report`, { reason: "spam" })).status, 204);
+
+    const owner = await ownerToken();
+    const queue = await call(owner, "GET", "/lists/reports");
+    const row = (queue.body.reports as { listId: string; anonymous: boolean; authorUid: string | null }[]).find((one) => one.listId === published.body.id);
+    assert.equal(row?.anonymous, true);
+    assert.ok(row?.authorUid);
+
+    assert.equal((await call(owner, "POST", `/lists/${published.body.id}/takedown`, { ban: "week" })).status, 204);
+    const ban = await getFirestore(initializeApp({ projectId: PROJECT }, "smoke-ban")).collection("bans").doc(row.authorUid).get();
+    assert.ok(ban.exists, "the anonymous author was not banned");
   });
 
   it("answers every catalogue empty, with no keys", async () => {

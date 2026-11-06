@@ -8,7 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
-import { decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
+import { banTarget, decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
   ENOUGH_TO_JUDGE,
@@ -2646,15 +2646,14 @@ async function settleReports(
   ]);
   // The topic's count of lists comes down with the list; read before the batch removes it.
   const topicId = listDoc.exists ? (listDoc.data() as StoredList).topicId ?? null : null;
-  // Read before the batch deletes them: the author is on the complaint, and
-  // after the batch there is nothing left to ask.
-  const authorUid = filed.docs.map((doc) => doc.data().authorUid as string).find(Boolean) ?? null;
+  const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
+  // Read before the batch deletes the list and the complaints.
+  const authorUid = banTarget(listed?.authorUid, filed.docs.map((doc) => doc.data().authorUid));
   // What they were reported for, kept on the ban so the moderator's own
   // memory of why is not the only record of it.
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
   const batch = db.batch();
   filed.docs.forEach((doc) => batch.delete(doc.ref));
-  const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
   const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
   if (takeDown) {
     auditInBatch(batch, auditEntry(identity.uid, role, "report.takedown", `${PUBLISHED}/${listId}`,
