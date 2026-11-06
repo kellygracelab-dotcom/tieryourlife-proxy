@@ -138,21 +138,32 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await lists.doc(String(published.body.id)).get()).exists, false);
   });
 
-  it("keeps a hidden list hidden when its author withdraws it and publishes the board again", async () => {
+  it("keeps a hidden list hidden when its author withdraws it and publishes it again from another board", async () => {
     const guest = (await identity("signUp", {})).idToken;
     const author = (await identity("update", { idToken: guest, email: `again-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
     const body = { title: "Withdrawn smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }], boardUid: `held-${Date.now().toString(36)}` };
+    const visible = await call(author, "POST", "/lists", { ...body, title: "Visible smoke list", boardUid: `visible-${Date.now().toString(36)}` });
     const first = await call(author, "POST", "/lists", body);
     assert.equal(first.status, 201, JSON.stringify(first.body));
     const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-again")).collection("publishedLists");
     await lists.doc(String(first.body.id)).set({ underReview: true }, { merge: true });
     assert.equal((await call(author, "DELETE", `/lists/${first.body.id}`)).status, 204);
 
-    const again = await call(author, "POST", "/lists", body);
+    const again = await call(author, "POST", "/lists", { ...body, boardUid: `copy-${Date.now().toString(36)}` });
     assert.equal(again.status, 201, JSON.stringify(again.body));
     assert.equal((await lists.doc(String(again.body.id)).get()).get("underReview"), true);
-    const queue = await call(await ownerToken(), "GET", "/lists/reports");
+    const owner = await ownerToken();
+    const queue = await call(owner, "GET", "/lists/reports");
     assert.ok((queue.body.reports as { listId: string }[]).some((one) => one.listId === again.body.id));
+
+    // A decoy does not spend the hold: the next one is held too, until staff decide.
+    const third = await call(author, "POST", "/lists", { ...body, boardUid: `third-${Date.now().toString(36)}` });
+    assert.equal((await lists.doc(String(third.body.id)).get()).get("underReview"), true);
+    assert.equal((await call(author, "POST", `/lists/${visible.body.id}`, body)).status, 200);
+    assert.equal((await lists.doc(String(visible.body.id)).get()).get("underReview"), true);
+    assert.equal((await call(owner, "POST", `/lists/${first.body.id}/dismiss`, {})).status, 204);
+    const fourth = await call(author, "POST", "/lists", { ...body, boardUid: `fourth-${Date.now().toString(36)}` });
+    assert.equal((await lists.doc(String(fourth.body.id)).get()).get("underReview"), false);
   });
 
   it("answers every catalogue empty, with no keys", async () => {
