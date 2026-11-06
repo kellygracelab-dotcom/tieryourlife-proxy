@@ -3,6 +3,7 @@ import { defineSecret } from "firebase-functions/params";
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { requireUser } from "./auth";
+import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
 import { reserveGeneration, settleGeneration } from "./ledger";
 import type { ReserveDecision } from "./quota";
 
@@ -60,7 +61,7 @@ function generationIsOffered(): boolean {
 export const generate = onRequest(
   {
     region: "europe-west1",
-    secrets: [geminiApiKey],
+    secrets: secretsOutsideDemo([geminiApiKey]),
     timeoutSeconds: 300,
     memory: "512MiB",
     maxInstances: 10,
@@ -162,6 +163,9 @@ class GenerationError extends Error {
 }
 
 async function requestImage(prompt: string): Promise<Buffer> {
+  if (isDemoEmulator()) {
+    throw new GenerationError("Gemini is stubbed under the emulator", "Image service returned no image");
+  }
   let upstream: globalThis.Response;
   try {
     upstream = await fetch(GEMINI_URL, {

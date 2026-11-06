@@ -6,6 +6,7 @@
  * above a list of people somebody wanted dead (0.91). So nothing refuses on
  * it; a noisy signal belongs in front of a person, and this feeds the queue.
  */
+import { CALM_WORDS, isDemoEmulator } from "./emulator";
 
 /** Cloud Natural Language answers each category with a confidence in 0..1. */
 export interface WordingVerdict {
@@ -76,6 +77,7 @@ export const ENOUGH_TO_JUDGE = 20;
 export type ReadWords = (text: string) => Promise<WordingVerdict | null>;
 
 export async function realModeration(text: string): Promise<WordingVerdict | null> {
+  if (isDemoEmulator()) return CALM_WORDS;
   try {
     // Imported here rather than at the top: a cold start that never publishes
     // anything should not pay to load the client.

@@ -2,6 +2,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { defineSecret } from "firebase-functions/params";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { titleNames } from "./editorial";
+import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
 import { parseTranslations, searchKeysFor, SEARCH_TRANSLATED, translationPrompt } from "./search";
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
@@ -28,7 +29,7 @@ export const sweepSearch = onSchedule(
     schedule: "every 15 minutes",
     timeZone: "Etc/UTC",
     region: "europe-west1",
-    secrets: [geminiApiKey],
+    secrets: secretsOutsideDemo([geminiApiKey]),
     timeoutSeconds: 300,
     memory: "256MiB",
   },
@@ -74,6 +75,7 @@ export function sweptKeys(name: string, names: unknown, translations: unknown, t
 }
 
 async function translate(names: readonly string[]): Promise<string[][] | null> {
+  if (isDemoEmulator()) return names.map(() => []);
   try {
     const upstream = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
       method: "POST",
