@@ -23,13 +23,16 @@ export const NEVER_HIDES: Reason = "wrong_category";
 export const REPORTS_BEFORE_HIDING = 3;
 export const HIDES_ON_FIRST: Reason = "sexual";
 
+/** Three accounts made this morning are one person as often as not. */
+export const ACCOUNT_AGE_TO_HIDE_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * Whether a complaint counts towards taking a list out of the feed. A guest is
- * one request away and a banned account has shown what it does, so theirs are
- * kept for the staff to read but move nothing.
+ * one request away, a week-old account barely more, and a banned account has
+ * shown what it does, so theirs are kept for the staff to read but move nothing.
  */
-export function weighsOnHiding(reporter: { isAnonymous: boolean; banned: boolean }): boolean {
-  return !reporter.isAnonymous && !reporter.banned;
+export function weighsOnHiding(reporter: { isAnonymous: boolean; banned: boolean; accountAgeMs: number }): boolean {
+  return !reporter.isAnonymous && !reporter.banned && reporter.accountAgeMs >= ACCOUNT_AGE_TO_HIDE_MS;
 }
 
 /**

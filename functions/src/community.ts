@@ -2675,11 +2675,8 @@ async function settleReports(
       { ...change.before, reports: filed.size }, change.after));
     // Back into the feed, and marked so that the next three complaints cannot
     // take it out again. Somebody looked; that is what looking is for.
-    batch.set(
-      db.collection(PUBLISHED).doc(listId),
-      { underReview: false, reviewed: true },
-      { merge: true },
-    );
+    // A list its author removed meanwhile stays removed rather than coming back as a husk.
+    if (listDoc.exists) batch.update(listDoc.ref, { underReview: false, reviewed: true });
   }
   await batch.commit();
   if (takeDown) {
@@ -2886,7 +2883,8 @@ async function publish(
     updatedAt: FieldValue.serverTimestamp(),
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
-    underReview: false,
+    // A list out of the feed stays out until somebody looks: republishing is not looking.
+    underReview: previous?.underReview === true,
     reviewed: false,
   };
 
@@ -3381,6 +3379,9 @@ async function report(
   // stronger one.
   const anonymous = isAnonymous(stored);
   const banned = !identity.isAnonymous && isBanned(await readBan(identity.uid), Date.now());
+  const accountAgeMs = identity.isAnonymous
+    ? 0
+    : Date.now() - (Date.parse((await getAuth().getUser(identity.uid)).metadata.creationTime) || Date.now());
   await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
     listId,
     listTitle: stored.title,
@@ -3388,7 +3389,7 @@ async function report(
     authorName: anonymous ? "" : stored.authorName,
     anonymous,
     reporterUid: identity.uid,
-    weighs: weighsOnHiding({ isAnonymous: identity.isAnonymous, banned }),
+    weighs: weighsOnHiding({ isAnonymous: identity.isAnonymous, banned, accountAgeMs }),
     reason,
     note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
     createdAt: FieldValue.serverTimestamp(),

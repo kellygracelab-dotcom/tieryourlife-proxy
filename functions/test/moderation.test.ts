@@ -5,6 +5,7 @@ import {
   groupReports,
   weighsOnHiding,
   banTarget,
+  ACCOUNT_AGE_TO_HIDE_MS,
   REPORTS_BEFORE_HIDING,
   type ListStanding,
   type QueuedReport,
@@ -39,10 +40,16 @@ describe("banTarget", () => {
 });
 
 describe("weighsOnHiding", () => {
+  const week = ACCOUNT_AGE_TO_HIDE_MS;
+
   it("counts an account's complaint, not a guest's or a banned account's", () => {
-    assert.equal(weighsOnHiding({ isAnonymous: false, banned: false }), true);
-    assert.equal(weighsOnHiding({ isAnonymous: true, banned: false }), false);
-    assert.equal(weighsOnHiding({ isAnonymous: false, banned: true }), false);
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: false, accountAgeMs: week }), true);
+    assert.equal(weighsOnHiding({ isAnonymous: true, banned: false, accountAgeMs: week }), false);
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: true, accountAgeMs: week }), false);
+  });
+
+  it("files a week-young account's complaint without letting it hide anything", () => {
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: false, accountAgeMs: week - 1 }), false);
   });
 });
 
