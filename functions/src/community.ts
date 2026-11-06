@@ -2658,6 +2658,8 @@ async function settleReports(
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
   const batch = db.batch();
   filed.docs.forEach((doc) => batch.delete(doc.ref));
+  // A decision on a list its author withdrew settles the hold it left too.
+  if (listed === null && authorUid !== null) batch.delete(db.collection(PUBLISH_HOLDS).doc(authorUid));
   const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
   if (takeDown) {
     auditInBatch(batch, auditEntry(identity.uid, role, "report.takedown", `${PUBLISHED}/${listId}`,
