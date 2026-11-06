@@ -417,9 +417,15 @@ It prints `{owner, sections, topic}` as JSON and is safe to run again. It refuse
 
 These are not the proxy. They live in the website's repository (`functions/src/web.ts`, `ranking.ts`, `pages.ts`, `og.ts`, `share.ts`, `userDeleted.ts`) and are deployed from there as the `web` function, plus the `userDeleted` trigger.
 
-Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/**`, `/img/**`. They read the proxy's `published/{id}` documents and write only their own:
+Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/**`, `/img/**`. They read the proxy's `publishedLists/{id}` documents and write only their own:
 - `rankings/{code}`;
 - share cards under `share/r/{code}/` and `share/l/{id}/` in Storage.
+
+Of the proxy's data they also read, and never write:
+- `publishedLists/{id}.underReview`;
+- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew.
+
+Renaming those fields or that `what` value is a change to this section, agreed with the website first.
 
 A change to their requests or answers changes this section in the same website PR.
 
