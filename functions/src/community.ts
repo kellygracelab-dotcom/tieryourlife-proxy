@@ -3322,7 +3322,9 @@ async function resolveAttachment(identity: Identity, request: TopicRequest, chos
   const base = { request, chosenCategory: chosen, callerUid: identity.uid };
   if (request.kind === "existing") {
     const snapshot = await topics.doc(request.topicId).get();
-    const byId = snapshot.exists ? knownTopic(snapshot.id, snapshot.data() as StoredTopic) : null;
+    const named = snapshot.exists ? knownTopic(snapshot.id, snapshot.data() as StoredTopic) : null;
+    // A board still names the topic its list was merged out of; it means where that went.
+    const byId = named?.status === "merged" ? await liveTopic(request.topicId) : named;
     return decideAttachment({ ...base, byId, approvedByName: null, ownPendingByName: null, pendingCount: 0 });
   }
   const [approved, ownPending, pending] = await Promise.all([
