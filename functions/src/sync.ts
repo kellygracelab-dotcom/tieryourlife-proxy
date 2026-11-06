@@ -426,7 +426,8 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
     displayMode: displayModeOf(source.displayMode),
     category: cleanText(source.category, MAX_TITLE_LENGTH),
     coverImageUrl: keepableImageUrl(source.coverImageUrl),
-    coverImageUrls: chosenPictures(source.coverImageUrls),
+    // The account's copy is the owner's own backup: their own pictures stay in it.
+    coverImageUrls: chosenPictures(source.coverImageUrls, { ownFolder: "keep" }),
     authorName: cleanText(source.authorName, MAX_TITLE_LENGTH),
     publishedId: cleanText(source.publishedId, MAX_TITLE_LENGTH),
     deletedAt: timestamp(source.deletedAt),

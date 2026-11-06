@@ -26,7 +26,7 @@ function publish(overrides: Record<string, unknown> = {}, extras: Partial<{ isAn
   return decidePublish({
     body: body(overrides),
     isAnonymous: false,
-    listsAlreadyPublished: 0,
+    listsAlreadyPublished: 0, uploaderUid: "u1",
     ...extras,
   });
 }
@@ -77,12 +77,25 @@ describe("decidePublish", () => {
     assert.equal(decision.ok && decision.draft.items[0].title, "Sunday roast");
   });
 
-  it("drops an address into someone's own picture folder, cover included", () => {
+  it("turns an address into the publisher's own folder into the picture it names", () => {
     const own = "https://firebasestorage.googleapis.com/v0/b/x/o/users%2Fu1%2Fpictures%2Fp1?alt=media&token=t";
-    const decision = publish({ coverImageUrl: own, items: [{ title: "Me", imageUrl: own }] });
+    const decision = publish({ coverImageUrl: own, coverImageUrls: [own], items: [{ title: "", imageUrl: own }] });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.draft.items[0].imageUrl, null);
+    assert.equal(decision.ok && decision.draft.items[0].pictureId, "p1");
+    assert.equal(decision.ok && decision.draft.coverImageUrl, null);
+    assert.equal(decision.ok && decision.draft.coverPictureId, "p1");
+    assert.deepEqual(decision.ok && decision.draft.coverImageUrls, []);
+  });
+
+  it("drops an address into someone else's folder without taking it as a picture", () => {
+    const theirs = "https://firebasestorage.googleapis.com/v0/b/x/o/users%2Fu2%2Fpictures%2Fp1?alt=media&token=t";
+    const decision = publish({ coverImageUrl: theirs, items: [{ title: "Me", imageUrl: theirs }] });
 
     assert.equal(decision.ok && decision.draft.items[0].imageUrl, null);
-    assert.equal(decision.ok && decision.draft.coverImageUrl, null);
+    assert.equal(decision.ok && decision.draft.items[0].pictureId, null);
+    assert.equal(decision.ok && decision.draft.coverPictureId, null);
   });
 
   it("drops a plain http image, keeping only https", () => {
@@ -193,7 +206,7 @@ describe("decidePublish", () => {
   });
 
   it("refuses a body that is not an object", () => {
-    const decision = decidePublish({ body: "nope", isAnonymous: false, listsAlreadyPublished: 0 });
+    const decision = decidePublish({ body: "nope", isAnonymous: false, listsAlreadyPublished: 0, uploaderUid: "u1" });
 
     assert.equal(decision.ok === false && decision.reason, "invalid");
   });
@@ -216,7 +229,7 @@ describe("decidePublish", () => {
  */
 describe("a card with no name", () => {
   const only = (item: Record<string, unknown>) =>
-    decidePublish({ body: body({ items: [item] }), isAnonymous: false, listsAlreadyPublished: 0 });
+    decidePublish({ body: body({ items: [item] }), isAnonymous: false, listsAlreadyPublished: 0, uploaderUid: "u1" });
 
   // Photographs out of somebody's gallery arrive with no name at all, and the
   // picture is what the card is. Refusing them refused the whole board.
@@ -245,7 +258,7 @@ describe("own photographs", () => {
         items: ids.map((pictureId, index) => ({ title: `Card ${index}`, pictureId })),
       }),
       isAnonymous: false,
-      listsAlreadyPublished: 0,
+      listsAlreadyPublished: 0, uploaderUid: "u1",
     });
 
   it("carries the picture's name through, waiting for an address", () => {
@@ -285,7 +298,7 @@ describe("settle", () => {
         items: ids.map((pictureId, index) => ({ title: `Card ${index}`, pictureId })),
       }),
       isAnonymous: false,
-      listsAlreadyPublished: 0,
+      listsAlreadyPublished: 0, uploaderUid: "u1",
     });
     assert.equal(decision.ok, true);
     return decision.ok ? decision.draft : null!;
@@ -318,7 +331,7 @@ describe("settle", () => {
     const decision = decidePublish({
       body: body({ coverImageUrls: ["https://example.test/2.jpg", "https://example.test/1.jpg"] }),
       isAnonymous: false,
-      listsAlreadyPublished: 0,
+      listsAlreadyPublished: 0, uploaderUid: "u1",
     });
     assert.equal(decision.ok, true);
     const list = settle(decision.ok ? decision.draft : null!, new Map());
@@ -330,14 +343,14 @@ describe("settle", () => {
     const decision = decidePublish({
       body: body({ coverImageUrls: ["file:///data/photo.jpg", chosen[0], ...chosen] }),
       isAnonymous: false,
-      listsAlreadyPublished: 0,
+      listsAlreadyPublished: 0, uploaderUid: "u1",
     });
     assert.equal(decision.ok, true);
     assert.deepEqual(decision.ok && decision.draft.coverImageUrls, chosen.slice(0, MAX_PREVIEW_IMAGES));
   });
 
   it("leaves a poster's own address alone", () => {
-    const decision = decidePublish({ body: body(), isAnonymous: false, listsAlreadyPublished: 0 });
+    const decision = decidePublish({ body: body(), isAnonymous: false, listsAlreadyPublished: 0, uploaderUid: "u1" });
     assert.equal(decision.ok, true);
     const list = settle(decision.ok ? decision.draft : null!, new Map());
     assert.equal(list.items[0].imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
@@ -360,7 +373,7 @@ describe("the author's own arrangement", () => {
         items: [{ title: "Arrival", tierIndex }],
       }),
       isAnonymous: false,
-      listsAlreadyPublished: 0,
+      listsAlreadyPublished: 0, uploaderUid: "u1",
     });
 
   it("carries which tier the card was in", () => {

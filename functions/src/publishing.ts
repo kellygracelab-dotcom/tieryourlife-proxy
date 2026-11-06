@@ -113,14 +113,34 @@ const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
  * dropped rather than rejected: a list of holiday photos should still publish,
  * just without the photos.
  */
-function keepableImageUrl(value: unknown): string | null {
+function httpsUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
-  // An address into someone's own folder carries its download token: a public
-  // list gets such a picture only as a pictureId, copied after SafeSearch.
-  if (trimmed.toLowerCase().includes("/o/users%2f")) return null;
   return trimmed.length > 2000 ? null : trimmed;
+}
+
+const OWN_FOLDER = /\/o\/users%2F([^/?#%]+)%2Fpictures%2F([^/?#]+)/i;
+
+function isOwnFolder(url: string): boolean {
+  return OWN_FOLDER.test(url);
+}
+
+/**
+ * An address into someone's own folder carries its download token, so a public
+ * list never keeps one. The publisher's own picture becomes the pictureId it
+ * is, copied after SafeSearch like any other; older apps still send addresses.
+ */
+export function ownPictureIdOf(url: string | null, uploaderUid: string): string | null {
+  const match = url === null ? null : OWN_FOLDER.exec(url);
+  if (match === null || decodeURIComponent(match[1]) !== uploaderUid) return null;
+  const id = decodeURIComponent(match[2]);
+  return isPictureId(id) ? id : null;
+}
+
+function keepableImageUrl(value: unknown): string | null {
+  const url = httpsUrl(value);
+  return url === null || isOwnFolder(url) ? null : url;
 }
 
 /**
@@ -137,8 +157,10 @@ function tierIndexOf(value: unknown, tierCount: number): number | null {
  * preview holds, and only ones the feed can fetch. A photograph from the
  * gallery is a card picture and travels as one, not here.
  */
-export function chosenPictures(value: unknown): string[] {
-  const urls = (Array.isArray(value) ? value : []).map(keepableImageUrl).filter((url): url is string => url !== null);
+export function chosenPictures(value: unknown, { ownFolder }: { ownFolder: "keep" | "drop" }): string[] {
+  const urls = (Array.isArray(value) ? value : [])
+    .map(ownFolder === "keep" ? httpsUrl : keepableImageUrl)
+    .filter((url): url is string => url !== null);
   return [...new Set(urls)].slice(0, MAX_PREVIEW_IMAGES);
 }
 
@@ -158,12 +180,15 @@ export interface PublishInput {
   body: unknown;
   isAnonymous: boolean;
   listsAlreadyPublished: number;
+  /** Whose folder the list's own pictures are copied from. */
+  uploaderUid: string;
 }
 
 export function decidePublish({
   body,
   isAnonymous,
   listsAlreadyPublished,
+  uploaderUid,
 }: PublishInput): PublishDecision {
   // Reading and copying stay open to everyone; putting your name on something
   // does not.
@@ -222,7 +247,7 @@ export function decidePublish({
     const item = raw as Record<string, unknown>;
     const itemTitle = cleanText(item.title, MAX_TITLE_LENGTH);
     const imageUrl = keepableImageUrl(item.imageUrl);
-    const pictureId = isPictureId(item.pictureId) ? item.pictureId : null;
+    const pictureId = isPictureId(item.pictureId) ? item.pictureId : ownPictureIdOf(httpsUrl(item.imageUrl), uploaderUid);
     // A card is a name or a picture and needs one of them: a photograph from
     // the gallery has no name and does not need one. Neither is nothing.
     if (!itemTitle && !imageUrl && pictureId === null) {
@@ -238,8 +263,10 @@ export function decidePublish({
     });
   }
 
-  const coverPictureId = isPictureId(source.coverPictureId) ? source.coverPictureId : null;
-  const coverImageUrls = chosenPictures(source.coverImageUrls);
+  const coverPictureId = isPictureId(source.coverPictureId)
+    ? source.coverPictureId
+    : ownPictureIdOf(httpsUrl(source.coverImageUrl), uploaderUid);
+  const coverImageUrls = chosenPictures(source.coverImageUrls, { ownFolder: "drop" });
   const wanted = new Set(
     [...items.map((item) => item.pictureId), coverPictureId].filter(
       (id): id is string => id !== null,
