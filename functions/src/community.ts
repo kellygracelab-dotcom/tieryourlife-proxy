@@ -64,6 +64,8 @@ import {
   copyForPublication,
   discardPublished,
   discardUnusedPublished,
+  adoptForeignCopies,
+  discardCopiesIn,
   publishedNamesIn,
 } from "./publishedPictures";
 import {
@@ -2702,6 +2704,7 @@ async function settleReports(
   await batch.commit();
   if (takeDown) {
     await discardPublished(listId);
+    await discardCopiesOf(listId);
   }
 
   response.status(204).send();
@@ -2871,7 +2874,7 @@ async function publish(
   const addresses = new Map(
     outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
   );
-  const list = settle(decision.draft, addresses);
+  const { list, picturesFrom } = await adoptForeignCopies(target, settle(decision.draft, addresses));
 
   // A new topic is named here, with the list, so the two are written together.
   const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
@@ -2903,6 +2906,9 @@ async function publish(
     itemCount: list.items.length,
     coverImageUrl: list.coverImageUrl,
     previewImages: list.previewImages,
+    // Whose published pictures this list holds copies of, so taking that list
+    // down for its pictures takes them out of the copies too.
+    picturesFrom,
     tierColors: list.tierColors,
     tierCounts: tierCountsOf(list.tiers.length, list.items),
     ...(boardUid === null ? {} : { boardUid }),
@@ -3450,6 +3456,11 @@ async function report(
 }
 
 /** The ban on somebody, or nothing at all. Expiry is judged where it is read. */
+async function discardCopiesOf(listId: string): Promise<void> {
+  const copies = await getFirestore().collection(PUBLISHED).where("picturesFrom", "array-contains", listId).get();
+  await discardCopiesIn(copies.docs.map((copy) => copy.id), listId);
+}
+
 async function readBan(uid: string): Promise<Ban | null> {
   const doc = await getFirestore().collection(BANS).doc(uid).get();
   return doc.exists ? (doc.data() as Ban) : null;

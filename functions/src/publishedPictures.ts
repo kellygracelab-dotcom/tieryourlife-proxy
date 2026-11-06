@@ -169,6 +169,94 @@ export async function discardPublished(listId: string, bucket: FolderDeleter = g
   await Promise.all(publicFoldersOf(listId).map((prefix) => bucket.deleteFiles({ prefix, force: true })));
 }
 
+const PUBLISHED_FILE = /\/o\/published%2F([^/?#%]+)%2F([^/?#]+)/i;
+
+/**
+ * Where a copy in another list's folder should live in this one's. A list made
+ * from somebody else's keeps their pictures only while their list does, so it
+ * takes copies of its own: `{otherList}-{name}`.
+ */
+export function foreignCopyOf(listId: string, url: string | null): { from: string; to: string; list: string } | null {
+  const match = url === null ? null : PUBLISHED_FILE.exec(url);
+  if (match === null) return null;
+  let other: string;
+  let name: string;
+  try {
+    other = decodeURIComponent(match[1]);
+    name = decodeURIComponent(match[2]);
+  } catch {
+    return null;
+  }
+  if (other === listId || name.includes("/")) return null;
+  return { from: publishedPath(other, name), to: publishedPath(listId, `${other}-${name}`), list: other };
+}
+
+interface PictureAddresses {
+  items: { imageUrl: string | null }[];
+  coverImageUrl: string | null;
+  previewImages: string[];
+}
+
+const COPYING_AT_ONCE = 20;
+
+/**
+ * Copies every picture the list shows from another list's folder into its own
+ * and points at the copy. One whose original is already gone is left out.
+ */
+export async function adoptForeignCopies<T extends PictureAddresses>(
+  listId: string,
+  list: T,
+): Promise<{ list: T; picturesFrom: string[] }> {
+  const urls = [...list.items.map((item) => item.imageUrl), list.coverImageUrl, ...list.previewImages];
+  const wanted = new Map<string, { from: string; to: string; list: string }>();
+  for (const url of urls) {
+    const copy = foreignCopyOf(listId, url);
+    if (copy !== null && url !== null) wanted.set(url, copy);
+  }
+  if (wanted.size === 0) return { list, picturesFrom: [] };
+
+  const bucket = getStorage().bucket();
+  const moved = new Map<string, string | null>();
+  const pending = [...wanted.entries()];
+  for (let at = 0; at < pending.length; at += COPYING_AT_ONCE) {
+    await Promise.all(
+      pending.slice(at, at + COPYING_AT_ONCE).map(async ([url, copy]) => {
+        try {
+          await bucket.file(copy.from).copy(bucket.file(copy.to));
+          moved.set(url, addressOf(bucket.name, copy.to));
+        } catch {
+          moved.set(url, null);
+        }
+      }),
+    );
+  }
+  const swap = (url: string | null): string | null => (url !== null && moved.has(url) ? moved.get(url) ?? null : url);
+  const picturesFrom = [...new Set([...wanted.entries()].filter(([url]) => moved.get(url)).map(([, copy]) => copy.list))];
+  return {
+    list: {
+      ...list,
+      items: list.items.map((item) => ({ ...item, imageUrl: swap(item.imageUrl) })),
+      coverImageUrl: swap(list.coverImageUrl),
+      previewImages: list.previewImages.map(swap).filter((url): url is string => url !== null),
+    },
+    picturesFrom,
+  };
+}
+
+export function copiesPrefixOf(copyListId: string, originalListId: string): string {
+  return `published/${copyListId}/${originalListId}-`;
+}
+
+export async function discardCopiesIn(
+  copyListIds: string[],
+  originalListId: string,
+  bucket: FolderDeleter = getStorage().bucket(),
+): Promise<void> {
+  await Promise.all(
+    copyListIds.map((id) => bucket.deleteFiles({ prefix: copiesPrefixOf(id, originalListId), force: true })),
+  );
+}
+
 /**
  * The files of `published/{listId}/` these addresses point at. A replaced
  * snapshot names the copies it keeps by their address, not by a pictureId.
