@@ -2580,7 +2580,9 @@ async function readReports(response: Response, identity: Identity): Promise<void
     return {
       listId: data.listId,
       listTitle: data.listTitle,
-      authorName: data.anonymous === true ? "" : data.authorName,
+      // A list gone since leaves only the report to go by, and one filed before
+      // reports said whether the list was anonymous names nobody but to the owner.
+      authorName: data.anonymous === false || role === "owner" ? data.authorName : "",
       reason: data.reason,
       note: data.note ?? null,
       createdAtMs: data.createdAt?.toMillis?.() ?? 0,
@@ -2742,6 +2744,8 @@ async function publish(
     const earlier = await fromBoard.get();
     if (!earlier.empty) return answerRepeat(response, earlier.docs[0]);
   }
+  const held = fromBoard !== null && boardUid !== null &&
+    (await getFirestore().collection(PUBLISH_HOLDS).doc(holdId(byline.uid, boardUid)).get()).exists;
 
   // Replacing a list the author already published does not add to their count,
   // and the house has no count.
@@ -2884,7 +2888,7 @@ async function publish(
     // Replacing the contents replaces the snapshot, so it has not been looked
     // at. Merging without these left a shield for anything published behind it.
     // A list out of the feed stays out until somebody looks: republishing is not looking.
-    underReview: previous?.underReview === true,
+    underReview: previous?.underReview === true || held,
     reviewed: false,
   };
 
@@ -2962,7 +2966,8 @@ async function publish(
     await discardPublished(target);
     return answerRepeat(response, earlier);
   }
-  await noteWordingConcern(target, document.title, identity, concern);
+  await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
+  if (held) await noteHeld(target, document.title, identity, document.anonymous, boardUid);
 
   if (existingId) {
     await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
@@ -3382,6 +3387,7 @@ async function report(
   const accountAgeMs = identity.isAnonymous
     ? 0
     : Date.now() - (Date.parse((await getAuth().getUser(identity.uid)).metadata.creationTime) || Date.now());
+  const weighs = weighsOnHiding({ isAnonymous: identity.isAnonymous, banned, accountAgeMs });
   await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
     listId,
     listTitle: stored.title,
@@ -3389,7 +3395,7 @@ async function report(
     authorName: anonymous ? "" : stored.authorName,
     anonymous,
     reporterUid: identity.uid,
-    weighs: weighsOnHiding({ isAnonymous: identity.isAnonymous, banned, accountAgeMs }),
+    weighs,
     reason,
     note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
     createdAt: FieldValue.serverTimestamp(),
@@ -3399,7 +3405,7 @@ async function report(
   // one from the same person replaced the first rather than adding to it.
   const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
   const reasons = filed.docs.filter((doc) => doc.get("weighs") !== false).map((doc) => doc.data().reason as typeof reason);
-  if (decideHide({ reasons, reviewed: stored.reviewed === true })) {
+  if (weighs && decideHide({ reasons, reviewed: stored.reviewed === true })) {
     await list.ref.set({ underReview: true }, { merge: true });
   }
 
@@ -3426,6 +3432,14 @@ async function unpublish(response: Response, identity: Identity, id: string, byl
   }
   const batch = getFirestore().batch();
   batch.delete(doc);
+  // Withdrawing is the author's right; coming back from the same board out of sight of the queue is not.
+  if (stored.underReview === true && typeof stored.boardUid === "string") {
+    batch.set(getFirestore().collection(PUBLISH_HOLDS).doc(holdId(stored.authorUid, stored.boardUid)), {
+      listId: id,
+      authorUid: stored.authorUid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  }
   if (byline.speaker !== null) {
     auditInBatch(batch, auditEntry(identity.uid, byline.speaker, "list.editorial_unpublish", `${PUBLISHED}/${id}`, { title: stored.title }, null));
   }
@@ -3449,6 +3463,7 @@ async function noteWordingConcern(
   listTitle: string,
   identity: Identity,
   concern: WordingConcern,
+  anonymous: boolean,
 ): Promise<void> {
   if (concern === "none") return;
 
@@ -3456,9 +3471,12 @@ async function noteWordingConcern(
   await db.collection(REPORTS).doc(`${listId}_${WATCHER}`).set({
     listId,
     listTitle,
-    authorUid: identity.uid,
-    authorName: identity.name ?? "Anonymous",
+    authorUid: anonymous ? "" : identity.uid,
+    authorName: anonymous ? "" : identity.name ?? "Anonymous",
+    anonymous,
     reporterUid: WATCHER,
+    // Its own "hide" is the only thing it takes out of the feed.
+    weighs: false,
     reason: "sexual",
     note: null,
     createdAt: FieldValue.serverTimestamp(),
@@ -3475,6 +3493,31 @@ async function noteWordingConcern(
  * -- republishing replaces its report rather than stacking a second one.
  */
 const WATCHER = "__wording__";
+
+/** Files the list a hidden one was withdrawn and published again as, so the queue still shows it. */
+async function noteHeld(listId: string, listTitle: string, identity: Identity, anonymous: boolean, boardUid: string | null): Promise<void> {
+  const db = getFirestore();
+  await db.collection(REPORTS).doc(`${listId}_${HELD}`).set({
+    listId,
+    listTitle,
+    authorUid: anonymous ? "" : identity.uid,
+    authorName: anonymous ? "" : identity.name ?? "Anonymous",
+    anonymous,
+    reporterUid: HELD,
+    weighs: false,
+    reason: "other",
+    note: "Withdrawn while hidden by reports and published again from the same board.",
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  if (boardUid !== null) await db.collection(PUBLISH_HOLDS).doc(holdId(identity.uid, boardUid)).delete();
+}
+
+const HELD = "__held__";
+const PUBLISH_HOLDS = "publishHolds";
+
+function holdId(uid: string, boardUid: string): string {
+  return `${uid}_${boardUid}`;
+}
 
 /**
  * Everything under lists/topics: the approved ones to pick from, somebody's

@@ -138,6 +138,23 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await lists.doc(String(published.body.id)).get()).exists, false);
   });
 
+  it("keeps a hidden list hidden when its author withdraws it and publishes the board again", async () => {
+    const guest = (await identity("signUp", {})).idToken;
+    const author = (await identity("update", { idToken: guest, email: `again-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
+    const body = { title: "Withdrawn smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }], boardUid: `held-${Date.now().toString(36)}` };
+    const first = await call(author, "POST", "/lists", body);
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-again")).collection("publishedLists");
+    await lists.doc(String(first.body.id)).set({ underReview: true }, { merge: true });
+    assert.equal((await call(author, "DELETE", `/lists/${first.body.id}`)).status, 204);
+
+    const again = await call(author, "POST", "/lists", body);
+    assert.equal(again.status, 201, JSON.stringify(again.body));
+    assert.equal((await lists.doc(String(again.body.id)).get()).get("underReview"), true);
+    const queue = await call(await ownerToken(), "GET", "/lists/reports");
+    assert.ok((queue.body.reports as { listId: string }[]).some((one) => one.listId === again.body.id));
+  });
+
   it("answers every catalogue empty, with no keys", async () => {
     for (const path of ["/tmdb/3/search/multi?query=alien", "/tmdb/tmdb/3/search/multi?query=alien"]) {
       assert.deepEqual(await call(token, "GET", path), { status: 200, body: { page: 1, results: [], total_pages: 0, total_results: 0 } });

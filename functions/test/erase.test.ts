@@ -6,7 +6,7 @@ describe("what erasing an account removes", () => {
   it("removes every document that names the person in one field", () => {
     assert.deepEqual(
       NAMED_IN.map((one) => `${one.collection}.${one.field}`),
-      ["follows.follower", "follows.author", "sectionFollows.follower", "takes.taker", "reports.reporterUid"],
+      ["follows.follower", "follows.author", "sectionFollows.follower", "takes.taker", "reports.reporterUid", "publishHolds.authorUid"],
     );
   });
 

@@ -14,6 +14,7 @@ const SECTION_FOLLOWS = "sectionFollows";
 const TOPIC_FOLLOWS = "topicFollows";
 const TOPICS = "topics";
 const RANKINGS = "rankings";
+const PUBLISH_HOLDS = "publishHolds";
 const SECTIONS = "sections";
 const SECTION_PROPOSERS = "sectionProposers";
 const AUDIT_LOG = "auditLog";
@@ -32,6 +33,7 @@ export const NAMED_IN: readonly { collection: string; field: string }[] = [
   { collection: SECTION_FOLLOWS, field: "follower" },
   { collection: TAKES, field: "taker" },
   { collection: REPORTS, field: "reporterUid" },
+  { collection: PUBLISH_HOLDS, field: "authorUid" },
 ];
 
 /**
