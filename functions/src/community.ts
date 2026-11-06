@@ -2555,6 +2555,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
         ...ownAuthor(data),
         ...waitingFor(data.proposedSection, proposals),
         ...(typeof data.boardUid === "string" ? { boardUid: data.boardUid } : {}),
+        underReview: data.underReview === true,
       };
     }),
   });
@@ -2874,7 +2875,10 @@ async function publish(
   const addresses = new Map(
     outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
   );
-  const { list, picturesFrom } = await adoptForeignCopies(target, settle(decision.draft, addresses));
+  const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
+  const list = adopted.list;
+  // A copy of a copy holds the original's pictures too, and goes with them.
+  const picturesFrom = await withTheirSources(adopted.picturesFrom);
 
   // A new topic is named here, with the list, so the two are written together.
   const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
@@ -3456,6 +3460,13 @@ async function report(
 }
 
 /** The ban on somebody, or nothing at all. Expiry is judged where it is read. */
+async function withTheirSources(listIds: string[]): Promise<string[]> {
+  if (listIds.length === 0) return [];
+  const sources = await getFirestore().getAll(...listIds.map((id) => getFirestore().collection(PUBLISHED).doc(id)));
+  const inherited = sources.flatMap((doc) => (doc.get("picturesFrom") as string[] | undefined) ?? []);
+  return [...new Set([...listIds, ...inherited])];
+}
+
 async function discardCopiesOf(listId: string): Promise<void> {
   const copies = await getFirestore().collection(PUBLISHED).where("picturesFrom", "array-contains", listId).get();
   await discardCopiesIn(copies.docs.map((copy) => copy.id), listId);
