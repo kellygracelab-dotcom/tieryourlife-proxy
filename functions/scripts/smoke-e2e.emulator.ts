@@ -151,8 +151,16 @@ describe("the proxy under the demo emulators", () => {
     const again = await call(author, "POST", "/lists", { ...body, boardUid: `copy-${Date.now().toString(36)}` });
     assert.equal(again.status, 201, JSON.stringify(again.body));
     assert.equal((await lists.doc(String(again.body.id)).get()).get("underReview"), true);
-    const queue = await call(await ownerToken(), "GET", "/lists/reports");
+    const owner = await ownerToken();
+    const queue = await call(owner, "GET", "/lists/reports");
     assert.ok((queue.body.reports as { listId: string }[]).some((one) => one.listId === again.body.id));
+
+    // A decoy does not spend the hold: the next one is held too, until staff decide.
+    const third = await call(author, "POST", "/lists", { ...body, boardUid: `third-${Date.now().toString(36)}` });
+    assert.equal((await lists.doc(String(third.body.id)).get()).get("underReview"), true);
+    assert.equal((await call(owner, "POST", `/lists/${first.body.id}/dismiss`, {})).status, 204);
+    const fourth = await call(author, "POST", "/lists", { ...body, boardUid: `fourth-${Date.now().toString(36)}` });
+    assert.equal((await lists.doc(String(fourth.body.id)).get()).get("underReview"), false);
   });
 
   it("answers every catalogue empty, with no keys", async () => {
