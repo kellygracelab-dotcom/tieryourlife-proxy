@@ -28,6 +28,10 @@ describe("AUDIT_ACTIONS", () => {
       assert.ok((AUDIT_ACTIONS as readonly string[]).includes(what), what);
     }
   });
+
+  it("names the author's withdrawal of a hidden list, which the website reads", () => {
+    assert.ok((AUDIT_ACTIONS as readonly string[]).includes("list.withdrawn_hidden"));
+  });
 });
 
 describe("changedFields", () => {

@@ -49,9 +49,11 @@ The one description of what the proxy answers, read by the website and by the An
 | Tier caption | 60 | `publishing.ts`, `sync.ts` |
 | Picture credit | 200 | `publishing.ts`, `sync.ts` |
 | Picture address (`https://` only, others dropped) | 2000 | `publishing.ts`, `sync.ts` |
-| Tiers per list, per board, per ranking | 20 | `publishing.ts`, `sync.ts` |
+| Ranked tiers per list | 19 on a new list, else `400 TOO_MANY_TIERS`; a replace keeps up to as many as the stored list has, if that is more (some lists have 20) | `MAX_RANKED_TIERS`, `tierLimitFor` |
+| Tiers per board | 20, **the pool included**: 19 ranked tiers and the pool | `MAX_TIERS_PER_BOARD` |
+| Tier names in a ranking | 20 | `MAX_TIERS_PER_LIST` |
 | Cards per list | 2000 (at least 1) | `MAX_ITEMS_PER_LIST` |
-| Cards per board | 2000 (0 allowed) | `MAX_ITEMS_PER_BOARD` |
+| Cards per board | 2000 live (without `deletedAt`, 0 allowed), plus up to 2000 more in the trash: at most 4000 in the body | `MAX_ITEMS_PER_BOARD`, `MAX_TRASHED_ITEMS_PER_BOARD` |
 | A list snapshot, a board, as JSON | 700 000 bytes, else `413 TOO_LARGE` | `MAX_SNAPSHOT_BYTES`, `MAX_BOARD_BYTES` |
 | Own photographs (distinct picture ids) per list | 200 | `MAX_OWN_PICTURES_PER_LIST` |
 | Cover collage (`coverImageUrls`) | 6, deduplicated | `MAX_PREVIEW_IMAGES` |
@@ -109,11 +111,12 @@ Answer `200 {lists: ListSummary[], nextCursor: string | null}`, plus `followingN
 Body:
 - `title`: string, required.
 - `category`: section id, required. It must be an approved, not hidden section; or one the list already sits in (a republish keeps a section after it is hidden); or the caller's own waiting or declined proposal, in which case the list is filed under the proposal's `fileUnder` (or `other`) and, while the proposal waits, moves in when it is approved; or a merged section, followed to where it went. Else `400 {code: "INVALID", detail: "category"}`.
-- `tiers`: 1–20 of `{label, caption?, colorLight, colorDark}`.
+- `tiers`: the ranked tiers, 1–19 of `{label, caption?, colorLight, colorDark}` (the pool is not a tier here: its cards are the unranked ones). More is `400 TOO_MANY_TIERS`. A replace may keep as many as the stored list already has, when that is more than 19.
 - `items`: 1–2000 of `{title?, imageUrl?, pictureId?, tierIndex?, credit?}`. A card needs a title or a picture. `tierIndex` out of range, or absent, means unranked. `pictureId` names the caller's own photograph, which is copied to `published/{listId}/` after Vision SafeSearch passes it. An `imageUrl` or `coverImageUrl` into the caller's own folder (`/o/users%2F{uid}%2Fpictures%2F{id}`) is taken as that `pictureId` or `coverPictureId`; one into anyone else's folder is dropped, and so are own-folder addresses in `coverImageUrls`. A board kept in the account (`PUT /boards`) keeps its own-folder collage as sent.
 - `coverImageUrl`, `coverPictureId`, `coverImageUrls` (the chosen collage, up to 6): optional.
 - `anonymous`: `true` publishes without the author's name; `false` with it; absent keeps what a republished list was (a new one is named).
 - Topic, at most one of: `topicId` (an existing topic), `newTopic` (a name; reuses an approved topic of that name, or the caller's own waiting one, else proposes a new one, which holds the list in `other` until a moderator decides), or **`noTopic: true`**, which takes the topic off. Sending none of them (or `null`) on a republish keeps the list's topic while it stays in the same section, and moves it into the topic its proposal became. Two at once: `400 INVALID`.
+- **Staff moves hold.** On a replace of a list staff moved (`movedByStaff`, see `POST /lists/{id}/move`), each moved field is judged on its own. A body that brings the field's `from` value, or does not bring the field at all (for the topic: none of `topicId`, `newTopic`, `noTopic`), keeps the staff's `to`. A body that brings another value, `newTopic`, or `noTopic: true` for the topic, wins, and that part of `movedByStaff` is cleared. The `topicId` in the answer is what was stored.
 - `takenFrom`: the id of the list this board was copied from; the new list then carries `basedOn` crediting it (nobody by name when that list is anonymous, and nobody for one's own list or one under review).
 - **`boardUid`**: the device's own uid of the board, 1–100 characters.
 
@@ -122,11 +125,11 @@ Answers:
 - `200 {id, topicId}`: `POST /lists/{id}` replaced it.
 - **`200 {id, topicId, existing: true}`**: this author already published this `boardUid` (on `POST /lists` only). Nothing is written and the existing list is named, even for an author at the 50-list limit. This is what makes a retried publish idempotent. Once that list is unpublished the same `boardUid` publishes anew.
 
-Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS`, `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
+Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS`, **`400 TOO_MANY_TIERS`** (`error` names the limit), `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
 
 Words of 20 characters or more go to the Natural Language classifier. It never refuses: a doubtful board is put in the reports queue, and a very doubtful one is also taken out of the feed until someone looks.
 
-**`DELETE /lists/{id}`**: unpublish. `204`, also when there is no such list. `403 NOT_YOURS`. Its pictures, share cards and app rankings go with it.
+**`DELETE /lists/{id}`**: unpublish. `204`, also when there is no such list. `403 NOT_YOURS`. Its pictures, share cards and app rankings go with it. Withdrawing a list that is `underReview` also writes, in the same batch, the `auditLog` row `{who: <author uid>, role: "author", what: "list.withdrawn_hidden", target: "publishedLists/{id}", before: {underReview: true}, after: null, at}`.
 
 **`PATCH /lists`**: account. Copies the caller's current name and face onto every list they published: `200 {updated: n}`.
 
@@ -154,7 +157,7 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 **`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`. A list already removed stays removed; only its reports go.
 
-**`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`.
+**`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`. The list remembers the move as **`movedByStaff: {category?: {from, to}, topicId?: {from, to}}`** (`topicId` sides may be `null`), one entry per field that changed; `from` stays the author's value across later moves, and a move back to it drops that entry. The author's replace keeps these unless the body says otherwise (`POST /lists`, "Staff moves hold").
 
 **`GET /lists/anonymous?after=`**: owner. Every anonymous list, newest first, with who published it: `200 {lists: (ListSummary + {publishedBy: {uid, name}})[], nextCursor}`. Cursor is the last id; `409 CURSOR_GONE`.
 
@@ -253,9 +256,9 @@ Lists the house publishes, stored under author `tyl-editorial`, always anonymous
 
 **`GET /lists/editorial?after=`**: staff. `200 {lists: ListSummary[], nextCursor}`; cursor is the last id; `409 CURSOR_GONE`.
 
-**`POST /lists/editorial`**: staff. Publish body as `POST /lists`: `201 {id, topicId}`. No count limit; no classifier.
+**`POST /lists/editorial`**: staff. Publish body as `POST /lists`: `201 {id, topicId}`. No count limit; no classifier. The same 19 ranked tiers, `400 TOO_MANY_TIERS`.
 
-**`PUT /lists/editorial/{id}`**: staff. Replace: `200 {id, topicId}`. Its translations stay, pruned to the texts it still shows.
+**`PUT /lists/editorial/{id}`**: staff. Replace: `200 {id, topicId}`. Its translations stay, pruned to the texts it still shows. Tiers and staff moves as for `POST /lists/{id}`.
 
 **`DELETE /lists/editorial/{id}`**: staff. `204`.
 
@@ -292,8 +295,8 @@ The copy of a person's boards their account keeps. Not the published list: the b
 Refusals: `403 NOT_SIGNED_IN`, `409 TOO_MANY_BOARDS`, `413 TOO_LARGE`, `400 INVALID` (`error` says what).
 
 Board body: `{title, displayMode?, category?, coverImageUrl?, coverImageUrls?, authorName?, publishedId?, deletedAt?, fingerprint?, anonymous?, tiers, items, play?}`:
-- `tiers`: 1–20 of `{uid, position, label, caption?, colorLight, colorDark, isPool?}`, uids distinct.
-- `items`: 0–2000 of `{uid, tierUid, position, title, imageUrl?, pictureId?, source?, deletedAt?, credit?}`. A card needs a title or a picture that is kept (a `pictureId`, or an `imageUrl` another device can fetch); a card with only a picture is stored with `title: ""`. `tierUid` must name a tier of the board; `source` is `MANUAL` (default), `TMDB` or `GENERATED`; `pictureId` is `[A-Za-z0-9_-]{1,100}`; `deletedAt` set means in the trash.
+- `tiers`: 1–20 of `{uid, position, label, caption?, colorLight, colorDark, isPool?}`, uids distinct. The 20 includes the pool: 19 ranked tiers and the pool.
+- `items`: up to 2000 live cards (no `deletedAt`) plus up to 2000 in the trash, so at most 4000, of `{uid, tierUid, position, title, imageUrl?, pictureId?, source?, deletedAt?, credit?}`. A card needs a title or a picture that is kept (a `pictureId`, or an `imageUrl` another device can fetch); a card with only a picture is stored with `title: ""`. `tierUid` must name a tier of the board; `source` is `MANUAL` (default), `TMDB` or `GENERATED`; `pictureId` is `[A-Za-z0-9_-]{1,100}`; `deletedAt` set means in the trash.
 - `play`: a game under way, `{kind: "swiss" | "hill" | "bracket", count, seed, refine, ids, history, round, startedAt, scope?, keepTier?}`. One that does not read strictly, or would push the board past its size, is dropped and the board kept.
 - **`displayMode`**: `WRAP` (default, also for anything unknown), `HORIZONTAL_SCROLL`, `FLAT_RANKED`. The first builds' `RANKED` is read as `FLAT_RANKED`.
 
@@ -409,7 +412,7 @@ It prints `{owner, sections, topic}` as JSON and is safe to run again. It refuse
   ```
 
   This is the build plus `firebase emulators:exec --only functions,firestore,auth,storage --project demo-tieryourlife "<your test command>"`, which starts the emulators, waits until the functions are loaded, runs the command with `FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` set, shuts everything down, and exits with the command's status. The command runs in `functions/`. It never prompts, and needs no login, keys or Application Default Credentials. Running `npm --prefix functions run build` and then that `firebase` line from the repository root does the same.
-- The proxy's own smoke test of all this: `npm --prefix functions run test:e2e`. It covers guest sign-up, refusal of a guest's publication, the guest becoming an account, publishing with an own picture, the same `boardUid` again answering `existing`, a board PUT twice and read back, every catalogue answering empty, carrying credits, and the seed twice.
+- The proxy's own smoke test of all this: `npm --prefix functions run test:e2e`. It covers guest sign-up, refusal of a guest's publication, the guest becoming an account, publishing with an own picture, the same `boardUid` again answering `existing`, a board PUT twice and read back, the tier limit, a staff move holding against the author's republish, the withdrawal marker, every catalogue answering empty, carrying credits, and the seed twice.
 
 **Two suites on one machine.** The ports are fixed, so only one suite runs at a time. The Storage emulator keeps its files under the system temp directory, so give a second suite its own `TEMP`/`TMP`, and its own ports in a copy of `firebase.json` passed with `--config`.
 
@@ -423,9 +426,10 @@ Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/*
 
 Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`;
-- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew.
+- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew;
+- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`).
 
-Renaming those fields or that `what` value is a change to this section, agreed with the website first.
+Renaming those fields or those `what` values is a change to this section, agreed with the website first.
 
 A change to their requests or answers changes this section in the same website PR.
 

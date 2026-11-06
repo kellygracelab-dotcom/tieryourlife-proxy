@@ -5,6 +5,7 @@ import {
   MAX_CREDIT_LENGTH,
   MAX_ITEMS_PER_BOARD,
   MAX_TIERS_PER_BOARD,
+  MAX_TRASHED_ITEMS_PER_BOARD,
   decideStore,
   decideWrite,
   displayModeOf,
@@ -222,13 +223,50 @@ describe("decideStore", () => {
     assert.equal(decision.ok === false && decision.reason, "too_large");
   });
 
-  it("refuses more cards than a board can have", () => {
-    const items = Array.from({ length: MAX_ITEMS_PER_BOARD + 1 }, (_unused, index) => ({
-      uid: `item-${index}`,
+  function cards(count: number, prefix: string, deletedAt?: number) {
+    return Array.from({ length: count }, (_unused, index) => ({
+      uid: `${prefix}${index}`,
       tierUid: TIER_UID,
       position: index,
-      title: "Arrival",
+      title: "A",
+      ...(deletedAt === undefined ? {} : { deletedAt }),
     }));
+  }
+
+  it("refuses more live cards than a board can have", () => {
+    const decision = store({ items: cards(MAX_ITEMS_PER_BOARD + 1, "i") });
+
+    assert.equal(decision.ok, false);
+    assert.equal(decision.ok === false && decision.reason, "too_large");
+  });
+
+  it("keeps a full board with a full trash on top", () => {
+    const items = [
+      ...cards(MAX_ITEMS_PER_BOARD, "i"),
+      ...cards(MAX_TRASHED_ITEMS_PER_BOARD, "t", 1_700_000_000_000),
+    ];
+    const decision = store({ items });
+
+    assert.equal(decision.ok, true);
+    assert.equal(decision.ok && decision.board.items.length, 4000);
+  });
+
+  it("does not count the trash against the live cards", () => {
+    const items = [...cards(10, "i"), ...cards(MAX_ITEMS_PER_BOARD, "t", 1_700_000_000_000)];
+
+    assert.equal(store({ items }).ok, true);
+  });
+
+  it("refuses a trash fuller than its allowance, even beside few live cards", () => {
+    const items = [...cards(1, "i"), ...cards(MAX_TRASHED_ITEMS_PER_BOARD + 1, "t", 1_700_000_000_000)];
+    const decision = store({ items });
+
+    assert.equal(decision.ok, false);
+    assert.equal(decision.ok === false && decision.reason, "too_large");
+  });
+
+  it("refuses more live cards than allowed even when some are in the trash", () => {
+    const items = [...cards(MAX_ITEMS_PER_BOARD + 1, "i"), ...cards(5, "t", 1_700_000_000_000)];
     const decision = store({ items });
 
     assert.equal(decision.ok, false);

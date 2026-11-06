@@ -12,7 +12,10 @@
 import { chosenPictures } from "./publishing";
 
 export const MAX_BOARD_BYTES = 700_000;
+/** Live cards only; the trash has its own allowance on top, so emptying it is never what a save waits for. */
 export const MAX_ITEMS_PER_BOARD = 2000;
+export const MAX_TRASHED_ITEMS_PER_BOARD = 2000;
+/** Nineteen ranked tiers and the pool. */
 export const MAX_TIERS_PER_BOARD = 20;
 /**
  * Someone with two hundred boards is not backing up a hobby any more. High
@@ -378,7 +381,7 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
   // and got as far as the shop is exactly the person whose work should
   // survive; refusing until there is a first card would drop it.
   const rawItems = Array.isArray(source.items) ? source.items : [];
-  if (rawItems.length > MAX_ITEMS_PER_BOARD) {
+  if (rawItems.length > MAX_ITEMS_PER_BOARD + MAX_TRASHED_ITEMS_PER_BOARD) {
     return { ok: false, reason: "too_large", detail: "Too many items" };
   }
 
@@ -418,6 +421,13 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
       deletedAt: timestamp(item.deletedAt),
       ...(credit ? { credit } : {}),
     });
+  }
+  const trashed = items.filter((item) => item.deletedAt !== null).length;
+  if (items.length - trashed > MAX_ITEMS_PER_BOARD) {
+    return { ok: false, reason: "too_large", detail: "Too many items" };
+  }
+  if (trashed > MAX_TRASHED_ITEMS_PER_BOARD) {
+    return { ok: false, reason: "too_large", detail: "Too many items in the trash" };
   }
 
   const board: StoredBoard = {
