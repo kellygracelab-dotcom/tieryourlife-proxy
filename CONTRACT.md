@@ -73,7 +73,7 @@ The one description of what the proxy answers, read by the website and by the An
 | House translations | 2000 per locale, 200 characters a side, the list document 1 000 000 bytes with them | `editorial.ts` |
 | Picture search query | 2–100 characters, page 1–20 | `pictureSearch.ts` |
 | Web picture search | asked only when fewer than 6 good hits; 30 per account per day; 50 000 a month for everyone | `pictureSources.ts` |
-| Kept web picture | 4 MB, 3 redirects, 300 per account per day | `pictureSearch.ts` |
+| Kept web picture | 4 MB (read no further), 3 redirects, 300 attempts per account per day, refused ones too | `pictureSearch.ts` |
 | Own picture in Storage (`users/{uid}/pictures/`) | under 4 MB, declared `image/jpeg`, `png`, `webp` or `gif` (rules); the bytes must start as JPEG, PNG, GIF or WebP; 2000 uploads per account per UTC day; otherwise `checkUpload` removes it right after it lands | `storage.rules`, `pictureBytes.ts` |
 | Generation prompt | 1000 | `generate.ts` |
 | Free generations, daily ceiling, lease | 3 per account, 100 a UTC day, 6 minutes | `quota.ts` |
