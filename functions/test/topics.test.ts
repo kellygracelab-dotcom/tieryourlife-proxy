@@ -455,9 +455,17 @@ describe("topicReservationClash", () => {
 describe("mayKnowProposer", () => {
   // A topic proposed by publishing names the author of the list, which may be anonymous.
   it("tells the proposer and the staff who proposed a topic, and nobody else", () => {
-    assert.equal(mayKnowProposer("author-1", { uid: "author-1", staff: false }), true);
-    assert.equal(mayKnowProposer("author-1", { uid: "mod", staff: true }), true);
-    assert.equal(mayKnowProposer("author-1", { uid: "reader", staff: false }), false);
+    const topic = { createdBy: "author-1" };
+    assert.equal(mayKnowProposer(topic, { uid: "author-1", staff: false }), true);
+    assert.equal(mayKnowProposer(topic, { uid: "mod", staff: true }), true);
+    assert.equal(mayKnowProposer(topic, { uid: "reader", staff: false }), false);
+  });
+
+  it("keeps a topic named by an anonymous list to its proposer and the owner", () => {
+    const topic = { createdBy: "author-1", proposedAnonymously: true };
+    assert.equal(mayKnowProposer(topic, { uid: "author-1", staff: false }), true);
+    assert.equal(mayKnowProposer(topic, { uid: "mod", staff: true }), false);
+    assert.equal(mayKnowProposer(topic, { uid: "owner", staff: true, owner: true }), true);
   });
 });
 
