@@ -400,18 +400,20 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
     if (!tierUid || !tierUids.has(tierUid)) {
       return { ok: false, reason: "invalid", detail: "An item names a tier that is not on the board" };
     }
-    if (!itemTitle) {
-      return { ok: false, reason: "invalid", detail: "An item needs a title" };
+    const itemPictureId = pictureId(item.pictureId);
+    const itemImageUrl = keepableImageUrl(item.imageUrl);
+    if (!itemTitle && itemPictureId === null && itemImageUrl === null) {
+      return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
     itemUids.add(itemUid);
     const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
     items.push({
       uid: itemUid,
-      pictureId: pictureId(item.pictureId),
+      pictureId: itemPictureId,
       tierUid,
       position: Math.max(0, Math.trunc(Number(item.position) || 0)),
-      title: itemTitle,
-      imageUrl: keepableImageUrl(item.imageUrl),
+      title: itemTitle ?? "",
+      imageUrl: itemImageUrl,
       source: ITEM_SOURCES.find((known) => known === item.source) ?? "MANUAL",
       deletedAt: timestamp(item.deletedAt),
       ...(credit ? { credit } : {}),

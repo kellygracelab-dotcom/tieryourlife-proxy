@@ -293,7 +293,7 @@ Refusals: `403 NOT_SIGNED_IN`, `409 TOO_MANY_BOARDS`, `413 TOO_LARGE`, `400 INVA
 
 Board body: `{title, displayMode?, category?, coverImageUrl?, coverImageUrls?, authorName?, publishedId?, deletedAt?, fingerprint?, anonymous?, tiers, items, play?}`:
 - `tiers`: 1–20 of `{uid, position, label, caption?, colorLight, colorDark, isPool?}`, uids distinct.
-- `items`: 0–2000 of `{uid, tierUid, position, title, imageUrl?, pictureId?, source?, deletedAt?, credit?}`. `tierUid` must name a tier of the board; `source` is `MANUAL` (default), `TMDB` or `GENERATED`; `pictureId` is `[A-Za-z0-9_-]{1,100}`; `deletedAt` set means in the trash.
+- `items`: 0–2000 of `{uid, tierUid, position, title, imageUrl?, pictureId?, source?, deletedAt?, credit?}`. A card needs a title or a picture that is kept (a `pictureId`, or an `imageUrl` another device can fetch); a card with only a picture is stored with `title: ""`. `tierUid` must name a tier of the board; `source` is `MANUAL` (default), `TMDB` or `GENERATED`; `pictureId` is `[A-Za-z0-9_-]{1,100}`; `deletedAt` set means in the trash.
 - `play`: a game under way, `{kind: "swiss" | "hill" | "bracket", count, seed, refine, ids, history, round, startedAt, scope?, keepTier?}`. One that does not read strictly, or would push the board past its size, is dropped and the board kept.
 - **`displayMode`**: `WRAP` (default, also for anything unknown), `HORIZONTAL_SCROLL`, `FLAT_RANKED`. The first builds' `RANKED` is read as `FLAT_RANKED`.
 

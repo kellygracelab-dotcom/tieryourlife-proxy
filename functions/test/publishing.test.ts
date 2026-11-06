@@ -77,6 +77,14 @@ describe("decidePublish", () => {
     assert.equal(decision.ok && decision.draft.items[0].title, "Sunday roast");
   });
 
+  it("drops an address into someone's own picture folder, cover included", () => {
+    const own = "https://firebasestorage.googleapis.com/v0/b/x/o/users%2Fu1%2Fpictures%2Fp1?alt=media&token=t";
+    const decision = publish({ coverImageUrl: own, items: [{ title: "Me", imageUrl: own }] });
+
+    assert.equal(decision.ok && decision.draft.items[0].imageUrl, null);
+    assert.equal(decision.ok && decision.draft.coverImageUrl, null);
+  });
+
   it("drops a plain http image, keeping only https", () => {
     const decision = publish({ items: [{ title: "A", imageUrl: "http://example.com/a.jpg" }] });
 
