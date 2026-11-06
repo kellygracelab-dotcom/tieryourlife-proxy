@@ -30,3 +30,132 @@ jobs:
       # money, and a type error here is only caught at deploy time otherwise.
       - name: Build and test
         run: npm --prefix functions run check
+
+  # Both clients' end-to-end suites against this branch in the demo emulators
+  # (CONTRACT.md, E2E), so a change that breaks one of them is red before it merges.
+  website:
+    name: Website against this proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout the website's main
+        uses: actions/checkout@v4
+        with:
+          repository: kellygracelab-dotcom/tieryourlife-web
+          ref: main
+          path: web
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            functions/package-lock.json
+            web/package-lock.json
+            web/functions/package-lock.json
+
+      # The Firestore and Storage emulators are Java programs.
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Keep the emulators' downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}-15
+
+      - name: Install
+        run: |
+          npm --prefix functions ci
+          npm --prefix web ci
+          npm --prefix web/functions ci
+          npm install --global firebase-tools@15
+
+      - name: Install the smoke browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Smokes against this proxy
+        working-directory: web
+        run: npm run e2e:proxy
+        env:
+          TYL_PROXY_DIR: ..
+
+      - name: Keep the smoke traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-smokes
+          path: web/test-results/proxy
+          retention-days: 7
+
+  app:
+    name: App against this proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout the app's main
+        uses: actions/checkout@v4
+        with:
+          repository: kellygracelab-dotcom/TierYourLife
+          ref: main
+          path: app
+
+      # Gradle and the Firestore emulator both run on it.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Keep the emulators' downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ runner.os }}-15
+
+      - name: Install
+        run: |
+          npm --prefix functions ci
+          npm install --global firebase-tools@15
+
+      # Built first, so the emulators are up only while the tests run.
+      - name: Build the tests
+        working-directory: app
+        run: ./gradlew :e2e:testDebugUnitTest
+
+      - name: End-to-end tests
+        run: npm --prefix functions run emulators:e2e:exec -- "cd \"$GITHUB_WORKSPACE/app\" && ./gradlew :e2e:testDebugUnitTest -Pe2e"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-e2e-reports
+          path: |
+            app/e2e/build/reports/tests/**
+            *-debug.log
+            functions/*-debug.log
+          retention-days: 7
