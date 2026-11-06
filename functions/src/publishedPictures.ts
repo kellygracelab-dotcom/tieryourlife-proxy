@@ -243,17 +243,34 @@ export async function adoptForeignCopies<T extends PictureAddresses>(
   };
 }
 
-export function copiesPrefixOf(copyListId: string, originalListId: string): string {
-  return `published/${copyListId}/${originalListId}-`;
+/**
+ * Whether a copy's file came from that list, however many copies away: a copy
+ * of a copy is named `{copy}-{original}-{name}`. List ids hold no `-`.
+ */
+export function isCopiedFrom(fileName: string, originalListId: string): boolean {
+  return fileName.startsWith(`${originalListId}-`) || fileName.includes(`-${originalListId}-`);
+}
+
+/** Only what `discardCopiesIn` asks of a bucket. */
+export interface FolderLister {
+  getFiles(options: { prefix: string }): Promise<[{ name: string; delete(): Promise<unknown> }[], ...unknown[]]>;
 }
 
 export async function discardCopiesIn(
   copyListIds: string[],
   originalListId: string,
-  bucket: FolderDeleter = getStorage().bucket(),
+  bucket: FolderLister = getStorage().bucket(),
 ): Promise<void> {
   await Promise.all(
-    copyListIds.map((id) => bucket.deleteFiles({ prefix: copiesPrefixOf(id, originalListId), force: true })),
+    copyListIds.map(async (id) => {
+      const prefix = `published/${id}/`;
+      const [files] = await bucket.getFiles({ prefix });
+      await Promise.all(
+        files
+          .filter((file) => isCopiedFrom(file.name.slice(prefix.length), originalListId))
+          .map((file) => file.delete().catch(() => undefined)),
+      );
+    }),
   );
 }
 

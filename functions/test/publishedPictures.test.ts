@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addressOf, discardCopiesIn, discardPublished, foreignCopyOf, publicFoldersOf, publishedNamesIn } from "../src/publishedPictures";
+import { addressOf, discardCopiesIn, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn } from "../src/publishedPictures";
 
 describe("taking a list down", () => {
   it("clears the feed's copies and the site's share cards for it", () => {
@@ -58,11 +58,19 @@ describe("a list made from another", () => {
 describe("taking down a list others made copies of", () => {
   it("clears only the copies of its pictures from each list that holds them", async () => {
     const asked: string[] = [];
-    await discardCopiesIn(["M1", "M2"], "L", {
-      deleteFiles: async ({ prefix }) => {
-        asked.push(prefix);
-      },
+    const folder = (id: string, names: string[]) =>
+      names.map((name) => ({ name: `published/${id}/${name}`, delete: async () => asked.push(`${id}/${name}`) }));
+    await discardCopiesIn(["M", "N"], "L", {
+      getFiles: async ({ prefix }) =>
+        [prefix === "published/M/" ? folder("M", ["L-p1", "own", "K-p2"]) : folder("N", ["M-L-p1", "M-own", "x-L"])],
     });
-    assert.deepEqual(asked, ["published/M1/L-", "published/M2/L-"]);
+    assert.deepEqual(asked.sort(), ["M/L-p1", "N/M-L-p1"]);
+  });
+
+  it("knows a copy of a copy by the original in its name", () => {
+    assert.equal(isCopiedFrom("L-p1", "L"), true);
+    assert.equal(isCopiedFrom("M-L-p1", "L"), true);
+    assert.equal(isCopiedFrom("M-p1", "L"), false);
+    assert.equal(isCopiedFrom("LL-p1", "L"), false);
   });
 });
