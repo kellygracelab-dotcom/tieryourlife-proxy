@@ -1532,6 +1532,11 @@ async function followSection(response: Response, identity: Identity, id: string)
 
 async function unfollowSection(response: Response, identity: Identity, id: string): Promise<void> {
   if (!isSectionId(id)) return noSuchSection(response);
+  // Its followers were moved to the section it went into, so that is the one to leave.
+  const found = await readSectionById(id);
+  if (found !== null && answerFor(found, { uid: identity.uid, moderator: false }) === "merged") {
+    return merged(response, found.mergedInto as string);
+  }
   await getFirestore().collection(SECTION_FOLLOWS).doc(sectionFollowId(identity.uid, id)).delete();
   response.status(200).json({ following: false });
 }
@@ -2993,10 +2998,10 @@ async function publish(
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
     await discardUnusedPublished(existingId, [...addresses.keys()]);
-    response.status(200).json({ id: existingId, topicId });
+    response.status(200).json({ id: existingId, topicId, underReview: document.underReview });
     return;
   }
-  response.status(201).json({ id: target, topicId });
+  response.status(201).json({ id: target, topicId, underReview: document.underReview });
 }
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
@@ -3705,6 +3710,7 @@ async function readPendingTopics(response: Response, identity: Identity): Promis
       return {
         ...toTopic(id, data, false, reader),
         proposerName: mayKnowProposer(data, reader) ? data.proposerName : "",
+        proposedAnonymously: data.proposedAnonymously === true,
         requestedSection: data.requestedSection ?? null,
         similar,
       };
