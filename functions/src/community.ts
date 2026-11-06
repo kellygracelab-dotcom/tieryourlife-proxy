@@ -2661,7 +2661,7 @@ async function settleReports(
   // A decision on the withdrawn list, or on a list held because of it, ends the hold.
   const holds = listed === null
     ? (await db.collection(PUBLISH_HOLDS).where("listId", "==", listId).get()).docs.map((doc) => doc.ref)
-    : filed.docs.some((doc) => doc.get("reporterUid") === HELD) ? [db.collection(PUBLISH_HOLDS).doc(listed.authorUid)] : [];
+    : takeDown && filed.docs.some((doc) => doc.get("reporterUid") === HELD) ? [db.collection(PUBLISH_HOLDS).doc(listed.authorUid)] : [];
   holds.forEach((ref) => batch.delete(ref));
   const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
   if (takeDown) {
@@ -2751,8 +2751,9 @@ async function publish(
     const earlier = await fromBoard.get();
     if (!earlier.empty) return answerRepeat(response, earlier.docs[0]);
   }
-  const hold = existingId === null ? await getFirestore().collection(PUBLISH_HOLDS).doc(byline.uid).get() : null;
-  const held = hold !== null && hold.exists && ((hold.get("untilMs") as number | undefined) ?? 0) > Date.now();
+  // A list already up is held as well: pouring the withdrawn one into it would otherwise do.
+  const hold = await getFirestore().collection(PUBLISH_HOLDS).doc(byline.uid).get();
+  const held = hold.exists && ((hold.get("untilMs") as number | undefined) ?? 0) > Date.now();
 
   // Replacing a list the author already published does not add to their count,
   // and the house has no count.
@@ -2974,7 +2975,7 @@ async function publish(
     return answerRepeat(response, earlier);
   }
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
-  if (held) await noteHeld(target, document.title, identity, document.anonymous);
+  if (held) await noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined);
 
   if (existingId) {
     await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
@@ -3447,6 +3448,7 @@ async function unpublish(response: Response, identity: Identity, id: string, byl
   if (stored.underReview === true) {
     batch.set(getFirestore().collection(PUBLISH_HOLDS).doc(stored.authorUid), {
       listId: id,
+      listTitle: stored.title,
       authorUid: stored.authorUid,
       untilMs: Date.now() + HOLD_MS,
       createdAt: FieldValue.serverTimestamp(),
@@ -3507,7 +3509,7 @@ async function noteWordingConcern(
 const WATCHER = "__wording__";
 
 /** Files the list a hidden one was withdrawn and published again as, so the queue still shows it. */
-async function noteHeld(listId: string, listTitle: string, identity: Identity, anonymous: boolean): Promise<void> {
+async function noteHeld(listId: string, listTitle: string, identity: Identity, anonymous: boolean, withdrawn: string | undefined): Promise<void> {
   const db = getFirestore();
   await db.collection(REPORTS).doc(`${listId}_${HELD}`).set({
     listId,
@@ -3518,7 +3520,7 @@ async function noteHeld(listId: string, listTitle: string, identity: Identity, a
     reporterUid: HELD,
     weighs: false,
     reason: "other",
-    note: "Its author withdrew a list hidden by reports and then published this one.",
+    note: `Its author withdrew "${withdrawn ?? "a list"}" while reports hid it, then published this. Decide on that one to lift the hold.`,
     createdAt: FieldValue.serverTimestamp(),
   });
 }
