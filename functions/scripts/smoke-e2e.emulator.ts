@@ -211,12 +211,12 @@ describe("the proxy under the demo emulators", () => {
       topicId: { from: null, to: topic.id },
     });
 
-    assert.deepEqual(await call(author, "POST", `/lists/${id}`, body), { status: 200, body: { id, topicId: topic.id } });
+    assert.deepEqual(await call(author, "POST", `/lists/${id}`, body), { status: 200, body: { id, topicId: topic.id, underReview: false } });
     const kept = await lists.doc(id).get();
     assert.equal(kept.get("category"), topic.section);
     assert.equal(kept.get("topicId"), topic.id);
 
-    assert.deepEqual(await call(author, "POST", `/lists/${id}`, { ...body, category: "games" }), { status: 200, body: { id, topicId: null } });
+    assert.deepEqual(await call(author, "POST", `/lists/${id}`, { ...body, category: "games" }), { status: 200, body: { id, topicId: null, underReview: false } });
     const chosen = await lists.doc(id).get();
     assert.equal(chosen.get("category"), "games");
     assert.equal(chosen.get("topicId"), null);
