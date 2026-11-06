@@ -71,6 +71,8 @@ export interface ListStanding {
   coverImageUrl: string | null;
   authorUid: string | null;
   authorPhotoUrl: string | null;
+  /** Published without a name: its author goes only to the owner. */
+  anonymous: boolean;
 }
 
 export interface QueuedList {
@@ -79,6 +81,8 @@ export interface QueuedList {
   authorName: string;
   authorUid: string | null;
   authorPhotoUrl: string | null;
+  /** Published without a name: its author goes only to the owner. */
+  anonymous: boolean;
   coverImageUrl: string | null;
   /** Newest first, because the last thing said is the most useful. */
   reasons: Reason[];
@@ -115,6 +119,7 @@ export function groupReports(
         coverImageUrl: null,
         authorUid: null,
         authorPhotoUrl: null,
+        anonymous: false,
       };
       return {
         listId: newest[0].listId,
@@ -122,6 +127,7 @@ export function groupReports(
         authorName: newest[0].authorName,
         authorUid: known.authorUid,
         authorPhotoUrl: known.authorPhotoUrl,
+        anonymous: known.anonymous,
         coverImageUrl: known.coverImageUrl,
         reasons: newest.map((one) => one.reason),
         notes: newest.map((one) => one.note).filter((note): note is string => note !== null),

@@ -18,6 +18,7 @@ function standing(some: Partial<ListStanding>): ListStanding {
     coverImageUrl: null,
     authorUid: null,
     authorPhotoUrl: null,
+    anonymous: false,
     ...some,
   };
 }

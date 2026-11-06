@@ -2611,6 +2611,7 @@ async function readReports(response: Response, identity: Identity): Promise<void
         coverImageUrl: collageImage({ coverImageUrl: data.coverImageUrl ?? null, previewImages: data.previewImages ?? [] }),
         authorUid: shown ? data.authorUid ?? null : null,
         authorPhotoUrl: shown ? data.authorPhotoUrl ?? null : null,
+        anonymous: isAnonymous(data),
       }];
     }),
   );
