@@ -8,7 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
-import { decideHide, groupReports, REPORT_REASONS, type QueuedReport } from "./moderation";
+import { decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
   ENOUGH_TO_JUDGE,
@@ -3380,6 +3380,7 @@ async function report(
   // One report per person per list: a second is the same complaint, not a
   // stronger one.
   const anonymous = isAnonymous(stored);
+  const banned = !identity.isAnonymous && isBanned(await readBan(identity.uid), Date.now());
   await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
     listId,
     listTitle: stored.title,
@@ -3387,6 +3388,7 @@ async function report(
     authorName: anonymous ? "" : stored.authorName,
     anonymous,
     reporterUid: identity.uid,
+    weighs: weighsOnHiding({ isAnonymous: identity.isAnonymous, banned }),
     reason,
     note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
     createdAt: FieldValue.serverTimestamp(),
@@ -3395,7 +3397,7 @@ async function report(
   // Read back rather than counted up: reports are one per person, and a second
   // one from the same person replaced the first rather than adding to it.
   const filed = await db.collection(REPORTS).where("listId", "==", listId).get();
-  const reasons = filed.docs.map((doc) => doc.data().reason as typeof reason);
+  const reasons = filed.docs.filter((doc) => doc.get("weighs") !== false).map((doc) => doc.data().reason as typeof reason);
   if (decideHide({ reasons, reviewed: stored.reviewed === true })) {
     await list.ref.set({ underReview: true }, { merge: true });
   }

@@ -23,6 +23,15 @@ export const NEVER_HIDES: Reason = "wrong_category";
 export const REPORTS_BEFORE_HIDING = 3;
 export const HIDES_ON_FIRST: Reason = "sexual";
 
+/**
+ * Whether a complaint counts towards taking a list out of the feed. A guest is
+ * one request away and a banned account has shown what it does, so theirs are
+ * kept for the staff to read but move nothing.
+ */
+export function weighsOnHiding(reporter: { isAnonymous: boolean; banned: boolean }): boolean {
+  return !reporter.isAnonymous && !reporter.banned;
+}
+
 export interface HideInput {
   reasons: Reason[];
   /** True once somebody has looked at this snapshot and left it up. */

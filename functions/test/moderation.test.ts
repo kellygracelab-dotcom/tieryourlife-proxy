@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   decideHide,
   groupReports,
+  weighsOnHiding,
   REPORTS_BEFORE_HIDING,
   type ListStanding,
   type QueuedReport,
@@ -20,6 +21,14 @@ function standing(some: Partial<ListStanding>): ListStanding {
     ...some,
   };
 }
+
+describe("weighsOnHiding", () => {
+  it("counts an account's complaint, not a guest's or a banned account's", () => {
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: false }), true);
+    assert.equal(weighsOnHiding({ isAnonymous: true, banned: false }), false);
+    assert.equal(weighsOnHiding({ isAnonymous: false, banned: true }), false);
+  });
+});
 
 describe("decideHide", () => {
   it("leaves a list up while one person has complained", () => {
