@@ -117,6 +117,9 @@ function keepableImageUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
+  // An address into someone's own folder carries its download token: a public
+  // list gets such a picture only as a pictureId, copied after SafeSearch.
+  if (trimmed.toLowerCase().includes("/o/users%2f")) return null;
   return trimmed.length > 2000 ? null : trimmed;
 }
 

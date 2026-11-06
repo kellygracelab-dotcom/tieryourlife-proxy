@@ -264,6 +264,22 @@ describe("decideStore", () => {
     assert.equal(decision.ok && decision.board.items[0].pictureId, "abc-123");
   });
 
+  it("keeps a nameless card that has a picture, and refuses one with neither", () => {
+    const pictured = store({
+      items: [
+        { uid: "item-1", tierUid: TIER_UID, position: 0, title: "  ", pictureId: "abc-123" },
+        { uid: "item-2", tierUid: TIER_UID, position: 1, imageUrl: "https://image.tmdb.org/t/p/w342/a.jpg" },
+      ],
+    });
+    assert.equal(pictured.ok, true);
+    assert.deepEqual(pictured.ok && pictured.board.items.map((item) => item.title), ["", ""]);
+
+    const onlyOnThePhone = store({
+      items: [{ uid: "item-1", tierUid: TIER_UID, position: 0, title: "", imageUrl: "file:///data/a.jpg" }],
+    });
+    assert.equal(onlyOnThePhone.ok, false);
+  });
+
   // The id is concatenated into a storage path, so anything that could climb
   // out of one is not an id.
   it("refuses a picture name that could walk out of its folder", () => {
