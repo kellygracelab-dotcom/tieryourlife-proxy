@@ -66,6 +66,7 @@ import {
   discardUnusedPublished,
   adoptForeignCopies,
   discardCopiesIn,
+  sourcesInNames,
   publishedNamesIn,
 } from "./publishedPictures";
 import {
@@ -2878,7 +2879,12 @@ async function publish(
   const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
   const list = adopted.list;
   // A copy of a copy holds the original's pictures too, and goes with them.
-  const picturesFrom = await withTheirSources(adopted.picturesFrom);
+  const ownNames = publishedNamesIn(target, [
+    ...list.items.map((item) => item.imageUrl),
+    list.coverImageUrl,
+    ...list.previewImages,
+  ]);
+  const picturesFrom = await withTheirSources([...new Set([...adopted.picturesFrom, ...sourcesInNames(ownNames)])]);
 
   // A new topic is named here, with the list, so the two are written together.
   const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;

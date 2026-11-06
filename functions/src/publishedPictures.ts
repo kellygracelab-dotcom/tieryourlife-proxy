@@ -251,6 +251,21 @@ export function isCopiedFrom(fileName: string, originalListId: string): boolean 
   return fileName.startsWith(`${originalListId}-`) || fileName.includes(`-${originalListId}-`);
 }
 
+const LIST_ID = /^[A-Za-z0-9]{20}$/;
+
+/**
+ * The lists a copy's own files came from, read off their names: a snapshot
+ * sent again with the copy's own addresses still holds `{original}-{name}`.
+ */
+export function sourcesInNames(names: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const name of names) {
+    const parts = name.split("-");
+    for (let at = 0; at < parts.length - 1 && LIST_ID.test(parts[at]); at++) found.add(parts[at]);
+  }
+  return [...found];
+}
+
 /** Only what `discardCopiesIn` asks of a bucket. */
 export interface FolderLister {
   getFiles(options: { prefix: string }): Promise<[{ name: string; delete(): Promise<unknown> }[], ...unknown[]]>;
