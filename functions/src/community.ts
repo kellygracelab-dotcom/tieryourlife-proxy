@@ -66,6 +66,7 @@ import {
   discardUnusedPublished,
   adoptForeignCopies,
   discardCopiesIn,
+  sourcesInNames,
   publishedNamesIn,
 } from "./publishedPictures";
 import {
@@ -394,6 +395,7 @@ interface StoredList {
    * before any of this existed, which reads as false and is correct.
    */
   underReview?: boolean;
+  picturesFrom?: string[];
   /**
    * Somebody looked at this snapshot and left it up, so complaints about it no
    * longer take it out of the feed. Per snapshot: republishing makes a new one.
@@ -2735,6 +2737,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     tiers: data.tiers,
     items: data.items,
     translations: data.translations ?? {},
+    picturesFrom: Array.isArray(data.picturesFrom) ? data.picturesFrom : [],
   });
 }
 
@@ -2878,7 +2881,12 @@ async function publish(
   const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
   const list = adopted.list;
   // A copy of a copy holds the original's pictures too, and goes with them.
-  const picturesFrom = await withTheirSources(adopted.picturesFrom);
+  const ownNames = publishedNamesIn(target, [
+    ...list.items.map((item) => item.imageUrl),
+    list.coverImageUrl,
+    ...list.previewImages,
+  ]);
+  const picturesFrom = await withTheirSources([...new Set([...adopted.picturesFrom, ...sourcesInNames(ownNames)])]);
 
   // A new topic is named here, with the list, so the two are written together.
   const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;

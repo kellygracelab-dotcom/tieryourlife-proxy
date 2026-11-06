@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addressOf, discardCopiesIn, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn } from "../src/publishedPictures";
+import { addressOf, discardCopiesIn, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn } from "../src/publishedPictures";
 
 describe("taking a list down", () => {
   it("clears the feed's copies and the site's share cards for it", () => {
@@ -65,6 +65,12 @@ describe("taking down a list others made copies of", () => {
         [prefix === "published/M/" ? folder("M", ["L-p1", "own", "K-p2"]) : folder("N", ["M-L-p1", "M-own", "x-L"])],
     });
     assert.deepEqual(asked.sort(), ["M/L-p1", "N/M-L-p1"]);
+  });
+
+  it("reads where a copy's own files came from off their names", () => {
+    const L = "AbCdEfGhIjKlMnOpQrSt";
+    const K = "ZyXwVuTsRqPoNmLkJiHg";
+    assert.deepEqual(sourcesInNames([`${L}-p1`, `${K}-${L}-p2`, "own-photo-1", `${L}`, "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"]).sort(), [K, L].sort());
   });
 
   it("knows a copy of a copy by the original in its name", () => {
