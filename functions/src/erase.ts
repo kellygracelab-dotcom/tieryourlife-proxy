@@ -13,6 +13,7 @@ const TAKES = "takes";
 const SECTION_FOLLOWS = "sectionFollows";
 const TOPIC_FOLLOWS = "topicFollows";
 const TOPICS = "topics";
+const RANKINGS = "rankings";
 const SECTIONS = "sections";
 const SECTION_PROPOSERS = "sectionProposers";
 const AUDIT_LOG = "auditLog";
@@ -34,9 +35,9 @@ export const NAMED_IN: readonly { collection: string; field: string }[] = [
 ];
 
 /**
- * Follows that a count stands on: each one removed takes one off the count
- * on the thing followed, as unfollowing does, so an erased account leaves no
- * follower behind in the numbers either.
+ * Follows and rankings that a count stands on: each one removed takes one off
+ * the count on the thing followed or ranked, as unfollowing or withdrawing a
+ * ranking does, so an erased account leaves nobody behind in the numbers either.
  */
 export const COUNTED_FOLLOWS: readonly {
   collection: string;
@@ -44,6 +45,7 @@ export const COUNTED_FOLLOWS: readonly {
   countedOn: { collection: string; idField: string; counter: string };
 }[] = [
   { collection: TOPIC_FOLLOWS, field: "follower", countedOn: { collection: TOPICS, idField: "topicId", counter: "followerCount" } },
+  { collection: RANKINGS, field: "uid", countedOn: { collection: PUBLISHED, idField: "listId", counter: "rankingCount" } },
 ];
 
 /**

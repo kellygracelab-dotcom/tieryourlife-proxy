@@ -14,12 +14,17 @@ describe("what erasing an account removes", () => {
     assert.ok(NAMED_IN.some((one) => one.collection === "sectionFollows" && one.field === "follower"));
   });
 
-  it("removes the topics they followed, and takes each one off that topic's count", () => {
+  it("removes the topics they followed and their rankings, and takes each one off its count", () => {
     assert.deepEqual(COUNTED_FOLLOWS, [
       {
         collection: "topicFollows",
         field: "follower",
         countedOn: { collection: "topics", idField: "topicId", counter: "followerCount" },
+      },
+      {
+        collection: "rankings",
+        field: "uid",
+        countedOn: { collection: "publishedLists", idField: "listId", counter: "rankingCount" },
       },
     ]);
   });
