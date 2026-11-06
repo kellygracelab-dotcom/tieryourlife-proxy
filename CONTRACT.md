@@ -118,8 +118,9 @@ Body:
 - **`boardUid`**: the device's own uid of the board, 1–100 characters.
 
 Answers:
-- `201 {id, topicId}`: a new list.
-- `200 {id, topicId}`: `POST /lists/{id}` replaced it.
+- `201 {id, topicId, underReview}`: a new list.
+- `200 {id, topicId, underReview}`: `POST /lists/{id}` replaced it.
+- `underReview: true` means the list was kept but starts out of the feed (held, or replacing a hidden list): its link answers 404 to others until staff look. Tell the author it waits for moderation.
 - **`200 {id, topicId, existing: true}`**: this author already published this `boardUid` (on `POST /lists` only). Nothing is written and the existing list is named, even for an author at the 50-list limit. This is what makes a retried publish idempotent. Once that list is unpublished the same `boardUid` publishes anew.
 
 Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS`, `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
@@ -195,7 +196,7 @@ A reader's own placing of somebody's list, kept beside it.
 
 **`GET /lists/topics/mine`**: what the caller proposed, waiting ones first: `200 {topics: Topic[]}`.
 
-**`GET /lists/topics/pending`**: staff. Oldest first: `200 {topics: (Topic + {proposerName, requestedSection, similar: Topic[]})[]}`. A topic first named by an anonymous list gives a moderator `proposerName: ""` and no `createdBy`; the owner is told both.
+**`GET /lists/topics/pending`**: staff. Oldest first: `200 {topics: (Topic + {proposerName, requestedSection, similar: Topic[]})[]}`. A topic first named by an anonymous list gives a moderator `proposerName: ""` and no `createdBy`; the owner is told both, and every entry carries `proposedAnonymously` so the owner can mark the name as hidden from others.
 
 **`GET /lists/topics/{id}`**: `200 Topic`. `400 INVALID`, `404 NOT_FOUND`.
 
@@ -219,7 +220,7 @@ A reader's own placing of somebody's list, kept beside it.
 
 **`GET /lists/sections/{id}`**: `200 SectionView`. `404 NOT_FOUND` for none, or a proposal that is not the caller's. **`410 {code: "MERGED", mergedInto, detail: mergedInto, mergedTopicId?}`** for a merged section.
 
-**`POST /lists/sections/{id}/follow`**: account, approved sections only. `200 {following: true}`. `403 NOT_SIGNED_IN`, `404 NOT_FOUND`, `410 MERGED`, `409 TOO_MANY_FOLLOWING`. **`DELETE /lists/sections/{id}/follow`**: `200 {following: false}`.
+**`POST /lists/sections/{id}/follow`**: account, approved sections only. `200 {following: true}`. `403 NOT_SIGNED_IN`, `404 NOT_FOUND`, `410 MERGED`, `409 TOO_MANY_FOLLOWING`. **`DELETE /lists/sections/{id}/follow`**: `200 {following: false}`; `410 MERGED` for a merged section, whose followers were moved to `mergedInto`: leave that one.
 
 **`GET /lists/sections/proposals`**: account, not banned. What the caller may still propose: `200 {pending, maxPending, proposalsToday, maxPerDay, refusal: null | "TOO_MANY_PENDING" | "TOO_MANY_PROPOSALS"}`. Asked before uploading a picture for a proposal that would be refused.
 
