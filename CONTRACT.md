@@ -288,7 +288,7 @@ The copy of a person's boards their account keeps. Not the published list: the b
 
 **`GET /boards/{uid}`**: `200 Board`. `404 NOT_FOUND`.
 
-**`PUT /boards/{uid}`**: account. Body: the board (below) plus `basedOn` (the revision the device worked from; absent for a first write) and `deviceName?`. Answers:
+**`PUT /boards/{uid}`**: account. Body: the board (below) plus `basedOn` (the revision the device worked from; the key is left out on a first write) and `deviceName?`. Answers:
 - `200 {uid, revision}`: stored, `revision` one higher.
 - `200 {uid, revision}` with the stored revision unchanged: the same board again (its `fingerprint` equals the stored one). This makes a retried PUT idempotent.
 - `409 {code: "CONFLICT", board: Board}`: the account moved on since `basedOn` and the content differs. Nothing is merged: the device keeps both.
@@ -428,7 +428,8 @@ Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/*
 Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`;
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew;
-- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`).
+- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`). Either of these two rows keeps a removed list's rankings hidden.
+- `bans/{uid}`: `{until, bannedAt, reason}`; banned while it exists and `until === null || until > now`.
 
 Renaming those fields or those `what` values is a change to this section, agreed with the website first.
 
@@ -437,7 +438,7 @@ A change to their requests or answers changes this section in the same website P
 ### Who may call
 - Every `/api/**` call needs `X-Firebase-AppCheck`, exactly as in the proxy: 401 `APP_UNVERIFIED`.
 - **user:** any Firebase ID token in `Authorization: Bearer`, a guest included. Without one: 401 `UNAUTHENTICATED`.
-- **account:** a signed-in, non-anonymous user. A guest gets 401 `NOT_SIGNED_IN`.
+- **account:** a signed-in, non-anonymous user. A guest gets 401 `NOT_SIGNED_IN` (on `PATCH`/`DELETE /api/rank/{code}` and `GET /api/me/rankings` too).
 
 ### Rankings
 A ranking is one reader's placement of a published list's cards. Its code is 8 characters, `/r/{code}` is its page, and it stores a snapshot of the list as it was ranked.
@@ -462,6 +463,7 @@ A ranking is one reader's placement of a published list's cards. Its code is 8 c
 - 400 `INVALID`: rows don't match the tiers, a card isn't on the list, a card is placed twice, nothing is placed, or a bad `listId` or `tierLabels`.
 - 404 `NOT_FOUND`: no such list or ranking.
 - 409 `LIST_CHANGED`.
+- 403 `BANNED` (`{error, code, until}`): an account with a ban in force, on `POST` (checked before the list is read) and `PUT`. Guests are not checked. Deleting one's own ranking stays allowed.
 - 403 `NOT_YOURS`: someone else keeps it, or the claim token doesn't match.
 - 409 `CLAIMED`: another account already keeps it.
 - 413 `TOO_LARGE`: body over 64 KB.
