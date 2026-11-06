@@ -6,7 +6,10 @@
  */
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
-import { assertEmulatorsOnly, call, identity, seed } from "./seed-e2e";
+import { initializeApp } from "firebase-admin/app";
+import { getStorage } from "firebase-admin/storage";
+import { STUB_PICTURE } from "../src/emulator";
+import { PROJECT, assertEmulatorsOnly, call, identity, seed } from "./seed-e2e";
 
 const TIER = { label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" };
 
@@ -67,6 +70,23 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(stored.body.revision, 1);
     const index = await call(token, "GET", "/boards");
     assert.ok((index.body.boards as { uid: string }[]).some((one) => one.uid === id));
+  });
+
+  it("removes a file in someone's own folder that is not a picture, and leaves one that is", async () => {
+    const bucket = getStorage(initializeApp({ projectId: PROJECT, storageBucket: `${PROJECT}.appspot.com` }, "smoke-upload")).bucket();
+    const { localId } = await identity("signUp", {});
+    const fake = bucket.file(`users/${localId}/pictures/fake`);
+    const real = bucket.file(`users/${localId}/pictures/real`);
+    await fake.save(Buffer.from("%PDF-1.7 not a picture"), { contentType: "image/jpeg", resumable: false });
+    await real.save(STUB_PICTURE, { contentType: "image/png", resumable: false });
+
+    let gone = false;
+    for (let tries = 0; tries < 40 && !gone; tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      gone = !(await fake.exists())[0];
+    }
+    assert.ok(gone, "the fake picture is still there");
+    assert.ok((await real.exists())[0]);
   });
 
   it("answers every catalogue empty, with no keys", async () => {

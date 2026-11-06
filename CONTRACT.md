@@ -74,6 +74,7 @@ The one description of what the proxy answers, read by the website and by the An
 | Picture search query | 2–100 characters, page 1–20 | `pictureSearch.ts` |
 | Web picture search | asked only when fewer than 6 good hits; 30 per account per day; 50 000 a month for everyone | `pictureSources.ts` |
 | Kept web picture | 4 MB, 3 redirects, 300 per account per day | `pictureSearch.ts` |
+| Own picture in Storage (`users/{uid}/pictures/`) | under 4 MB, declared `image/jpeg`, `png`, `webp` or `gif` (rules); the bytes must start as JPEG, PNG, GIF or WebP; 2000 uploads per account per UTC day; otherwise `checkUpload` removes it right after it lands | `storage.rules`, `pictureBytes.ts` |
 | Generation prompt | 1000 | `generate.ts` |
 | Free generations, daily ceiling, lease | 3 per account, 100 a UTC day, 6 minutes | `quota.ts` |
 | Page sizes | feed, house, anonymous, admin lists 20; topics 20 (max 50); rankings 30; board index 100; reports read 50; own topics, pending topics 100 | |
@@ -323,6 +324,7 @@ Not callable:
 - `sweepPictures`: daily, deletes own pictures no board names, after their first day.
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `houseFill`: answers picture-search jobs that `scripts/house-fill.ts` writes to `houseFillJobs`.
+- `checkUpload` (us-east1, beside the bucket): on every file landing in `users/{uid}/pictures/`, removes it if its first bytes are not JPEG, PNG, GIF or WebP, or if it is the account's 2001st upload that UTC day. The client is not told; its download URL then answers 404, and `keep` or publishing treat the picture as missing.
 
 ## Shapes
 
