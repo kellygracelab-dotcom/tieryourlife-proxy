@@ -423,9 +423,9 @@ Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/*
 
 Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`;
-- `auditLog` rows with `target == "publishedLists/{id}"` and `action == "report.takedown"`, to tell a list staff took down from one its author withdrew.
+- `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew.
 
-Renaming those fields or that action value is a change to this section, agreed with the website first.
+Renaming those fields or that `what` value is a change to this section, agreed with the website first.
 
 A change to their requests or answers changes this section in the same website PR.
 
