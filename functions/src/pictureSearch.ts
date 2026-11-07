@@ -62,7 +62,7 @@ const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 6;
+const CACHE_SHAPE = 8;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -391,7 +391,7 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     languages: [...new Set([input.language, language, "en"])].join("|"),
     format: "json",
   });
-  const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language);
+  const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language, input.scope === "music");
   const candidates = pictured.length === 0 ? pictured : await fitting(pictured, wantsCovers(input.scope));
   return {
     hits: candidates.map(({ hit }) => hit),

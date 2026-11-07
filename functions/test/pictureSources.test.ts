@@ -26,6 +26,7 @@ import {
   tmdbHits,
   webHits,
   wikidataCandidates,
+  isMusicItem,
   WEB_DAILY_PER_USER,
   WEB_MONTHLY_CEILING,
 } from "../src/pictureSources";
@@ -49,14 +50,14 @@ describe("pictureScopeOf", () => {
   });
 
   it("asks every catalogue for all, and Wikidata in every scope", () => {
-    assert.deepEqual(sourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "deezer", "openlibrary", "inaturalist", "wikidata"]);
+    assert.deepEqual(sourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "openlibrary", "inaturalist", "wikidata"]);
     assert.deepEqual(sourcesFor("animals"), ["inaturalist", "wikidata"]);
     assert.equal(pictureScopeOf("animals"), "animals");
     assert.ok(sourcesFor("games").includes("wikidata"));
   });
 
   it("leaves Open Library out of a quick search, and only scopes that ask it have more to wait for", () => {
-    assert.deepEqual(quickSourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "deezer", "inaturalist", "wikidata"]);
+    assert.deepEqual(quickSourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "inaturalist", "wikidata"]);
     assert.deepEqual(quickSourcesFor("books"), ["wikidata"]);
     assert.equal(hasSlowSources("books"), true);
     assert.equal(hasSlowSources("all"), true);
@@ -169,7 +170,7 @@ describe("the catalogues' answers", () => {
   });
 
   it("which scopes want covers, and what fits a tile", () => {
-    assert.deepEqual(["all", "animals", "games", "people"].map((scope) => wantsCovers(pictureScopeOf(scope))), [false, false, true, true]);
+    assert.deepEqual(["all", "animals", "music", "games", "people"].map((scope) => wantsCovers(pictureScopeOf(scope))), [false, false, false, true, true]);
     assert.equal(fitsTile(600, 900, true), true);
     assert.equal(fitsTile(901, 900, true), false);
     assert.equal(fitsTile(1500, 1000, false), true);
@@ -273,6 +274,22 @@ describe("the catalogues' answers", () => {
     const hits = openLibraryHits({ docs: [{ key: "/works/OL1W", title: "Dune", author_name: ["Frank Herbert"], first_publish_year: 1965, cover_i: 99 }, { key: "/works/OL2W", title: "No cover" }] });
     assert.deepEqual(hits.map((one) => [one.id, one.subtitle, one.imageUrl]), [["openlibrary:OL1W", "Frank Herbert · 1965", "https://covers.openlibrary.org/b/id/99-L.jpg"]]);
     assert.equal(hits[0]?.thumbUrl, null);
+  });
+
+  it("Wikidata for music: an item with a genre or of a music class, not a church or a title", () => {
+    const of = (id: string) => [{ mainsnak: { datavalue: { value: { id } } } }];
+    const pictured = { P18: [{ mainsnak: { datavalue: { value: "A.jpg" } } }] };
+    const entities = {
+      Q1: { labels: { en: { value: "Abbey Road" } }, claims: { ...pictured, P31: of("Q482994") } },
+      Q2: { labels: { en: { value: "Abbey Road Baptist Church" } }, claims: { ...pictured, P31: of("Q56242063") } },
+      Q3: { labels: { en: { value: "Queen Latifah" } }, claims: { ...pictured, P31: of("Q5"), P136: of("Q11401") } },
+      Q4: { labels: { en: { value: "queen regnant" } }, claims: { ...pictured, P31: of("Q355567") } },
+    };
+    assert.deepEqual(wikidataCandidates(["Q1", "Q2", "Q3", "Q4"], { entities }, "en", true).map(({ hit }) => hit.title), ["Abbey Road", "Queen Latifah"]);
+    assert.equal(wikidataCandidates(["Q1", "Q2", "Q3", "Q4"], { entities }, "en").length, 4);
+    assert.equal(isMusicItem({ P31: of("Q215380") }), true);
+    assert.equal(isMusicItem({ P31: of("Q5") }), false);
+    assert.equal(isMusicItem({}), false);
   });
 
   it("Wikidata: the label in the reader's language, a Commons picture, and its TMDB twins", () => {

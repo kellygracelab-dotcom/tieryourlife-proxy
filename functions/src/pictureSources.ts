@@ -35,8 +35,30 @@ export function pictureScopeOf(raw: unknown): PictureScope {
   return (PICTURE_SCOPES as readonly string[]).includes(raw) ? (raw as PictureScope) : "all";
 }
 
+/**
+ * Catalogues never asked, whatever the scope. Deezer is off for the first
+ * release: the right to show its covers publicly is unclear. Lists that
+ * already hold its covers keep them (`CATALOGUE_HOSTS`).
+ */
+export const DISABLED_SOURCES: readonly PictureSource[] = ["deezer"];
+
+/** A picture on Deezer's servers: publishing drops it, and nothing copies it. */
+export function isDeezerPicture(url: string | null): boolean {
+  if (url === null) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "dzcdn.net" || host.endsWith(".dzcdn.net");
+  } catch {
+    return false;
+  }
+}
+
 /** The catalogues a scope asks, best first; the order also breaks ties between equally good titles. */
 export function sourcesFor(scope: PictureScope): PictureSource[] {
+  return everySourceFor(scope).filter((source) => !DISABLED_SOURCES.includes(source));
+}
+
+function everySourceFor(scope: PictureScope): PictureSource[] {
   switch (scope) {
     case "film_tv":
       return ["tmdb", "wikidata"];
@@ -71,7 +93,8 @@ export function hasSlowSources(scope: PictureScope): boolean {
 
 /** Scopes whose tiles are covers and posters, where anything wider than tall looks broken; the others hold photos. */
 export function wantsCovers(scope: PictureScope): boolean {
-  return scope !== "all" && scope !== "animals";
+  // Music is mostly band and artist photos: Commons holds few album covers.
+  return scope !== "all" && scope !== "animals" && scope !== "music";
 }
 
 /** Below this on its short side a picture is soft in a grid tile. */
@@ -396,6 +419,18 @@ const WIKIDATA_PICTURES = ["P3383", "P18", "P154", "P2716"];
 /** Where an item says what it is on TMDB, so the same film is not shown twice. */
 const WIKIDATA_TMDB = { P4947: "movie", P4983: "tv", P4985: "person" } as const;
 
+/** What an item is (P31) that makes it music: bands, albums, singles, songs, musical works. */
+const WIKIDATA_MUSIC = new Set(["Q215380", "Q5741069", "Q9212979", "Q216337", "Q641066", "Q482994", "Q208569", "Q209939", "Q222910", "Q169930", "Q134556", "Q7366", "Q105543609"]);
+
+/** Music: an item Wikidata gives a genre (P136), or one of the music classes; a city, a title or a church has neither. */
+export function isMusicItem(claims: Record<string, unknown>): boolean {
+  if (rows(claims.P136).length > 0) return true;
+  return rows(claims.P31).some((row) => {
+    const value = ((row.mainsnak as Json | undefined)?.datavalue as Json | undefined)?.value as Json | undefined;
+    return WIKIDATA_MUSIC.has(text(value?.id) ?? "");
+  });
+}
+
 export interface WikidataCandidate {
   hit: PictureHit;
   file: string;
@@ -424,12 +459,13 @@ export function commonsThumb(file: string, width: number): string {
 }
 
 /** `wbgetentities` with labels, descriptions and claims, in the order `wbsearchentities` found the ids. */
-export function wikidataCandidates(ids: readonly string[], body: unknown, language: string): WikidataCandidate[] {
+export function wikidataCandidates(ids: readonly string[], body: unknown, language: string, onlyMusic = false): WikidataCandidate[] {
   const entities = ((body as Json | null)?.entities ?? {}) as Record<string, Json>;
   return ids.flatMap((id): WikidataCandidate[] => {
     const entity = entities[id];
     if (!entity) return [];
     const claims = (entity.claims ?? {}) as Record<string, unknown>;
+    if (onlyMusic && !isMusicItem(claims)) return [];
     const file = WIKIDATA_PICTURES.map((property) => firstStringClaim(claims[property])).find((value) => value !== null) ?? null;
     const title = labelIn(entity.labels, language);
     if (!file || !title) return [];

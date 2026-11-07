@@ -5,6 +5,7 @@
 import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
 import { isSectionId } from "./sections";
 import { readAnonymous } from "./anonymous";
+import { isDeezerPicture } from "./pictureSources";
 
 /**
  * Twenty was low enough that an enthusiastic person would meet it, and it also
@@ -147,6 +148,12 @@ function keepableImageUrl(value: unknown): string | null {
   return url === null || isOwnFolder(url) ? null : url;
 }
 
+/** What a public list may show: Deezer's covers are left out, as if they had never been sent. */
+function publicImageUrl(value: unknown): string | null {
+  const url = keepableImageUrl(value);
+  return isDeezerPicture(url) ? null : url;
+}
+
 /**
  * Kept only if it names a tier this board has: out of range means the phone
  * and the snapshot disagree, and the honest answer is "unranked".
@@ -259,11 +266,12 @@ export function decidePublish({
   for (const raw of rawItems) {
     const item = raw as Record<string, unknown>;
     const itemTitle = cleanText(item.title, MAX_TITLE_LENGTH);
-    const imageUrl = keepableImageUrl(item.imageUrl);
+    const imageUrl = publicImageUrl(item.imageUrl);
     const pictureId = isPictureId(item.pictureId) ? item.pictureId : ownPictureIdOf(httpsUrl(item.imageUrl), uploaderUid);
     // A card is a name or a picture and needs one of them: a photograph from
     // the gallery has no name and does not need one. Neither is nothing.
-    if (!itemTitle && !imageUrl && pictureId === null) {
+    // A card that had only a Deezer cover still counts as sent, and goes without art.
+    if (!itemTitle && !keepableImageUrl(item.imageUrl) && pictureId === null) {
       return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
     const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
@@ -279,7 +287,7 @@ export function decidePublish({
   const coverPictureId = isPictureId(source.coverPictureId)
     ? source.coverPictureId
     : ownPictureIdOf(httpsUrl(source.coverImageUrl), uploaderUid);
-  const coverImageUrls = chosenPictures(source.coverImageUrls, { ownFolder: "drop" });
+  const coverImageUrls = chosenPictures(source.coverImageUrls, { ownFolder: "drop" }).filter((url) => !isDeezerPicture(url));
   const wanted = new Set(
     [...items.map((item) => item.pictureId), coverPictureId].filter(
       (id): id is string => id !== null,
@@ -297,7 +305,7 @@ export function decidePublish({
     category,
     tiers,
     items,
-    coverImageUrl: keepableImageUrl(source.coverImageUrl),
+    coverImageUrl: publicImageUrl(source.coverImageUrl),
     coverPictureId,
     coverImageUrls,
     tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
