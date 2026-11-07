@@ -327,14 +327,19 @@ export interface StoreInput {
 /**
  * A writer that does not know the field leaves it out, and must not wipe the
  * cover by doing so: absent keeps what is stored, unless it chose another
- * cover by address. An id that could not be a file name is dropped, as an
- * item's is, and counts as absent.
+ * cover, by address or as a collage. An id that could not be a file name is
+ * dropped, as an item's is, and counts as absent.
  */
-export function settleCoverPicture(source: Record<string, unknown>, stored: string | null): string | null {
+export function settleCoverPicture(
+  source: Record<string, unknown>,
+  collage: readonly string[],
+  stored: string | null,
+): string | null {
   if (source.coverPictureId === null) return null;
   const sent = pictureId(source.coverPictureId);
   if (sent !== null) return sent;
-  return keepableImageUrl(source.coverImageUrl) === null ? stored : null;
+  const choseAnother = keepableImageUrl(source.coverImageUrl) !== null || collage.length >= 2;
+  return choseAnother ? null : stored;
 }
 
 export function decideStore({
@@ -470,7 +475,7 @@ export function decideStore({
   // Added only when there is one, so a board without a game or the flag is
   // stored and handed back exactly as it always was.
   if (source.anonymous === true) board.anonymous = true;
-  const coverPictureId = settleCoverPicture(source, storedCoverPictureId);
+  const coverPictureId = settleCoverPicture(source, board.coverImageUrls, storedCoverPictureId);
   if (coverPictureId !== null) board.coverPictureId = coverPictureId;
   if (JSON.stringify(board).length > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };

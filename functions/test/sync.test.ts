@@ -177,6 +177,8 @@ describe("decideStore", () => {
     it("lets go of it when told so, or when another cover is chosen by address", () => {
       assert.equal(cover({ coverPictureId: null }, "p1"), null);
       assert.equal(cover({ coverImageUrl: "https://example.test/a.jpg" }, "p1"), null);
+      assert.equal(cover({ coverImageUrls: ["https://example.test/a.jpg", "https://example.test/b.jpg"] }, "p1"), null);
+      assert.equal(cover({ coverImageUrls: ["https://example.test/a.jpg"] }, "p1"), "p1");
     });
 
     it("drops an id that could not be a file name, as an item's", () => {
