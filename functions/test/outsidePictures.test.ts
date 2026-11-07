@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { STUB_PICTURE } from "../src/emulator";
 import {
   checkedFace,
+  committedOutsideCopies,
   copyOutside,
   isCatalogueAddress,
   isOurCopy,
@@ -193,6 +194,50 @@ describe("the pictures of a list that have to be copied", () => {
 });
 
 describe("copying pictures from other sites", () => {
+  it("reuses only a committed external image on replace without fetching, scanning or charging again", async () => {
+    const tools = fakeTools();
+    const folder = `published/${LIST}/`;
+    const url = "https://pictures.example/fox.png";
+    const first = await copyOutside(folder, [url], tools, { nameSuffix: "_p_11111111-1111-4111-8111-111111111111" });
+    assert.ok(first.ok);
+    const kept = first.copies.get(url)!;
+    assert.ok(kept);
+    const committed = committedOutsideCopies({ items: [{ imageUrl: kept }], coverImageUrl: null, previewImages: [] }, [url], folder, BUCKET);
+    const next = await copyOutside(folder, [url], tools, { nameSuffix: "_p_22222222-2222-4222-8222-222222222222", committed });
+    assert.ok(next.ok);
+    assert.equal(next.copies.get(url), kept);
+    assert.deepEqual(next.saved, []);
+    assert.deepEqual(tools.fetched, [url]);
+    assert.equal(tools.looked, 1);
+    assert.equal(tools.used, 1);
+  });
+
+  it("an aborted replace clears every file of its attempt while preserving the old snapshot and a concurrent winner", async () => {
+    const tools = fakeTools();
+    const folder = `published/${LIST}/`;
+    const old = folder + "old-photo";
+    tools.files.set(old, STUB_PICTURE);
+    const url = "https://pictures.example/new.png";
+    const [aborted, winner] = await Promise.all([
+      copyOutside(folder, [url], tools, { nameSuffix: "_p_11111111-1111-4111-8111-111111111111" }),
+      copyOutside(folder, [url], tools, { nameSuffix: "_p_22222222-2222-4222-8222-222222222222" }),
+    ]);
+    assert.ok(aborted.ok && winner.ok);
+    const registered = [...aborted.saved];
+    const result = await removeUnlessWritten(registered, tools.remove, async () => {
+      for (const name of ["private-photo_attempt-one", `${OTHER}-adopted_attempt-one`]) {
+        const path = folder + name;
+        await tools.save(path, STUB_PICTURE, "image/png");
+        registered.push(path);
+      }
+      return null;
+    });
+    assert.equal(result, null);
+    assert.ok(tools.files.has(old));
+    assert.ok(winner.saved.every((path) => tools.files.has(path)));
+    assert.ok(registered.every((path) => !tools.files.has(path)));
+  });
+
   const folder = `published/${LIST}/`;
 
   it("looks at each, keeps a copy, and the list points at the copy", async () => {

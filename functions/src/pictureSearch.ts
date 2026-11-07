@@ -21,7 +21,7 @@ import { isDemoEmulator, STUB_PICTURE } from "./emulator";
 import {
   ANILIST_QUERY,
   anilistHits,
-  commonsFitting,
+  commonsPictures,
   commonsName,
   decideWeb,
   deezerAlbumHits,
@@ -62,7 +62,7 @@ const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 8;
+const CACHE_SHAPE = 9;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -405,12 +405,17 @@ async function fitting(candidates: WikidataCandidate[], covers: boolean): Promis
   const sizes = new URLSearchParams({
     action: "query",
     prop: "imageinfo",
-    iiprop: "size",
+    iiprop: "size|extmetadata",
+    iiextmetadatafilter: "Artist|Credit|Attribution|LicenseShortName|LicenseUrl|UsageTerms",
+    iiextmetadatalanguage: "en",
     titles: candidates.map(({ file }) => `File:${file}`).join("|"),
     format: "json",
   });
-  const good = commonsFitting(await getJson(`https://commons.wikimedia.org/w/api.php?${sizes}`), covers);
-  return candidates.filter(({ file }) => good.has(commonsName(file)));
+  const good = commonsPictures(await getJson(`https://commons.wikimedia.org/w/api.php?${sizes}`), covers);
+  return candidates.flatMap((candidate) => {
+    const picture = good.get(commonsName(candidate.file));
+    return picture ? [{ ...candidate, hit: { ...candidate.hit, ...picture } }] : [];
+  });
 }
 
 interface WebOutcome {

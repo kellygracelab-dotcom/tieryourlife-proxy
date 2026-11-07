@@ -10,6 +10,8 @@
  * express weight: two hundred cards with long addresses outweigh a thousand short ones.
  */
 import { chosenPictures } from "./publishing";
+import { MAX_CREDIT_LENGTH } from "./pictureCredit";
+export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
 export const MAX_BOARD_BYTES = 700_000;
 /** Live cards only; the trash has its own allowance on top, so emptying it is never what a save waits for. */
@@ -25,8 +27,6 @@ export const MAX_TIERS_PER_BOARD = 20;
 export const MAX_BOARDS_PER_ACCOUNT = 200;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
-/** "© Jane Doe, CC BY-SA 4.0, via iNaturalist" with room to spare. */
-export const MAX_CREDIT_LENGTH = 200;
 export const MAX_URL_LENGTH = 2000;
 /** Long enough for any digest a device might use to stand for a board. */
 export const MAX_FINGERPRINT_LENGTH = 128;
@@ -477,7 +477,7 @@ export function decideStore({
   if (source.anonymous === true) board.anonymous = true;
   const coverPictureId = settleCoverPicture(source, board.coverImageUrls, storedCoverPictureId);
   if (coverPictureId !== null) board.coverPictureId = coverPictureId;
-  if (JSON.stringify(board).length > MAX_BOARD_BYTES) {
+  if (Buffer.byteLength(JSON.stringify(board), "utf8") > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
   }
   const play = readPlay(source.play);
@@ -485,7 +485,7 @@ export function decideStore({
   // ceiling is left behind, and a clock running ahead cannot start one later than now.
   if (play !== null) {
     const kept = { ...play, startedAt: Math.min(play.startedAt, nowMs) };
-    if (JSON.stringify({ ...board, play: kept }).length <= MAX_BOARD_BYTES) board.play = kept;
+    if (Buffer.byteLength(JSON.stringify({ ...board, play: kept }), "utf8") <= MAX_BOARD_BYTES) board.play = kept;
   }
 
   return { ok: true, board };

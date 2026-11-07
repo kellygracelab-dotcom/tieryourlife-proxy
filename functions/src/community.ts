@@ -74,6 +74,7 @@ import {
 } from "./publishedPictures";
 import {
   checkedFace,
+  committedOutsideCopies,
   copyOutside,
   MAX_OUTSIDE_PICTURES_PER_LIST,
   outsideAddressesIn,
@@ -88,6 +89,7 @@ import {
   decidePublish,
   picturesWanted,
   readBoardUid,
+  snapshotFits,
   settle,
   tierCountsOf,
   type PublishDecision,
@@ -2919,6 +2921,7 @@ async function publish(
   // A new list is named before it is written. The pictures have to be copied
   // somewhere, and that somewhere is the list's own folder.
   const target = existingId ?? collection.doc().id;
+  const nameSuffix = `_p_${randomUUID()}`;
   const pictureTools = realOutsideTools(identity.uid);
   const outsideUrls = outsideAddressesIn(settle(decision.draft, new Map()), target, pictureTools.bucket);
   if (outsideUrls.length > MAX_OUTSIDE_PICTURES_PER_LIST) {
@@ -2932,9 +2935,18 @@ async function publish(
   const words = wordsOf(decision.draft);
   const wording = byline.speaker === null && words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
   const concern = wording === null ? "none" : decideWordingConcern(wording);
+  const previousImages = (previous?.items ?? []).map((item) => {
+    const url = (item as { imageUrl?: unknown } | null)?.imageUrl;
+    return typeof url === "string" ? url : null;
+  });
+  const committed = previous === null ? new Map<string, string>() : committedOutsideCopies({
+    items: previousImages.map((imageUrl) => ({ imageUrl })),
+    coverImageUrl: previous.coverImageUrl ?? null,
+    previewImages: previous.previewImages ?? [],
+  }, outsideUrls, `published/${target}/`, pictureTools.bucket);
 
   const [outside, authorPhotoUrl] = await Promise.all([
-    copyOutside(`published/${target}/`, outsideUrls, pictureTools),
+    copyOutside(`published/${target}/`, outsideUrls, pictureTools, { nameSuffix, committed }),
     checkedFace(byline.uid, byline.photoUrl, pictureTools),
   ]);
   if (!outside.ok) {
@@ -2951,12 +2963,17 @@ async function publish(
     return;
   }
 
-  // Until the list is written, the copies of other sites' pictures are nobody's: any way out removes them.
-  const stored = await removeUnlessWritten(outside.saved, (path) => pictureTools.remove(path), async () => {
+  // Attempt-specific names cannot overwrite the current snapshot or another
+  // attempt's files. Until the transaction commits, all new copies are removed.
+  const saved = [...outside.saved];
+  const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
+  const stored = await removeUnlessWritten(saved, (path) => pictureTools.remove(path), async () => {
     const outcomes = await copyForPublication(
       identity.uid,
       target,
       picturesWanted(decision.draft),
+      undefined,
+      copies,
     );
     const refused = outcomes.find(
       (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
@@ -2973,7 +2990,7 @@ async function publish(
     const addresses = new Map(
       outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
     );
-    const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
+    const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses), copies);
     const list = withCopies(adopted.list, outside.copies);
     // A copy of a copy holds the original's pictures too, and goes with them.
     const ownNames = publishedNamesIn(target, [
@@ -3030,6 +3047,11 @@ async function publish(
       reviewed: false,
     };
 
+    if (!snapshotFits(document)) {
+      refuse(response, { ok: false, reason: "too_large", detail: "The list is too heavy to store" });
+      return null;
+    }
+
     // One transaction, so a new topic's name is reserved with the topic as a
     // moderator's is, and two claims to one name meet in one document. A name
     // somebody else's topic already holds stays theirs; this one waits beside
@@ -3041,9 +3063,14 @@ async function publish(
         if (!there.empty) return there.docs[0];
       }
       // The house's translations stay with a replaced list, as far as it still shows what they translate.
+      const current = existingId ? (await transaction.get(collection.doc(existingId))).data() : null;
+      if (existingId && JSON.stringify(current?.updatedAt ?? null) !== JSON.stringify(previous?.updatedAt ?? null)) return PUBLICATION_CHANGED;
       const keptTranslations = existingId && byline.speaker !== null
-        ? pruneTranslations((await transaction.get(collection.doc(existingId))).get("translations"), translatableStrings(list)).translations
+        ? pruneTranslations(current?.translations, translatableStrings(list)).translations
         : null;
+      const fields = keptTranslations === null ? document : { ...document, translations: keptTranslations };
+      const write = existingId ? fields : { ...fields, publishedAt: FieldValue.serverTimestamp(), takeCount: 0, rankingCount: 0 };
+      if (!snapshotFits({ ...current, ...write })) return PUBLISHED_TOO_HEAVY;
       const reserve = topicRef !== null && attachment.kind === "create"
         ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
         : false;
@@ -3093,22 +3120,24 @@ async function publish(
       }
       if (existingId && keptTranslations !== null) {
         // Named fields are written whole, so a translation dropped here does not survive in a merge.
-        const fields = { ...document, translations: keptTranslations };
-        transaction.set(collection.doc(existingId), fields, { mergeFields: Object.keys(fields) });
+        transaction.set(collection.doc(existingId), write, { mergeFields: Object.keys(write) });
       } else if (existingId) {
-        transaction.set(collection.doc(existingId), document, { merge: true });
+        transaction.set(collection.doc(existingId), write, { merge: true });
       } else {
         // Only on a new list: republishing merges, and a count written here would
         // reset it. Taking is about the list, not the snapshot.
-        transaction.set(collection.doc(target), {
-          ...document,
-          publishedAt: FieldValue.serverTimestamp(),
-          takeCount: 0,
-          rankingCount: 0,
-        });
+        transaction.set(collection.doc(target), write);
       }
       return null;
     });
+    if (earlier === PUBLICATION_CHANGED) {
+      response.status(409).json({ error: "The list changed while publishing. Try again.", code: "PUBLICATION_CHANGED" });
+      return null;
+    }
+    if (earlier === PUBLISHED_TOO_HEAVY) {
+      refuse(response, { ok: false, reason: "too_large", detail: "The list is too heavy to store" });
+      return null;
+    }
     if (earlier !== null) {
       // Its pictures were copied into a folder no list names.
       await discardPublished(target);
@@ -3138,7 +3167,11 @@ async function publish(
         document.coverImageUrl,
         ...document.previewImages,
       ]),
-    ]);
+    ], publishedNamesIn(existingId, [
+      ...previousImages,
+      previous?.coverImageUrl,
+      ...(previous?.previewImages ?? []),
+    ]));
     response.status(200).json({ id: existingId, topicId, underReview: document.underReview, ...dropped });
     return;
   }
@@ -3146,6 +3179,8 @@ async function publish(
 }
 
 const TOO_MANY_LISTS = "too_many_lists";
+const PUBLISHED_TOO_HEAVY = "published_too_heavy";
+const PUBLICATION_CHANGED = "publication_changed";
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
   response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true });

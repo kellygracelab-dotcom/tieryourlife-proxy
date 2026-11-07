@@ -4,6 +4,7 @@
  * requests are in src/pictureSearch.ts.
  */
 import { fold, wordsOf } from "./search";
+import { commonsCredit } from "./pictureCredit";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -445,13 +446,22 @@ export function commonsName(file: string): string {
 
 /** Commons `imageinfo` sizes: the files that make good tiles, by their Commons names. */
 export function commonsFitting(body: unknown, covers: boolean): Set<string> {
+  return new Set(commonsPictures(body, covers).keys());
+}
+
+/** Fitting files with their supplied attribution; an overlong known credit is never silently cut. */
+export function commonsPictures(body: unknown, covers: boolean): Map<string, { credit?: string }> {
   const pages = ((((body as Json | null)?.query as Json | undefined)?.pages ?? {}) as Record<string, Json>);
-  return new Set(Object.values(pages).flatMap((page) => {
+  const pictures = new Map<string, { credit?: string }>();
+  for (const page of Object.values(pages)) {
     const info = rows(page.imageinfo)[0];
     const title = text(page.title);
-    if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || !fitsTile(info.width, info.height, covers)) return [];
-    return [commonsName(title.replace(/^File:/, ""))];
-  }));
+    if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || !fitsTile(info.width, info.height, covers)) continue;
+    const credit = commonsCredit(page, info);
+    if (credit === null) continue;
+    pictures.set(commonsName(title.replace(/^File:/, "")), credit ? { credit } : {});
+  }
+  return pictures;
 }
 
 export function commonsThumb(file: string, width: number): string {
