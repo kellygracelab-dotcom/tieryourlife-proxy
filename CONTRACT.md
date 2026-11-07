@@ -279,7 +279,7 @@ Lists the house publishes, stored under author `tyl-editorial`, always anonymous
 ### Picture search
 
 **`GET /lists/pictures?q=&scope=&lang=&page=&web=&part=`**: the catalogues a scope names, asked together.
-- `scope`: `all` (default), `film_tv`, `anime`, `games`, `music`, `books`, `people`, `animals`. `music` asks Wikidata (pictures from Wikimedia Commons) only.
+- `scope`: `all` (default), `film_tv`, `anime`, `games`, `music`, `books`, `people`, `animals`. `music` asks Wikidata (pictures from Wikimedia Commons) only, and only for items that are music (a genre is named, or the item is a band, album, single, song or musical work); its tiles take photos as wide as 3:2, like `all` and `animals`, where the other scopes take only covers and posters, no wider than tall.
 - `lang`: a BCP-47 tag like `en` or `pt-BR`; default `en`.
 - `page`: 1–20.
 - `web=1` (or `web=true`): ask the paid web search even outside `all`.

@@ -18,14 +18,19 @@ const DEEZER_HIT: PictureHit = {
   kind: "album",
 };
 
-/** What the web answers: Wikidata knows Discovery, Deezer would too, every other catalogue knows nothing. */
+const claim = (value: unknown) => [{ mainsnak: { datavalue: { value } } }];
+
+/**
+ * What the web answers: Wikidata knows the album, the band (by a wide photo)
+ * and a TV channel; Deezer would know the album too; every other catalogue knows nothing.
+ */
 function answer(url: string): unknown {
   const parsed = new URL(url);
   if (parsed.host.endsWith("deezer.com")) {
     return { data: [{ id: 302127, title: "Discovery", cover_xl: DEEZER_HIT.imageUrl, artist: { name: "Daft Punk" } }] };
   }
   if (parsed.host === "www.wikidata.org" && parsed.searchParams.get("action") === "wbsearchentities") {
-    return { search: [{ id: "Q209538" }] };
+    return { search: [{ id: "Q209538" }, { id: "Q1" }, { id: "Q3" }] };
   }
   if (parsed.host === "www.wikidata.org") {
     return {
@@ -33,13 +38,23 @@ function answer(url: string): unknown {
         Q209538: {
           labels: { en: { value: "Discovery" } },
           descriptions: { en: { value: "2001 studio album by Daft Punk" } },
-          claims: { P18: [{ mainsnak: { datavalue: { value: "Discovery cover.jpg" } } }] },
+          claims: { P31: claim({ id: "Q482994" }), P18: claim("Discovery cover.jpg") },
         },
+        Q1: { labels: { en: { value: "Discovery Channel" } }, claims: { P31: claim({ id: "Q1616075" }), P154: claim("Discovery logo.png") } },
+        Q3: { labels: { en: { value: "Daft Punk" } }, claims: { P31: claim({ id: "Q9212979" }), P136: claim({ id: "Q11286" }), P18: claim("Daft Punk on stage.jpg") } },
       },
     };
   }
   if (parsed.host === "commons.wikimedia.org") {
-    return { query: { pages: { "1": { title: "File:Discovery cover.jpg", imageinfo: [{ width: 600, height: 600 }] } } } };
+    return {
+      query: {
+        pages: {
+          "1": { title: "File:Discovery cover.jpg", imageinfo: [{ width: 600, height: 600 }] },
+          "2": { title: "File:Discovery logo.png", imageinfo: [{ width: 600, height: 600 }] },
+          "3": { title: "File:Daft Punk on stage.jpg", imageinfo: [{ width: 1200, height: 800 }] },
+        },
+      },
+    };
   }
   return {};
 }
@@ -81,7 +96,7 @@ describe("Deezer is off", () => {
     for (const quick of [true, false]) {
       const found = await search("music", quick);
       assert.ok(found);
-      assert.deepEqual(found.items.map((hit) => hit.id), ["wikidata:Q209538"], `quick ${quick}`);
+      assert.deepEqual(found.items.map((hit) => hit.id), ["wikidata:Q209538", "wikidata:Q3"], `quick ${quick}`);
     }
     assert.deepEqual(askedDeezer(), []);
   });
@@ -114,13 +129,22 @@ describe("Deezer is off", () => {
       }
     }
     const music = await search("music");
-    assert.deepEqual(music?.items.map((hit) => hit.id), ["wikidata:Q209538"]);
+    assert.deepEqual(music?.items.map((hit) => hit.id), ["wikidata:Q209538", "wikidata:Q3"]);
     assert.deepEqual(askedDeezer(), []);
   });
 
   it("a list that already holds Deezer's covers is published again with them as they are", () => {
     const list = { items: [{ imageUrl: DEEZER_HIT.imageUrl }, { imageUrl: DEEZER_HIT.thumbUrl }], coverImageUrl: DEEZER_HIT.imageUrl, previewImages: [DEEZER_HIT.thumbUrl as string] };
     assert.deepEqual(outsideAddressesIn(list, "list1", "fake-bucket"), []);
+  });
+});
+
+describe("music from Wikidata", () => {
+  it("takes a band's wide photo and leaves out what is not music; all keeps both", async () => {
+    const music = await search("music");
+    assert.deepEqual(music?.items.map((hit) => hit.title), ["Discovery", "Daft Punk"]);
+    const all = await search("all");
+    assert.deepEqual(all?.items.map((hit) => hit.id).sort(), ["wikidata:Q1", "wikidata:Q209538", "wikidata:Q3"]);
   });
 });
 
