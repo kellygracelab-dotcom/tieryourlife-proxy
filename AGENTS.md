@@ -31,3 +31,29 @@ Use the existing CI; do not create a second deployment mechanism or add stored
 credentials just to automate this procedure. Never print secrets or read .env,
 credentials or signing keys. Rules, indexes, account/security settings, data
 migrations and destructive production operations need their own task scope.
+
+## Existing command path
+
+Run with this repository as the absolute working directory. Replace `PR` with
+the accepted PR number. For future PRs, when required-check protection and
+auto-merge are enabled, use `gh pr merge PR --repo
+kellygracelab-dotcom/tieryourlife-proxy --auto --squash`; this queues a merge,
+so wait for `gh pr view PR --json state,mergeCommit` to confirm `MERGED`.
+Inspect `gh pr checks PR --repo kellygracelab-dotcom/tieryourlife-proxy` first.
+
+Then `git -C D:/MyProjects/TierYourLife/TierYourLifeProxy fetch --prune origin`,
+`git -C D:/MyProjects/TierYourLife/TierYourLifeProxy switch main` and
+`git -C D:/MyProjects/TierYourLife/TierYourLifeProxy pull --ff-only` (preserving
+any separate local work). Check main CI for that SHA, run `npm --prefix
+functions run check`, then `firebase deploy --project tieryourlife --only
+functions:default --non-interactive` using the already configured local CLI
+session. Do not open/export authentication files to enable cloud deployment.
+
+Confirm relevant function state, revision/update time and source metadata via
+`gcloud functions describe lists --gen2 --region europe-west1 --project
+tieryourlife --format="json(name,state,updateTime,buildConfig.source.storageSource,serviceConfig.uri,serviceConfig.revision)"`.
+Never dump environment configuration. A token-free read-only request such as
+`curl.exe -i https://europe-west1-tieryourlife.cloudfunctions.net/lists/categories`
+may correctly return an authentication refusal: record the actual status and
+distinguish availability/security smoke from an authenticated feature test.
+Save deploy log, main SHA and smoke evidence on D: before cleaning branches.
