@@ -5,6 +5,7 @@ import { discardPublished } from "./publishedPictures";
 import { proposalAfterErasure, type SectionStatus } from "./sections";
 import { auditTargetsOf, withoutNames } from "./audit";
 import { ERASED_PROPOSER, topicAfterErasure, type TopicStatus } from "./topics";
+import { keepBanPastErasure } from "./banIdentities";
 
 const ACCOUNTS = "accounts";
 const PUBLISHED = "publishedLists";
@@ -64,6 +65,9 @@ export const COUNTED_FOLLOWS: readonly {
  */
 export async function eraseAccount(uid: string): Promise<void> {
   const db = getFirestore();
+
+  // A ban in force outlives the account, kept by the person's hashed sign-ins rather than the uid.
+  await keepBanPastErasure(uid);
 
   // Their published lists, and the feed's copies of their pictures with them.
   const published = await db.collection(PUBLISHED).where("authorUid", "==", uid).get();

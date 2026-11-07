@@ -32,7 +32,7 @@ describe("editorialByline", () => {
 
 describe("bylineOf", () => {
   it("is the person publishing, Anonymous while they have no name", () => {
-    const identity = { uid: "u1", isAnonymous: false, name: null, picture: "https://p/face.jpg", email: null };
+    const identity = { uid: "u1", isAnonymous: false, name: null, picture: "https://p/face.jpg", email: null, banKeys: [] };
     assert.deepEqual(bylineOf(identity), { uid: "u1", name: "Anonymous", photoUrl: "https://p/face.jpg", speaker: null });
   });
 });

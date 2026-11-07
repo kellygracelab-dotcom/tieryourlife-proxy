@@ -27,7 +27,7 @@ The one description of what the proxy answers, read by the website and by the An
 | App Check | `X-Firebase-AppCheck: <token>`. Missing or invalid: `401 APP_UNVERIFIED`. Checked first on every function, except that `generate` says `GENERATION_OFF` before it. |
 | user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it. |
 | account | A user whose sign-in provider is not `anonymous`. A guest gets `403 NOT_SIGNED_IN` unless the route says otherwise. |
-| not banned | An account without a live ban: else `403 {error, code: "BANNED", until}` (`until` is epoch ms, or `null` for forever). |
+| not banned | An account without a live ban, its own (`bans/{uid}`) or one kept from an account the same person erased (`bannedIdentities`, see `DELETE /boards/account`): else `403 {error, code: "BANNED", until}` (`until` is epoch ms, or `null` for forever; of two bans, the one that lifts last). |
 | staff | The owner or a moderator. Else `403 NOT_YOURS`. |
 | owner | The owner alone: the account whose uid is `MODERATOR_UID` or whose verified e-mail is `MODERATOR_EMAIL`. A moderator gets `403 {code: "NOT_YOURS", detail: "owner_only"}`, anybody else `403 NOT_YOURS`. |
 
@@ -308,6 +308,8 @@ Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, c
 - its moderator role (`roles/{uid}`), so it leaves `GET /lists/moderators`;
 - the sections and topics it proposed or made: one still waiting, declined or rejected is deleted with its pictures; an approved or merged one stays without its proposer (a section's `proposerUid` and `proposerName` become `null`, a topic's `createdBy` and `proposerName` become `""`).
 
+What stays: a ban in force when the account is erased. It is kept as **`bannedIdentities/{key}`** `{until, bannedAt}`, one document per key of the person, and nothing else about them. A key is the lower-case hex SHA-256 of the UTF-8 text `email:<address>` for the account's verified e-mail (trimmed, lower-cased), and `<provider>:<id>` for each federated sign-in (`google.com:<Google's sub>`; `firebase.identities` in an ID token, `providerData` in Auth). `password`, `email`, `anonymous` and `custom` give no key. A new account whose token gives one of these keys counts as banned until that ban's `until`. Two bans on one key keep the one that lifts last.
+
 ## `adoptGuestCredits`
 
 **`POST /adoptGuestCredits`**: App Check, account. Body `{guestToken}`: a fresh ID token of the guest the person was before signing into an existing account. Carries the guest's credits over (bought credits add; the free grant counts once). `200 {credits, moved}`; `{credits: null, moved: false}` when the two are one uid. Idempotent: a second call moves nothing. `403 NOT_SIGNED_IN`, `400 INVALID`, `401 UNAUTHENTICATED` (bad guest token), `503 LEDGER_UNAVAILABLE`.
@@ -433,6 +435,7 @@ Of the proxy's data they also read, and never write:
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew;
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`). Either of these two rows keeps a removed list's rankings hidden.
 - `bans/{uid}`: `{until, bannedAt, reason}`; banned while it exists and `until === null || until > now`.
+- `bannedIdentities/{key}`: `{until, bannedAt}`, a ban kept from an erased account, by the same rule. The caller's keys come from its ID token as `DELETE /boards/account` describes; an account is banned when `bans/{uid}` or any of these says so. The proxy's reading of both is `readBan` in `functions/src/banIdentities.ts`.
 
 Renaming those fields or those `what` values is a change to this section, agreed with the website first.
 

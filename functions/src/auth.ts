@@ -1,6 +1,7 @@
 import { getAuth } from "firebase-admin/auth";
 import type { Request } from "firebase-functions/https";
 import type { Response } from "express";
+import { identityKeys, signInsOfToken } from "./banIdentities";
 
 export interface Identity {
   uid: string;
@@ -15,6 +16,8 @@ export interface Identity {
    * make somebody the moderator.
    */
   email: string | null;
+  /** Who the person is to their sign-in provider, hashed: what a ban outlives an erased account by. */
+  banKeys: string[];
 }
 
 /**
@@ -44,7 +47,9 @@ export async function requireUser(request: Request, response: Response): Promise
       decoded.email_verified === true && typeof decoded.email === "string"
         ? decoded.email.trim().toLowerCase()
         : null;
-    return { uid: decoded.uid, isAnonymous: provider === "anonymous", name, picture, email };
+    const isAnonymous = provider === "anonymous";
+    const banKeys = isAnonymous ? [] : identityKeys(email, signInsOfToken(decoded.firebase?.identities));
+    return { uid: decoded.uid, isAnonymous, name, picture, email, banKeys };
   } catch {
     response.status(401).json({ error: "Invalid ID token", code: "UNAUTHENTICATED" });
     return null;
