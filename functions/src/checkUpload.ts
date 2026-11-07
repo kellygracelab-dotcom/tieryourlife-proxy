@@ -3,6 +3,7 @@ import { getStorage } from "firebase-admin/storage";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { HEAD_BYTES, judgeUpload, ownPictureOwner } from "./pictureBytes";
 import { dayKey } from "./quota";
+import { isErased } from "./auth";
 
 const UPLOAD_USAGE = "pictureUploads";
 
@@ -25,7 +26,7 @@ export const checkUpload = onObjectFinalized(
       const usage = getFirestore().doc(`${UPLOAD_USAGE}/${dayKey(Date.now())}/uploads/${uid}`);
       await usage.set({ count: FieldValue.increment(1) }, { merge: true });
       return ((await usage.get()).get("count") as number | undefined) ?? 0;
-    });
+    }, () => isErased(uid));
     if (verdict === "keep") return;
 
     await file.delete({ ignoreNotFound: true });

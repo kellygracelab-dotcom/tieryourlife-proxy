@@ -26,10 +26,18 @@ export function looksLikePicture(head: Uint8Array): boolean {
     (textAt(0, "RIFF") && textAt(8, "WEBP"));
 }
 
-export type UploadVerdict = "keep" | "notAPicture" | "overDailyLimit";
+export type UploadVerdict = "keep" | "notAPicture" | "overDailyLimit" | "accountErased";
 
-/** [uploadsToday] counts this one; a file that is not a picture is refused before it is counted. */
-export function judgeUpload(head: Uint8Array, uploadsToday: () => Promise<number>): Promise<UploadVerdict> {
-  if (!looksLikePicture(head)) return Promise.resolve("notAPicture");
-  return uploadsToday().then((count) => (count > UPLOADS_PER_DAY ? "overDailyLimit" : "keep"));
+/**
+ * [uploadsToday] counts this one; a file that is not a picture is refused before it is counted. An erased
+ * account's token still passes the Storage rules for up to an hour, and nothing would delete what it uploads.
+ */
+export async function judgeUpload(
+  head: Uint8Array,
+  uploadsToday: () => Promise<number>,
+  erased: () => Promise<boolean>,
+): Promise<UploadVerdict> {
+  if (await erased()) return "accountErased";
+  if (!looksLikePicture(head)) return "notAPicture";
+  return (await uploadsToday()) > UPLOADS_PER_DAY ? "overDailyLimit" : "keep";
 }

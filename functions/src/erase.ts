@@ -6,6 +6,7 @@ import { proposalAfterErasure, type SectionStatus } from "./sections";
 import { auditTargetsOf, withoutNames } from "./audit";
 import { ERASED_PROPOSER, topicAfterErasure, type TopicStatus } from "./topics";
 import { keepBanPastErasure } from "./banIdentities";
+import { markErased } from "./auth";
 
 const ACCOUNTS = "accounts";
 const PUBLISHED = "publishedLists";
@@ -65,6 +66,9 @@ export const COUNTED_FOLLOWS: readonly {
  */
 export async function eraseAccount(uid: string): Promise<void> {
   const db = getFirestore();
+
+  // First, so a write from another phone still holding a token cannot land behind the steps below.
+  await markErased(uid);
 
   // A ban in force outlives the account, kept by the person's hashed sign-ins rather than the uid.
   await keepBanPastErasure(uid);
@@ -127,8 +131,12 @@ export async function eraseAccount(uid: string): Promise<void> {
   await bucket.deleteFiles({ prefix: `users/${uid}/`, force: true });
   await bucket.deleteFiles({ prefix: `avatars/${uid}/`, force: true });
 
-  // Last, and only once the rest is gone.
-  await getAuth().deleteUser(uid);
+  // Last, and only once the rest is gone. Already gone is a repeated erasure.
+  await getAuth()
+    .deleteUser(uid)
+    .catch((error: { code?: unknown } | null) => {
+      if (error?.code !== "auth/user-not-found") throw error;
+    });
 }
 
 /** Copies that credited them by uid and name credit nobody; each one rewritten leaves the query. */

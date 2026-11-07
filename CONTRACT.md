@@ -25,7 +25,7 @@ The one description of what the proxy answers, read by the website and by the An
 | Word | Means |
 |---|---|
 | App Check | `X-Firebase-AppCheck: <token>`. Missing or invalid: `401 APP_UNVERIFIED`. Checked first on every function, except that `generate` says `GENERATION_OFF` before it. |
-| user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it. |
+| user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it. A write (any method but `GET`, `HEAD`, `OPTIONS`) with the token of an account erased since (`DELETE /boards/account`) gets **`401 ACCOUNT_ERASED`**, on every function, before anything is read or written; `503 UNAVAILABLE` when that cannot be checked. Reads go on and find nothing. |
 | account | A user whose sign-in provider is not `anonymous`. A guest gets `403 NOT_SIGNED_IN` unless the route says otherwise. |
 | not banned | An account without a live ban, its own (`bans/{uid}`) or one kept from an account the same person erased (`bannedIdentities`, see `DELETE /boards/account`): else `403 {error, code: "BANNED", until}` (`until` is epoch ms, or `null` for forever; of two bans, the one that lifts last). |
 | staff | The owner or a moderator. Else `403 NOT_YOURS`. |
@@ -304,7 +304,7 @@ Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, c
 
 **`DELETE /boards/{uid}`**: account. Leaves a marker `{deleted: true}` with a new revision so other phones drop it too: `204`, also for none.
 
-**`DELETE /boards/account`**: account. Erases the account and everything the service holds about it: `204`. A guest gets `403 NOT_SIGNED_IN`. Among what goes:
+**`DELETE /boards/account`**: account. Erases the account and everything the service holds about it: `204`. A guest gets `403 NOT_SIGNED_IN`. Safe to repeat: a call after an erasure that failed halfway, or after one that finished while the token is still good, is let through and answers `204` too. The first thing it writes is **`erasedAccounts/{uid}`** `{erasedAt}`, which stays: from then on every write with that account's token is `401 ACCOUNT_ERASED` (Conventions), and `checkUpload` deletes what it uploads to Storage. Among what goes:
 - its moderator role (`roles/{uid}`), so it leaves `GET /lists/moderators`;
 - the sections and topics it proposed or made: one still waiting, declined or rejected is deleted with its pictures; an approved or merged one stays without its proposer (a section's `proposerUid` and `proposerName` become `null`, a topic's `createdBy` and `proposerName` become `""`).
 
@@ -333,7 +333,7 @@ Not callable:
 - `sweepPictures`: daily, deletes own pictures no board names, after their first day.
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `houseFill`: answers picture-search jobs that `scripts/house-fill.ts` writes to `houseFillJobs`.
-- `checkUpload` (us-east1, beside the bucket): on every file landing in `users/{uid}/pictures/`, removes it if its first bytes are not JPEG, PNG, GIF or WebP, or if it is the account's 2001st upload that UTC day. The client is not told; its download URL then answers 404, and `keep` or publishing treat the picture as missing.
+- `checkUpload` (us-east1, beside the bucket): on every file landing in `users/{uid}/pictures/`, removes it if the account was erased (`erasedAccounts/{uid}`), if its first bytes are not JPEG, PNG, GIF or WebP, or if it is the account's 2001st upload that UTC day. The client is not told; its download URL then answers 404, and `keep` or publishing treat the picture as missing.
 
 ## Shapes
 
@@ -436,6 +436,7 @@ Of the proxy's data they also read, and never write:
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`). Either of these two rows keeps a removed list's rankings hidden.
 - `bans/{uid}`: `{until, bannedAt, reason}`; banned while it exists and `until === null || until > now`.
 - `bannedIdentities/{key}`: `{until, bannedAt}`, a ban kept from an erased account, by the same rule. The caller's keys come from its ID token as `DELETE /boards/account` describes; an account is banned when `bans/{uid}` or any of these says so. The proxy's reading of both is `readBan` in `functions/src/banIdentities.ts`.
+- `erasedAccounts/{uid}`: `{erasedAt}`, present once the account was erased. Its ID tokens stay valid for up to an hour; the proxy refuses their writes with `401 ACCOUNT_ERASED`.
 
 Renaming those fields or those `what` values is a change to this section, agreed with the website first.
 

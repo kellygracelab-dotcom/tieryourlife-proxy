@@ -127,10 +127,6 @@ export const boards = onRequest(
     if (!(await requireAppCheck(request, response))) {
       return;
     }
-    const identity = await requireUser(request, response);
-    if (!identity) {
-      return;
-    }
 
     // Everything after /boards is at most one board's uid. There are no verbs
     // here: a board is read, written whole, or thrown away.
@@ -138,14 +134,21 @@ export const boards = onRequest(
       .replace(/^\/+|\/+$/g, "")
       .split("/")
       .filter((part) => part !== "boards" && part.length > 0);
-    if (segments.length > 1) {
-      return void response.status(404).json({ error: "No such address" });
-    }
     const id = segments[0] ?? "";
     const hasId = id.length > 0;
     // Board ids are Firestore's twenty characters, so this word can never be
     // one, the same way "face" and "follow" cannot be a list id.
     const aboutTheAccount = id === ACCOUNT;
+
+    const identity = await requireUser(request, response, {
+      evenIfErased: aboutTheAccount && segments.length === 1 && request.method === "DELETE",
+    });
+    if (!identity) {
+      return;
+    }
+    if (segments.length > 1) {
+      return void response.status(404).json({ error: "No such address" });
+    }
 
     try {
       switch (request.method) {
