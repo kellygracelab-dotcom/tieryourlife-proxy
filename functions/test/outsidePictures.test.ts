@@ -273,6 +273,20 @@ describe("an author's face", () => {
     assert.deepEqual(tools.fetched, []);
   });
 
+  it("takes only an account photo's path on Google's host as one", async () => {
+    const tools = fakeTools();
+    const dashed = "https://lh3.googleusercontent.com/a-/AOh14Gj=s96-c";
+    assert.equal(await checkedFace("u1", dashed, tools), dashed);
+    for (const url of [
+      "https://lh3.googleusercontent.com/d/1AbCdEf",
+      "https://lh3.googleusercontent.com/pw/AP1GczN",
+      "https://lh3.googleusercontent.com/blogger_img_proxy/AEn0k_s",
+      "https://lh3.googleusercontent.com/ab/x",
+      "https://lh3.googleusercontent.com/a",
+    ]) assert.equal(await checkedFace("u1", url, tools), copyAddress("avatars/u1/", url), url);
+    assert.equal(tools.fetched.length, 5);
+  });
+
   it("copies any other picture into their avatars after a look, once", async () => {
     const tools = fakeTools();
     const copy = copyAddress("avatars/u1/", FACE);

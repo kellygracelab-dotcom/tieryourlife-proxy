@@ -33,8 +33,15 @@ export const CATALOGUE_HOSTS: ReadonlySet<string> = new Set([
   "upload.wikimedia.org",
 ]);
 
-/** Where Google keeps the photo of a Google account. */
-export const ACCOUNT_PHOTO_HOSTS: ReadonlySet<string> = new Set(["lh3.googleusercontent.com"]);
+/** A Google account's photo: on this host Drive, Photos and Blogger serve other paths, anybody's pictures. */
+export function isAccountPhoto(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return hostOf(url) === "lh3.googleusercontent.com" && /^\/a-?\/./.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
 
 /** Distinct pictures from other sites one list may bring, like `MAX_OWN_PICTURES_PER_LIST`. */
 export const MAX_OUTSIDE_PICTURES_PER_LIST = 200;
@@ -199,7 +206,7 @@ export async function checkedFace(uid: string, url: string | null, tools: Outsid
   const host = hostOf(url);
   if (host === null) return null;
   const folder = `avatars/${uid}/`;
-  if (ACCOUNT_PHOTO_HOSTS.has(host) || isOurCopy(url, tools.bucket, folder)) return url;
+  if (isAccountPhoto(url) || isOurCopy(url, tools.bucket, folder)) return url;
   const done = await copyOutside(folder, [url], tools, { atOnce: 1, withinMs: FACE_WINDOW_MS });
   return done.ok ? done.copies.get(url) ?? null : null;
 }
