@@ -267,13 +267,18 @@ export async function removeUnlessWritten<T>(
  * own `avatars/` stays as it is; any other picture is copied there and looked
  * at, and one that cannot be is no face at all.
  */
-export async function checkedFace(uid: string, url: string | null, tools: OutsideTools): Promise<string | null> {
+export async function checkedFace(
+  uid: string,
+  url: string | null,
+  tools: OutsideTools,
+  { until }: { until?: AbortSignal } = {},
+): Promise<string | null> {
   if (url === null) return null;
   const host = hostOf(url);
   if (host === null) return null;
   const folder = `avatars/${uid}/`;
   if (isAccountPhoto(url) || isOurCopy(url, tools.bucket, folder)) return url;
-  const done = await copyOutside(folder, [url], tools, { atOnce: 1, withinMs: FACE_WINDOW_MS });
+  const done = await copyOutside(folder, [url], tools, { atOnce: 1, withinMs: FACE_WINDOW_MS, until });
   return done.ok ? done.copies.get(url) ?? null : null;
 }
 
