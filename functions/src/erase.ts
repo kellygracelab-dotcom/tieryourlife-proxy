@@ -4,6 +4,9 @@ import { getStorage } from "firebase-admin/storage";
 import { discardPublished } from "./publishedPictures";
 import { proposalAfterErasure, type SectionStatus } from "./sections";
 import { auditTargetsOf, withoutNames } from "./audit";
+import { ERASED_PROPOSER, topicAfterErasure, type TopicStatus } from "./topics";
+import { keepBanPastErasure } from "./banIdentities";
+import { markErased } from "./auth";
 
 const ACCOUNTS = "accounts";
 const PUBLISHED = "publishedLists";
@@ -18,6 +21,7 @@ const PUBLISH_HOLDS = "publishHolds";
 const SECTIONS = "sections";
 const SECTION_PROPOSERS = "sectionProposers";
 const AUDIT_LOG = "auditLog";
+const ROLES = "roles";
 
 /** Firestore's own ceiling for one batch. */
 const BATCH = 500;
@@ -35,6 +39,9 @@ export const NAMED_IN: readonly { collection: string; field: string }[] = [
   { collection: REPORTS, field: "reporterUid" },
   { collection: PUBLISH_HOLDS, field: "authorUid" },
 ];
+
+/** Documents kept under the person's own uid: their recent proposals, and the moderator's role. */
+export const OWN_DOCUMENTS: readonly string[] = [SECTION_PROPOSERS, ROLES];
 
 /**
  * Follows and rankings that a count stands on: each one removed takes one off
@@ -59,6 +66,12 @@ export const COUNTED_FOLLOWS: readonly {
  */
 export async function eraseAccount(uid: string): Promise<void> {
   const db = getFirestore();
+
+  // First, so a write from another phone still holding a token cannot land behind the steps below.
+  await markErased(uid);
+
+  // A ban in force outlives the account, kept by the person's hashed sign-ins rather than the uid.
+  await keepBanPastErasure(uid);
 
   // Their published lists, and the feed's copies of their pictures with them.
   const published = await db.collection(PUBLISHED).where("authorUid", "==", uid).get();
@@ -88,7 +101,21 @@ export async function eraseAccount(uid: string): Promise<void> {
       await doc.ref.update({ proposerUid: null, proposerName: null, proposalPicture: null, proposalPictureUrl: null });
     }
   }
-  await db.collection(SECTION_PROPOSERS).doc(uid).delete();
+
+  // The topics they proposed or made, the same way; a removed one's picture goes with it.
+  const topics = await db.collection(TOPICS).where("createdBy", "==", uid).get();
+  for (const doc of topics.docs) {
+    if (topicAfterErasure(doc.get("status") as TopicStatus) === "remove") {
+      await doc.ref.delete();
+      await getStorage().bucket().deleteFiles({ prefix: `topics/${doc.id}/`, force: true });
+    } else {
+      await doc.ref.update({ ...ERASED_PROPOSER });
+    }
+  }
+
+  for (const collection of OWN_DOCUMENTS) {
+    await db.collection(collection).doc(uid).delete();
+  }
 
   // Other people's copies of their lists now credit nobody, and the log keeps
   // their uid, which bans are kept by, without their name.
@@ -104,8 +131,12 @@ export async function eraseAccount(uid: string): Promise<void> {
   await bucket.deleteFiles({ prefix: `users/${uid}/`, force: true });
   await bucket.deleteFiles({ prefix: `avatars/${uid}/`, force: true });
 
-  // Last, and only once the rest is gone.
-  await getAuth().deleteUser(uid);
+  // Last, and only once the rest is gone. Already gone is a repeated erasure.
+  await getAuth()
+    .deleteUser(uid)
+    .catch((error: { code?: unknown } | null) => {
+      if (error?.code !== "auth/user-not-found") throw error;
+    });
 }
 
 /** Copies that credited them by uid and name credit nobody; each one rewritten leaves the query. */

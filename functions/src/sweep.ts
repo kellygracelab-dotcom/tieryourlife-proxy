@@ -2,6 +2,7 @@ import { getAuth, type UserRecord } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { decideSweep, lastSeen } from "./guests";
+import { sweepExpiredBans } from "./banIdentities";
 
 /** Firebase's own ceiling for one page of users, and for one batch delete. */
 const PAGE_SIZE = 1000;
@@ -30,6 +31,10 @@ export const sweepGuests = onSchedule(
   },
   async () => {
     const nowMs = Date.now();
+    // Kept bans that ran out, which nothing reads as a ban any more; a failure here does not hold up the guests.
+    await sweepExpiredBans(nowMs)
+      .then((removed) => console.log(`Ban sweep: removed ${removed} expired kept bans`))
+      .catch((error) => console.error("Ban sweep failed", error));
     const auth = getAuth();
     const doomed: string[] = [];
 
