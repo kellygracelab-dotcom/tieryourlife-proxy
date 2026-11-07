@@ -52,7 +52,7 @@ function body(overrides: Record<string, unknown> = {}) {
 
 function store(
   overrides: Record<string, unknown> = {},
-  extras: Partial<{ isAnonymous: boolean; boardsAlreadyKept: number }> = {},
+  extras: Partial<{ isAnonymous: boolean; boardsAlreadyKept: number; storedCoverPictureId: string | null }> = {},
 ) {
   return decideStore({
     body: body(overrides),
@@ -155,6 +155,37 @@ describe("decideStore", () => {
     const decision = store({ coverImageUrls: [own, "https://example.test/a.jpg"] });
 
     assert.deepEqual(decision.ok && decision.board.coverImageUrls, [own, "https://example.test/a.jpg"]);
+  });
+
+  describe("the cover picture", () => {
+    const cover = (overrides: Record<string, unknown>, stored: string | null) => {
+      const decision = store(overrides, { storedCoverPictureId: stored });
+      assert.equal(decision.ok, true);
+      return decision.ok ? (decision.board.coverPictureId ?? null) : undefined;
+    };
+
+    it("keeps the owner's photo named as the cover", () => {
+      assert.equal(cover({ coverPictureId: "p-1_a" }, null), "p-1_a");
+      assert.equal(cover({ coverPictureId: "p2" }, "p1"), "p2");
+    });
+
+    it("keeps what is stored when a writer that does not know the field leaves it out", () => {
+      assert.equal(cover({}, "p1"), "p1");
+      assert.equal(cover({ coverImageUrl: "file:///data/cover.jpg" }, "p1"), "p1");
+    });
+
+    it("lets go of it when told so, or when another cover is chosen by address", () => {
+      assert.equal(cover({ coverPictureId: null }, "p1"), null);
+      assert.equal(cover({ coverImageUrl: "https://example.test/a.jpg" }, "p1"), null);
+      assert.equal(cover({ coverImageUrls: ["https://example.test/a.jpg", "https://example.test/b.jpg"] }, "p1"), null);
+      assert.equal(cover({ coverImageUrls: ["https://example.test/a.jpg"] }, "p1"), "p1");
+    });
+
+    it("drops an id that could not be a file name, as an item's", () => {
+      assert.equal(cover({ coverPictureId: "../p1" }, "p1"), "p1");
+      assert.equal(cover({ coverPictureId: "a/b" }, null), null);
+      assert.equal(cover({ coverPictureId: 7 }, null), null);
+    });
   });
 
   // A card pointing at a tier that is not here would come back invisible,

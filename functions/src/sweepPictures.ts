@@ -1,7 +1,7 @@
 import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { decideDiscard, type StoredPicture } from "./pictures";
+import { decideDiscard, picturesOfBoard, type StoredPicture } from "./pictures";
 
 /**
  * Storage knows nothing about boards, so nothing else deletes these; without
@@ -56,10 +56,7 @@ async function sweepAccount(
   const boards = await db.collection("accounts").doc(uid).collection("boards").get();
   const referenced = new Set<string>();
   boards.forEach((board) => {
-    const items = (board.data().items ?? []) as { pictureId?: string | null }[];
-    items.forEach((item) => {
-      if (item.pictureId) referenced.add(item.pictureId);
-    });
+    picturesOfBoard(board.data(), uid).forEach((id) => referenced.add(id));
   });
 
   const stored: StoredPicture[] = files.map((file) => ({

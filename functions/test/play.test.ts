@@ -222,6 +222,11 @@ describe("toFullBoard", () => {
     items: [],
   };
 
+  it("hands back the owner's photo chosen as the cover", () => {
+    assert.equal(toFullBoard("b1", { ...stored, coverPictureId: "p1" }, NOW).coverPictureId, "p1");
+    assert.equal("coverPictureId" in toFullBoard("b1", stored, NOW), false);
+  });
+
   // The answer a board without a game got before games existed, byte for byte.
   it("hands back a board without a game byte for byte as before", () => {
     assert.equal(

@@ -295,9 +295,10 @@ The copy of a person's boards their account keeps. Not the published list: the b
 
 Refusals: `403 NOT_SIGNED_IN`, `409 TOO_MANY_BOARDS`, `413 TOO_LARGE`, `400 INVALID` (`error` says what).
 
-Board body: `{title, displayMode?, category?, coverImageUrl?, coverImageUrls?, authorName?, publishedId?, deletedAt?, fingerprint?, anonymous?, tiers, items, play?}`:
+Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, coverImageUrls?, authorName?, publishedId?, deletedAt?, fingerprint?, anonymous?, tiers, items, play?}`:
 - `tiers`: 1–20 of `{uid, position, label, caption?, colorLight, colorDark, isPool?}`, uids distinct. The 20 includes the pool: 19 ranked tiers and the pool.
 - `items`: up to 2000 live cards (no `deletedAt`) plus up to 2000 in the trash, so at most 4000, of `{uid, tierUid, position, title, imageUrl?, pictureId?, source?, deletedAt?, credit?}`. A card needs a title or a picture that is kept (a `pictureId`, or an `imageUrl` another device can fetch); a card with only a picture is stored with `title: ""`. `tierUid` must name a tier of the board; `source` is `MANUAL` (default), `TMDB` or `GENERATED`; `pictureId` is `[A-Za-z0-9_-]{1,100}`; `deletedAt` set means in the trash.
+- `coverPictureId`: the owner's own photograph as the whole cover, a file in their `users/{uid}/pictures/`, by the same rule as an item's `pictureId` (`[A-Za-z0-9_-]{1,100}`; one that is not is dropped, as an item's is). `null` clears it. Absent keeps the one stored, so a writer that does not know the field cannot wipe it, unless the body has a non-null `coverImageUrl` another device can fetch, or a `coverImageUrls` collage of 2 or more: another cover was chosen, and it is cleared. In the board's fingerprint the cover term is `coverPictureId ?? coverImageUrl`, as `pictureOf` is for a card.
 - `play`: a game under way, `{kind: "swiss" | "hill" | "bracket", count, seed, refine, ids, history, round, startedAt, scope?, keepTier?}`. One that does not read strictly, or would push the board past its size, is dropped and the board kept.
 - **`displayMode`**: `WRAP` (default, also for anything unknown), `HORIZONTAL_SCROLL`, `FLAT_RANKED`. The first builds' `RANKED` is read as `FLAT_RANKED`.
 
@@ -351,7 +352,7 @@ Not callable:
 
 **PictureHit** `{id: "<source>:<id>", title, subtitle, imageUrl, thumbUrl, source, kind, credit?}`.
 
-**Board**: `{uid, revision, updatedAt, deviceName, deleted, fingerprint, title, displayMode, category, coverImageUrl, coverImageUrls, authorName, publishedId, deletedAt, tiers, items, anonymous?, play?}`. A game untouched for 30 days is left out.
+**Board**: `{uid, revision, updatedAt, deviceName, deleted, fingerprint, title, displayMode, category, coverImageUrl, coverImageUrls, authorName, publishedId, deletedAt, tiers, items, anonymous?, coverPictureId?, play?}`. `coverPictureId` is there only when the board has one, so a board without one reads as it always did. A game untouched for 30 days is left out.
 
 **BoardIndexEntry**: `{uid, revision, updatedAt, deviceName, deleted, fingerprint, title, itemCount}`. `itemCount` counts the cards not in the trash.
 
