@@ -192,6 +192,17 @@ export async function liftBan(uid: string): Promise<{ ban: Ban | null; keptRecor
   };
 }
 
+/** [liftBan] on the owner's word, logged as `ban.lift` when there was anything to lift. Whether there was. */
+export async function liftBanLogged(who: string, role: string, uid: string): Promise<boolean> {
+  const { ban, keptRecords } = await liftBan(uid);
+  if (ban === null && keptRecords === 0) return false;
+  await getFirestore().collection(AUDIT_LOG).doc().set({
+    ...auditEntry(who, role, "ban.lift", `${BANS}/${uid}`, { ...(ban ?? {}), keptRecords }, null),
+    at: FieldValue.serverTimestamp(),
+  });
+  return true;
+}
+
 /** Records whose ban has run out, a page at a time; a ban for ever has no `until` to run out by. */
 export async function sweepExpiredBans(nowMs: number): Promise<number> {
   const db = getFirestore();

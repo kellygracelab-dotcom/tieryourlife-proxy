@@ -44,6 +44,7 @@ export const COLLECTIONS: Readonly<Record<string, CollectionRule>> = {
   sections: { verdict: "SOME", what: "built-in sections kept; other sections and every proposal deleted" },
   sectionNames: { verdict: "SOME", what: "built-in sections' name reservations kept; the rest deleted" },
   sectionProposers: { verdict: "DELETE", what: "per-account proposal allowance" },
+  publishLocks: { verdict: "DELETE", what: "per-author lock that keeps parallel publishes under the list limit" },
   reports: { verdict: "DELETE", what: "reports, the moderation queue and the wording watcher's flags" },
   auditLog: { verdict: "DELETE", what: "the audit log" },
   roles: { verdict: "KEEP", what: "moderators" },

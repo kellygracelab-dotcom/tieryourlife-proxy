@@ -57,7 +57,7 @@ The one description of what the proxy answers, read by the website and by the An
 | A list snapshot, a board, as JSON | 700 000 bytes, else `413 TOO_LARGE` | `MAX_SNAPSHOT_BYTES`, `MAX_BOARD_BYTES` |
 | Own photographs (distinct picture ids) per list | 200 | `MAX_OWN_PICTURES_PER_LIST` |
 | Cover collage (`coverImageUrls`) | 6, deduplicated | `MAX_PREVIEW_IMAGES` |
-| Published lists per author | 50 (the house has none) | `MAX_LISTS_PER_AUTHOR` |
+| Published lists per author | 50 (the house has none), counted again inside the transaction that writes a new list, so parallel publishes cannot pass it | `MAX_LISTS_PER_AUTHOR`, `publishLimit.ts` |
 | Boards kept per account | 200 not deleted | `MAX_BOARDS_PER_ACCOUNT` |
 | Board uid, tier uid, item uid, `boardUid` of a publication | 1–100 characters | `sync.ts`, `readBoardUid` |
 | Board fingerprint | 128 | `MAX_FINGERPRINT_LENGTH` |
@@ -126,7 +126,7 @@ Answers:
 - `underReview: true` means the list was kept but starts out of the feed (held, or replacing a hidden list): its link answers 404 to others until staff look. Tell the author it waits for moderation.
 - **`200 {id, topicId, existing: true}`**: this author already published this `boardUid` (on `POST /lists` only). Nothing is written and the existing list is named, even for an author at the 50-list limit. This is what makes a retried publish idempotent. Once that list is unpublished the same `boardUid` publishes anew.
 
-Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS`, **`400 TOO_MANY_TIERS`** (`error` names the limit), `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
+Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS` (also when parallel publishes would pass the limit together: all but those that fit are refused), **`400 TOO_MANY_TIERS`** (`error` names the limit), `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
 
 Words of 20 characters or more go to the Natural Language classifier. It never refuses: a doubtful board is put in the reports queue, and a very doubtful one is also taken out of the feed until someone looks.
 
@@ -146,19 +146,21 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 **`DELETE /lists/follow/{uid}`**: idempotent, `200 {following: false}`.
 
-**`POST /lists/{id}/taken`**: somebody put this list on their phone. Counted once per person, never for the author: `200 {counted: boolean}`. `404 NOT_FOUND`.
+**`POST /lists/{id}/taken`**: somebody put this list on their phone. Adds one to `takeCount` once per account, in one transaction with the record of the take. Never for the author, and not for anybody whose report would not weigh: guests, banned accounts and accounts younger than 7 days get `counted: false` and nothing is recorded, so the same account counts once it is a week old. `200 {counted: boolean}`. `404 NOT_FOUND`.
 
 ### Reports and moderation
 
-**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests, banned accounts and accounts younger than 7 days are filed and shown to staff but do not count towards that, and never take a list out themselves.
+**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests, banned accounts and accounts younger than 7 days are filed and shown to staff but do not count towards that, and never take a list out themselves. A moderator reporting a list by staff gets `403 TARGET_IS_MODERATOR` (see below).
+
+**Staff do not judge staff.** A list whose author is the owner or a moderator, the caller's own included, is the owner's alone to report, take down (with or without a ban), dismiss or move. A moderator gets `403 {code: "TARGET_IS_MODERATOR"}` and nothing changes. This holds for an anonymous list too, so the refusal tells a moderator that its author is staff. A takedown of a list already gone judges the author its reports name. House lists (`tyl-editorial`) are nobody's, and any staff may act on them.
 
 **`GET /lists/reports`**: staff. `200 {reports: QueuedList[]}` from the 50 newest reports, one row per list, hidden lists first: `{listId, listTitle, authorName, authorUid, authorPhotoUrl, anonymous, coverImageUrl, reasons, notes, reportCount, newestAtMs, hidden, reviewed}`. On an anonymous list (`anonymous: true`), and on a list already removed whose reports do not say it was named, only the owner is told the author; a moderator gets `authorName: ""`, `authorUid: null`, `authorPhotoUrl: null`.
 
-**`POST /lists/{id}/takedown`**: staff. Body `{ban?}`, `ban` one of `week`, `month`, `three_months`, `six_months`, `forever` (a month is 30 days). Deletes the list and its reports, and bans the author when asked: `204`.
+**`POST /lists/{id}/takedown`**: staff. Body `{ban?}`, `ban` one of `week`, `month`, `three_months`, `six_months`, `forever` (a month is 30 days). Deletes the list and its reports, and bans the author when asked: `204`. `403 TARGET_IS_MODERATOR` for a moderator on a staff member's list.
 
-**`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`. A list already removed stays removed; only its reports go.
+**`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`. A list already removed stays removed; only its reports go. `403 TARGET_IS_MODERATOR` as for takedown.
 
-**`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`. The list remembers the move as **`movedByStaff: {category?: {from, to}, topicId?: {from, to}}`** (`topicId` sides may be `null`), one entry per field that changed; `from` stays the author's value across later moves, and a move back to it drops that entry. The author's replace keeps these unless the body says otherwise (`POST /lists`, "Staff moves hold").
+**`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`, `403 TARGET_IS_MODERATOR` for a moderator on a staff member's list. The list remembers the move as **`movedByStaff: {category?: {from, to}, topicId?: {from, to}}`** (`topicId` sides may be `null`), one entry per field that changed; `from` stays the author's value across later moves, and a move back to it drops that entry. The author's replace keeps these unless the body says otherwise (`POST /lists`, "Staff moves hold").
 
 **`GET /lists/anonymous?after=`**: owner. Every anonymous list, newest first, with who published it: `200 {lists: (ListSummary + {publishedBy: {uid, name}})[], nextCursor}`. Cursor is the last id; `409 CURSOR_GONE`.
 
@@ -173,6 +175,8 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 **`POST /lists/moderators/{uid}`**: owner. Body `{name?, photoUrl?}`. `200 {uid, moderator: true}`. `409 YOURSELF`, `404 NOT_FOUND`, `400 {code: "INVALID", detail: "uid"}` for a guest account.
 
 **`DELETE /lists/moderators/{uid}`**: owner. `204`.
+
+**`DELETE /lists/bans/{uid}`**: owner. Lifts the ban on that account, whoever set it: `bans/{uid}` and the `bannedIdentities` records it is kept by, through the erased account's `identityKeys` or the keys of the account signed in as that uid now (see `DELETE /boards/account`), so a ban kept past an erasure is lifted by the old uid or the new one. When there was anything to lift it writes `ban.lift` to the audit log, `{before: {until, bannedAt, reason, keptRecords: <records deleted>}, after: null}` (`before` has only `keptRecords` when `bans/{uid}` was not there): `204`, also when there was nothing. `400 INVALID` for something that is not a uid; any other method on `/lists/bans/{uid}` is `405`.
 
 **`POST /lists/search-misses`**: body `{q}`. Notes a search that found nothing anywhere (only the folded words, never who). Always `204`.
 

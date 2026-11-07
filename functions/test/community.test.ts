@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { isModerator, nextCursor, segmentsOf } from "../src/community";
+import { authorRoleOf, isModerator, nextCursor, segmentsOf } from "../src/community";
 
 describe("segmentsOf", () => {
   it("drops the function's own name, which Hosting puts first and a direct call does not", () => {
@@ -28,6 +28,24 @@ describe("nextCursor", () => {
 
   it("stops on an empty page", () => {
     assert.equal(nextCursor([], 3), null);
+  });
+});
+
+describe("authorRoleOf", () => {
+  const who = (uid: string, email: string | null = null) => ({ uid, email });
+
+  it("knows the owner by uid or by verified address, appointed or not", () => {
+    assert.equal(authorRoleOf(who("abc"), false, "abc", ""), "owner");
+    assert.equal(authorRoleOf(who("other", "me@example.com"), true, "abc", "me@example.com"), "owner");
+  });
+
+  it("knows an appointed moderator", () => {
+    assert.equal(authorRoleOf(who("mod"), true, "abc", "me@example.com"), "moderator");
+  });
+
+  it("finds no role in anybody else", () => {
+    assert.equal(authorRoleOf(who("reader", "reader@example.com"), false, "abc", "me@example.com"), null);
+    assert.equal(authorRoleOf(who("reader"), false, "", ""), null);
   });
 });
 

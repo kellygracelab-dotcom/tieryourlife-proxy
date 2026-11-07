@@ -18,7 +18,7 @@ const user = (email: string | undefined, providerEmails: string[] = []) =>
 describe("the wipe's collections", () => {
   it("deletes everything people made", () => {
     for (const name of ["publishedLists", "accounts", "rankings", "rankQuota", "rankUsage", "takes", "follows", "sectionFollows",
-      "topicFollows", "topics", "topicNames", "sectionProposers", "reports", "auditLog"]) {
+      "topicFollows", "topics", "topicNames", "sectionProposers", "publishLocks", "reports", "auditLog"]) {
       assert.equal(collectionRule(name).verdict, "DELETE", name);
     }
   });

@@ -32,7 +32,7 @@ describe("what erasing an account removes", () => {
 
   // An erased moderator was still listed under GET /lists/moderators, with name and face (QA S8).
   it("removes the documents kept under their uid, the moderator's role among them", () => {
-    assert.deepEqual([...OWN_DOCUMENTS].sort(), ["roles", "sectionProposers"]);
+    assert.deepEqual([...OWN_DOCUMENTS].sort(), ["publishLocks", "roles", "sectionProposers"]);
   });
 });
 

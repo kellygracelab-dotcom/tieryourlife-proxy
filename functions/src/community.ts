@@ -8,8 +8,10 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
-import { readBan, replaceKeptBans } from "./banIdentities";
-import { banTarget, decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
+import { claimListSlot } from "./publishLimit";
+import { countsAsTake } from "./takes";
+import { liftBanLogged, readBan, replaceKeptBans } from "./banIdentities";
+import { banTarget, decideHide, groupReports, mayJudge, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
   ENOUGH_TO_JUDGE,
@@ -250,6 +252,8 @@ const REPORTS = "reports";
 const FOLLOWS = "follows";
 const TAKES = "takes";
 const BANS = "bans";
+/** One document per author, written with each new list so parallel publishes meet in it (src/publishLimit.ts). */
+const PUBLISH_LOCKS = "publishLocks";
 const TOPICS = "topics";
 const TOPIC_FOLLOWS = "topicFollows";
 const ROLES = "roles";
@@ -284,6 +288,7 @@ const SEARCH_MISSES_PATH = "search-misses";
 const PICTURES_PATH = "pictures";
 const SEARCH_MISSES = "searchMisses";
 const CANDIDATES_PATH = "candidates";
+const BANS_PATH = "bans";
 const APPROVE_AS_TOPIC: TopicDecision = "approve-as-topic";
 const MERGE_INTO_TOPIC: TopicDecision = "merge-into-topic";
 
@@ -364,6 +369,42 @@ async function roleOf(identity: Identity): Promise<Role | null> {
 
 async function isModeratorNow(identity: Identity): Promise<boolean> {
   return (await roleOf(identity)) !== null;
+}
+
+/** The role of somebody who is not the caller, by the same two keys and the same document. */
+export function authorRoleOf(
+  author: Pick<Identity, "uid" | "email">,
+  appointed: boolean,
+  configuredUid: string = moderatorUid.value(),
+  configuredEmail: string = moderatorEmail.value(),
+): Role | null {
+  if (isModerator(author, configuredUid, configuredEmail)) return "owner";
+  return appointed ? "moderator" : null;
+}
+
+async function roleOfAuthor(uid: string): Promise<Role | null> {
+  if (uid === EDITORIAL_UID) return null;
+  const appointed = (await getFirestore().collection(ROLES).doc(uid).get()).get("moderator") === true;
+  if (appointed || isModerator({ uid, email: null })) return authorRoleOf({ uid, email: null }, appointed);
+  return authorRoleOf({ uid, email: await verifiedEmailOf(uid) }, false);
+}
+
+async function verifiedEmailOf(uid: string): Promise<string | null> {
+  try {
+    const account = await getAuth().getUser(uid);
+    return account.emailVerified && account.email ? account.email.trim().toLowerCase() : null;
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "auth/user-not-found") return null;
+    throw error;
+  }
+}
+
+/** Answers the refusal when a moderator would judge a staff member's list; the owner is never refused. */
+async function refusedAsStaffTarget(response: Response, role: Role, authorUid: string | null): Promise<boolean> {
+  if (role === "owner" || authorUid === null || authorUid === "") return false;
+  if (mayJudge(role, await roleOfAuthor(authorUid))) return false;
+  response.status(403).json({ error: "A staff member's list is the owner's to judge", code: "TARGET_IS_MODERATOR" });
+  return true;
 }
 
 const MAX_NOTE_LENGTH = 500;
@@ -601,6 +642,9 @@ export const lists = onRequest(
       }
       if (segments[0] === MODERATORS_PATH) {
         return await routeModerators(request.method, segments.slice(1), query, request.body, response, identity);
+      }
+      if (segments[0] === BANS_PATH) {
+        return await routeBans(request.method, segments.slice(1), response, identity);
       }
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
@@ -2507,33 +2551,39 @@ function refuseFollow(response: Response, reason: string): void {
 }
 
 /**
- * The only thing the popular ordering counts. Once per person and written
+ * The only thing the popular ordering counts. Once per account and written
  * down as a document, or one phone tapping all afternoon would decide what
- * everybody sees. Taking your own list back does not count either.
+ * everybody sees. Taking your own list back does not count, and neither does
+ * anybody whose report would not weigh: a guest costs one request.
  */
 async function recordTake(response: Response, identity: Identity, listId: string): Promise<void> {
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
-  const snapshot = await list.get();
-  if (!snapshot.exists) {
-    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
-    return;
-  }
-  if ((snapshot.data() as StoredList).authorUid === identity.uid) {
-    response.status(200).json({ counted: false });
-    return;
-  }
-
   const take = db.collection(TAKES).doc(`${listId}_${identity.uid}`);
+  const weighs = await weighsNow(identity);
   const counted = await db.runTransaction(async (transaction) => {
-    if ((await transaction.get(take)).exists) {
+    const [snapshot, taken] = await transaction.getAll(list, take);
+    if (!snapshot.exists) return null;
+    if (!countsAsTake({ takerUid: identity.uid, authorUid: snapshot.get("authorUid"), weighs, alreadyTaken: taken.exists })) {
       return false;
     }
     transaction.set(take, { listId, taker: identity.uid, createdAt: FieldValue.serverTimestamp() });
     transaction.update(list, { takeCount: FieldValue.increment(1) });
     return true;
   });
+  if (counted === null) {
+    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+    return;
+  }
   response.status(200).json({ counted });
+}
+
+/** Whether this caller's word counts: towards hiding a list, and towards its takes. */
+async function weighsNow(identity: Identity): Promise<boolean> {
+  if (identity.isAnonymous) return false;
+  const [ban, account] = await Promise.all([readBan(identity), getAuth().getUser(identity.uid)]);
+  const accountAgeMs = Date.now() - (Date.parse(account.metadata.creationTime) || Date.now());
+  return weighsOnHiding({ isAnonymous: false, banned: isBanned(ban, Date.now()), accountAgeMs });
 }
 
 /**
@@ -2671,6 +2721,7 @@ async function settleReports(
   const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
   // Read before the batch deletes the list and the complaints.
   const authorUid = banTarget(listed?.authorUid, filed.docs.map((doc) => doc.data().authorUid));
+  if (await refusedAsStaffTarget(response, role, authorUid)) return;
   // What they were reported for, kept on the ban so the moderator's own
   // memory of why is not the only record of it.
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
@@ -2959,6 +3010,16 @@ async function publish(
     const reserve = topicRef !== null && attachment.kind === "create"
       ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
       : false;
+    // Counted again here, after the other reads and before any write: the count before the pictures was a quick refusal, not the limit.
+    if (existingId === null && byline.speaker === null) {
+      const lock = db.collection(PUBLISH_LOCKS).doc(byline.uid);
+      const claimed = await claimListSlot({
+        readLock: async () => void (await transaction.get(lock)),
+        countLists: async () => (await transaction.get(collection.where("authorUid", "==", byline.uid).count())).data().count,
+        writeLock: () => void transaction.set(lock, { lastPublishAt: FieldValue.serverTimestamp() }),
+      });
+      if (!claimed) return TOO_MANY_LISTS;
+    }
     // The topics' counts of lists follow the list: off the one it leaves, onto
     // the one it joins, and a new topic starts at one.
     const previousTopic = previous?.topicId ?? null;
@@ -3014,6 +3075,10 @@ async function publish(
   if (earlier !== null) {
     // Its pictures were copied into a folder no list names.
     await discardPublished(target);
+    if (earlier === TOO_MANY_LISTS) {
+      response.status(409).json({ error: "Too many published lists", code: "TOO_MANY_LISTS" });
+      return;
+    }
     return answerRepeat(response, earlier);
   }
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
@@ -3036,6 +3101,8 @@ async function publish(
   }
   response.status(201).json({ id: target, topicId, underReview: document.underReview });
 }
+
+const TOO_MANY_LISTS = "too_many_lists";
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
   response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true });
@@ -3438,15 +3505,13 @@ async function report(
     return;
   }
   const stored = list.data() as StoredList;
+  const reporterRole = identity.isAnonymous ? null : await roleOf(identity);
+  if (reporterRole !== null && await refusedAsStaffTarget(response, reporterRole, stored.authorUid)) return;
 
   // One report per person per list: a second is the same complaint, not a
   // stronger one.
   const anonymous = isAnonymous(stored);
-  const banned = !identity.isAnonymous && isBanned(await readBan(identity), Date.now());
-  const accountAgeMs = identity.isAnonymous
-    ? 0
-    : Date.now() - (Date.parse((await getAuth().getUser(identity.uid)).metadata.creationTime) || Date.now());
-  const weighs = weighsOnHiding({ isAnonymous: identity.isAnonymous, banned, accountAgeMs });
+  const weighs = await weighsNow(identity);
   await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
     listId,
     listTitle: stored.title,
@@ -4271,6 +4336,7 @@ async function moveList(response: Response, identity: Identity, listId: string, 
 
   type Moved = "moved" | "missing" | "bad_topic";
   const ref = db.collection(PUBLISHED).doc(listId);
+  if (role !== "owner" && await refusedAsStaffTarget(response, role, ((await ref.get()).get("authorUid") as string | undefined) ?? null)) return;
   // One transaction, so two moves at once each take the list from where the other left it, and count it once.
   const moved = await db.runTransaction(async (transaction): Promise<Moved> => {
     const snapshot = await transaction.get(ref);
@@ -4359,6 +4425,26 @@ async function routeModerators(
   if (method === "POST") return await appoint(response, identity, first, body);
   if (method === "DELETE") return await removeModerator(response, identity, first);
   response.status(405).json({ error: "Use GET, POST or DELETE" });
+}
+
+/** The owner lifting a ban, whoever set it. */
+async function routeBans(method: string, rest: string[], response: Response, identity: Identity): Promise<void> {
+  const role = await roleOf(identity);
+  if (role !== "owner") {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
+    return;
+  }
+  const [uid = ""] = rest;
+  if (rest.length !== 1 || !isUid(uid)) {
+    response.status(400).json({ error: "Which person?", code: "INVALID" });
+    return;
+  }
+  if (method !== "DELETE") {
+    response.status(405).json({ error: "Use DELETE" });
+    return;
+  }
+  await liftBanLogged(identity.uid, role, uid);
+  response.status(204).send();
 }
 
 /** Names, addresses and faces from Auth, a hundred accounts a call; an account Auth no longer has is left out. */
