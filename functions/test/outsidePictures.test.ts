@@ -42,11 +42,13 @@ function fakeTools({
   verdicts = {},
   left = 1000,
   slow = new Set<string>(),
+  onFetch = () => undefined,
 }: {
   pictures?: Record<string, FetchedPicture>;
   verdicts?: Record<string, SafeSearchVerdict | null>;
   left?: number;
   slow?: Set<string>;
+  onFetch?: (count: number) => unknown;
 } = {}): Fake {
   const byBytes = new Map<Buffer, string>();
   let inFlight = 0;
@@ -69,9 +71,13 @@ function fakeTools({
       fake.fetched.push(url);
       inFlight++;
       fake.maxInFlight = Math.max(fake.maxInFlight, inFlight);
+      onFetch(fake.fetched.length);
       try {
         if (slow.has(url)) {
-          await new Promise((resolve, reject) => stop.addEventListener("abort", () => reject(new Error("aborted"))));
+          await new Promise((resolve, reject) => {
+            if (stop.aborted) reject(new Error("aborted"));
+            stop.addEventListener("abort", () => reject(new Error("aborted")));
+          });
         }
         await new Promise((resolve) => setTimeout(resolve, 5));
         const answer = pictures[url] ?? { bytes: Buffer.concat([STUB_PICTURE, Buffer.from(url)]), type: "image/png" };
@@ -246,8 +252,9 @@ describe("copying pictures from other sites", () => {
 
   it("gives up on what is still loading when its time is up, and gives back what it never began", async () => {
     const urls = Array.from({ length: 5 }, (_, at) => `https://slow.example/${at}.jpg`);
-    const tools = fakeTools({ slow: new Set(urls) });
-    const done = await copyOutside(folder, urls, tools, { atOnce: 2, withinMs: 50 });
+    const timeUp = new AbortController();
+    const tools = fakeTools({ slow: new Set(urls), onFetch: (count) => count === 2 && setImmediate(() => timeUp.abort()) });
+    const done = await copyOutside(folder, urls, tools, { atOnce: 2, until: timeUp.signal });
     assert.ok(done.ok);
     assert.deepEqual(urls.map((url) => done.copies.get(url) ?? null), urls.map(() => null));
     assert.equal(tools.fetched.length, 2);

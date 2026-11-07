@@ -131,7 +131,7 @@ export async function copyOutside(
   folder: string,
   urls: readonly string[],
   tools: OutsideTools,
-  { atOnce = FETCHING_AT_ONCE, withinMs = LIST_WINDOW_MS } = {},
+  { atOnce = FETCHING_AT_ONCE, withinMs = LIST_WINDOW_MS, until }: { atOnce?: number; withinMs?: number; until?: AbortSignal } = {},
 ): Promise<OutsideCopies> {
   const copies = new Map<string, string | null>();
   if (urls.length === 0) return { ok: true, copies, saved: [] };
@@ -144,7 +144,7 @@ export async function copyOutside(
   if (fresh.length === 0) return { ok: true, copies, saved: [] };
   if (!(await tools.reserve(fresh.length))) return { ok: false, overDailyLimit: true };
 
-  const stop = AbortSignal.timeout(withinMs);
+  const stop = until ?? AbortSignal.timeout(withinMs);
   const saved: string[] = [];
   const state: { refused: { url: string; because: SafetyRefusal } | null } = { refused: null };
   let next = 0;
