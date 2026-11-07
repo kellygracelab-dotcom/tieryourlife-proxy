@@ -2675,7 +2675,7 @@ async function settleReports(
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
   const batch = db.batch();
   filed.docs.forEach((doc) => batch.delete(doc.ref));
-  // A decision on the withdrawn list, or on a list held because of it, ends the hold.
+  // A decision on the withdrawn list, or taking down a list held because of it, ends the hold; leaving a held one up does not.
   const holds = listed === null
     ? (await db.collection(PUBLISH_HOLDS).where("listId", "==", listId).get()).docs.map((doc) => doc.ref)
     : takeDown && filed.docs.some((doc) => doc.get("reporterUid") === HELD) ? [db.collection(PUBLISH_HOLDS).doc(listed.authorUid)] : [];
