@@ -92,6 +92,7 @@ export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Dat
     tiers: data.tiers ?? [],
     items: data.items ?? [],
     ...(data.anonymous === true ? { anonymous: true } : {}),
+    ...(data.coverPictureId ? { coverPictureId: data.coverPictureId } : {}),
     ...(play === null ? {} : { play }),
   };
 }
@@ -254,6 +255,7 @@ async function write(
   const decision = decideStore({
     body,
     nowMs: now,
+    storedCoverPictureId: existing.exists ? ((existing.data() as BoardDocument).coverPictureId ?? null) : null,
     isAnonymous: identity.isAnonymous,
     // A board that is already here is not another board.
     boardsAlreadyKept: existing.exists ? kept - 1 : kept,

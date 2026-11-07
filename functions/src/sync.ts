@@ -84,6 +84,8 @@ export interface StoredBoard {
   displayMode: string;
   category: string | null;
   coverImageUrl: string | null;
+  /** The owner's own photograph as the whole cover, a file in their `users/{uid}/pictures/`; absent when there is none. */
+  coverPictureId?: string;
   /** The pictures chosen for the cover collage, in their order; empty when the cards' art decides. */
   coverImageUrls: string[];
   authorName: string | null;
@@ -318,9 +320,30 @@ export interface StoreInput {
   boardsAlreadyKept: number;
   /** The server's time: a game cannot have started after it. */
   nowMs: number;
+  /** The cover picture already kept for this board, if any. */
+  storedCoverPictureId?: string | null;
 }
 
-export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: StoreInput): StoreDecision {
+/**
+ * A writer that does not know the field leaves it out, and must not wipe the
+ * cover by doing so: absent keeps what is stored, unless it chose another
+ * cover by address. An id that could not be a file name is dropped, as an
+ * item's is, and counts as absent.
+ */
+export function settleCoverPicture(source: Record<string, unknown>, stored: string | null): string | null {
+  if (source.coverPictureId === null) return null;
+  const sent = pictureId(source.coverPictureId);
+  if (sent !== null) return sent;
+  return keepableImageUrl(source.coverImageUrl) === null ? stored : null;
+}
+
+export function decideStore({
+  body,
+  isAnonymous,
+  boardsAlreadyKept,
+  nowMs,
+  storedCoverPictureId = null,
+}: StoreInput): StoreDecision {
   // An anonymous identity lives in the install, so keeping its boards would be
   // a backup whose key is destroyed by the very thing it protects against.
   if (isAnonymous) {
@@ -447,6 +470,8 @@ export function decideStore({ body, isAnonymous, boardsAlreadyKept, nowMs }: Sto
   // Added only when there is one, so a board without a game or the flag is
   // stored and handed back exactly as it always was.
   if (source.anonymous === true) board.anonymous = true;
+  const coverPictureId = settleCoverPicture(source, storedCoverPictureId);
+  if (coverPictureId !== null) board.coverPictureId = coverPictureId;
   if (JSON.stringify(board).length > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
   }
