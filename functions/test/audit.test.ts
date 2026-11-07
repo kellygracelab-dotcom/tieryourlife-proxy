@@ -24,6 +24,7 @@ describe("AUDIT_ACTIONS", () => {
       "report.takedown",
       "report.dismiss",
       "ban.set",
+      "ban.lift",
     ]) {
       assert.ok((AUDIT_ACTIONS as readonly string[]).includes(what), what);
     }

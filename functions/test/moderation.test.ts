@@ -5,6 +5,7 @@ import {
   groupReports,
   weighsOnHiding,
   banTarget,
+  mayJudge,
   ACCOUNT_AGE_TO_HIDE_MS,
   REPORTS_BEFORE_HIDING,
   type ListStanding,
@@ -24,6 +25,23 @@ function standing(some: Partial<ListStanding>): ListStanding {
     ...some,
   };
 }
+
+describe("mayJudge", () => {
+  it("lets a moderator judge anybody who is not staff", () => {
+    assert.equal(mayJudge("moderator", null), true);
+  });
+
+  it("refuses a moderator the owner's lists and another moderator's, their own included", () => {
+    assert.equal(mayJudge("moderator", "moderator"), false);
+    assert.equal(mayJudge("moderator", "owner"), false);
+  });
+
+  it("lets the owner judge everybody", () => {
+    assert.equal(mayJudge("owner", null), true);
+    assert.equal(mayJudge("owner", "moderator"), true);
+    assert.equal(mayJudge("owner", "owner"), true);
+  });
+});
 
 describe("banTarget", () => {
   it("bans the author the list names, though its complaints name nobody", () => {

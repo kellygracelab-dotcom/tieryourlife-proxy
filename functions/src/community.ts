@@ -8,7 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
-import { banTarget, decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
+import { banTarget, decideHide, groupReports, mayJudge, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
   ENOUGH_TO_JUDGE,
@@ -283,6 +283,7 @@ const SEARCH_MISSES_PATH = "search-misses";
 const PICTURES_PATH = "pictures";
 const SEARCH_MISSES = "searchMisses";
 const CANDIDATES_PATH = "candidates";
+const BANS_PATH = "bans";
 const APPROVE_AS_TOPIC: TopicDecision = "approve-as-topic";
 const MERGE_INTO_TOPIC: TopicDecision = "merge-into-topic";
 
@@ -363,6 +364,42 @@ async function roleOf(identity: Identity): Promise<Role | null> {
 
 async function isModeratorNow(identity: Identity): Promise<boolean> {
   return (await roleOf(identity)) !== null;
+}
+
+/** The role of somebody who is not the caller, by the same two keys and the same document. */
+export function authorRoleOf(
+  author: Pick<Identity, "uid" | "email">,
+  appointed: boolean,
+  configuredUid: string = moderatorUid.value(),
+  configuredEmail: string = moderatorEmail.value(),
+): Role | null {
+  if (isModerator(author, configuredUid, configuredEmail)) return "owner";
+  return appointed ? "moderator" : null;
+}
+
+async function roleOfAuthor(uid: string): Promise<Role | null> {
+  if (uid === EDITORIAL_UID) return null;
+  const appointed = (await getFirestore().collection(ROLES).doc(uid).get()).get("moderator") === true;
+  if (appointed || isModerator({ uid, email: null })) return authorRoleOf({ uid, email: null }, appointed);
+  return authorRoleOf({ uid, email: await verifiedEmailOf(uid) }, false);
+}
+
+async function verifiedEmailOf(uid: string): Promise<string | null> {
+  try {
+    const account = await getAuth().getUser(uid);
+    return account.emailVerified && account.email ? account.email.trim().toLowerCase() : null;
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "auth/user-not-found") return null;
+    throw error;
+  }
+}
+
+/** Answers the refusal when a moderator would judge a staff member's list; the owner is never refused. */
+async function refusedAsStaffTarget(response: Response, role: Role, authorUid: string | null): Promise<boolean> {
+  if (role === "owner" || authorUid === null || authorUid === "") return false;
+  if (mayJudge(role, await roleOfAuthor(authorUid))) return false;
+  response.status(403).json({ error: "A staff member's list is the owner's to judge", code: "TARGET_IS_MODERATOR" });
+  return true;
 }
 
 const MAX_NOTE_LENGTH = 500;
@@ -600,6 +637,9 @@ export const lists = onRequest(
       }
       if (segments[0] === MODERATORS_PATH) {
         return await routeModerators(request.method, segments.slice(1), query, request.body, response, identity);
+      }
+      if (segments[0] === BANS_PATH) {
+        return await routeBans(request.method, segments.slice(1), response, identity);
       }
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
@@ -2670,6 +2710,7 @@ async function settleReports(
   const listed = listDoc.exists ? (listDoc.data() as StoredList) : null;
   // Read before the batch deletes the list and the complaints.
   const authorUid = banTarget(listed?.authorUid, filed.docs.map((doc) => doc.data().authorUid));
+  if (await refusedAsStaffTarget(response, role, authorUid)) return;
   // What they were reported for, kept on the ban so the moderator's own
   // memory of why is not the only record of it.
   const reasonForBan = filed.docs.map((doc) => doc.data().reason as string).find(Boolean) ?? null;
@@ -3434,6 +3475,8 @@ async function report(
     return;
   }
   const stored = list.data() as StoredList;
+  const reporterRole = identity.isAnonymous ? null : await roleOf(identity);
+  if (reporterRole !== null && await refusedAsStaffTarget(response, reporterRole, stored.authorUid)) return;
 
   // One report per person per list: a second is the same complaint, not a
   // stronger one.
@@ -4272,6 +4315,7 @@ async function moveList(response: Response, identity: Identity, listId: string, 
 
   type Moved = "moved" | "missing" | "bad_topic";
   const ref = db.collection(PUBLISHED).doc(listId);
+  if (role !== "owner" && await refusedAsStaffTarget(response, role, ((await ref.get()).get("authorUid") as string | undefined) ?? null)) return;
   // One transaction, so two moves at once each take the list from where the other left it, and count it once.
   const moved = await db.runTransaction(async (transaction): Promise<Moved> => {
     const snapshot = await transaction.get(ref);
@@ -4360,6 +4404,33 @@ async function routeModerators(
   if (method === "POST") return await appoint(response, identity, first, body);
   if (method === "DELETE") return await removeModerator(response, identity, first);
   response.status(405).json({ error: "Use GET, POST or DELETE" });
+}
+
+/** The owner lifting a ban, whoever set it. */
+async function routeBans(method: string, rest: string[], response: Response, identity: Identity): Promise<void> {
+  const role = await roleOf(identity);
+  if (role !== "owner") {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
+    return;
+  }
+  const [uid = ""] = rest;
+  if (rest.length !== 1 || !isUid(uid)) {
+    response.status(400).json({ error: "Which person?", code: "INVALID" });
+    return;
+  }
+  if (method !== "DELETE") {
+    response.status(405).json({ error: "Use DELETE" });
+    return;
+  }
+  const db = getFirestore();
+  const ref = db.collection(BANS).doc(uid);
+  await db.runTransaction(async (transaction) => {
+    const ban = await transaction.get(ref);
+    if (!ban.exists) return;
+    transaction.delete(ref);
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "ban.lift", `${BANS}/${uid}`, ban.data() as Record<string, unknown>, null));
+  });
+  response.status(204).send();
 }
 
 /** Names, addresses and faces from Auth, a hundred accounts a call; an account Auth no longer has is left out. */

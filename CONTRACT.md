@@ -150,15 +150,17 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 ### Reports and moderation
 
-**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests, banned accounts and accounts younger than 7 days are filed and shown to staff but do not count towards that, and never take a list out themselves.
+**`POST /lists/{id}/report`**: body `{reason, note?}`, `reason` one of `sexual`, `violence`, `hate`, `spam`, `other`, `wrong_category`. One report per person per list (a second replaces the first). `204`, also for a list already gone. `400 INVALID` for another reason. The list leaves the feed (`underReview`) on the first `sexual` report or the third report of any reason but `wrong_category`, unless staff already kept this snapshot. Reports from guests, banned accounts and accounts younger than 7 days are filed and shown to staff but do not count towards that, and never take a list out themselves. A moderator reporting a list by staff gets `403 TARGET_IS_MODERATOR` (see below).
+
+**Staff do not judge staff.** A list whose author is the owner or a moderator, the caller's own included, is the owner's alone to report, take down (with or without a ban), dismiss or move. A moderator gets `403 {code: "TARGET_IS_MODERATOR"}` and nothing changes. This holds for an anonymous list too, so the refusal tells a moderator that its author is staff. A takedown of a list already gone judges the author its reports name. House lists (`tyl-editorial`) are nobody's, and any staff may act on them.
 
 **`GET /lists/reports`**: staff. `200 {reports: QueuedList[]}` from the 50 newest reports, one row per list, hidden lists first: `{listId, listTitle, authorName, authorUid, authorPhotoUrl, anonymous, coverImageUrl, reasons, notes, reportCount, newestAtMs, hidden, reviewed}`. On an anonymous list (`anonymous: true`), and on a list already removed whose reports do not say it was named, only the owner is told the author; a moderator gets `authorName: ""`, `authorUid: null`, `authorPhotoUrl: null`.
 
-**`POST /lists/{id}/takedown`**: staff. Body `{ban?}`, `ban` one of `week`, `month`, `three_months`, `six_months`, `forever` (a month is 30 days). Deletes the list and its reports, and bans the author when asked: `204`.
+**`POST /lists/{id}/takedown`**: staff. Body `{ban?}`, `ban` one of `week`, `month`, `three_months`, `six_months`, `forever` (a month is 30 days). Deletes the list and its reports, and bans the author when asked: `204`. `403 TARGET_IS_MODERATOR` for a moderator on a staff member's list.
 
-**`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`. A list already removed stays removed; only its reports go.
+**`POST /lists/{id}/dismiss`**: staff. Puts the list back and marks this snapshot kept, so complaints no longer hide it: `204`. A list already removed stays removed; only its reports go. `403 TARGET_IS_MODERATOR` as for takedown.
 
-**`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`. The list remembers the move as **`movedByStaff: {category?: {from, to}, topicId?: {from, to}}`** (`topicId` sides may be `null`), one entry per field that changed; `from` stays the author's value across later moves, and a move back to it drops that entry. The author's replace keeps these unless the body says otherwise (`POST /lists`, "Staff moves hold").
+**`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`, `403 TARGET_IS_MODERATOR` for a moderator on a staff member's list. The list remembers the move as **`movedByStaff: {category?: {from, to}, topicId?: {from, to}}`** (`topicId` sides may be `null`), one entry per field that changed; `from` stays the author's value across later moves, and a move back to it drops that entry. The author's replace keeps these unless the body says otherwise (`POST /lists`, "Staff moves hold").
 
 **`GET /lists/anonymous?after=`**: owner. Every anonymous list, newest first, with who published it: `200 {lists: (ListSummary + {publishedBy: {uid, name}})[], nextCursor}`. Cursor is the last id; `409 CURSOR_GONE`.
 
@@ -173,6 +175,8 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 **`POST /lists/moderators/{uid}`**: owner. Body `{name?, photoUrl?}`. `200 {uid, moderator: true}`. `409 YOURSELF`, `404 NOT_FOUND`, `400 {code: "INVALID", detail: "uid"}` for a guest account.
 
 **`DELETE /lists/moderators/{uid}`**: owner. `204`.
+
+**`DELETE /lists/bans/{uid}`**: owner. Lifts the ban on that account, whoever set it, and writes `ban.lift` to the audit log: `204`, also when there was none. `400 INVALID` for something that is not a uid; any other method on `/lists/bans/{uid}` is `405`.
 
 **`POST /lists/search-misses`**: body `{q}`. Notes a search that found nothing anywhere (only the folded words, never who). Always `204`.
 

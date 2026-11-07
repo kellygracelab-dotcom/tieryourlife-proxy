@@ -25,6 +25,7 @@ export const AUDIT_ACTIONS = [
   "report.takedown",
   "report.dismiss",
   "ban.set",
+  "ban.lift",
   "list.move",
   "list.editorial_publish",
   "list.editorial_edit",
