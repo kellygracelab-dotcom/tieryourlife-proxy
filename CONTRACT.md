@@ -25,9 +25,9 @@ The one description of what the proxy answers, read by the website and by the An
 | Word | Means |
 |---|---|
 | App Check | `X-Firebase-AppCheck: <token>`. Missing or invalid: `401 APP_UNVERIFIED`. Checked first on every function, except that `generate` says `GENERATION_OFF` before it. |
-| user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it. |
+| user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it. A write (any method but `GET`, `HEAD`, `OPTIONS`) with a token whose uid was erased since (`DELETE /boards/account`), a guest's token from before it linked a provider included, gets **`401 ACCOUNT_ERASED`**, on every function, before anything is read or written; `503 UNAVAILABLE` when that cannot be checked. Reads go on and find nothing. |
 | account | A user whose sign-in provider is not `anonymous`. A guest gets `403 NOT_SIGNED_IN` unless the route says otherwise. |
-| not banned | An account without a live ban: else `403 {error, code: "BANNED", until}` (`until` is epoch ms, or `null` for forever). |
+| not banned | An account without a live ban, its own (`bans/{uid}`) or one kept from an account the same person erased (`bannedIdentities`, see `DELETE /boards/account`): else `403 {error, code: "BANNED", until}` (`until` is epoch ms, or `null` for forever; of two bans, the one that lifts last). |
 | staff | The owner or a moderator. Else `403 NOT_YOURS`. |
 | owner | The owner alone: the account whose uid is `MODERATOR_UID` or whose verified e-mail is `MODERATOR_EMAIL`. A moderator gets `403 {code: "NOT_YOURS", detail: "owner_only"}`, anybody else `403 NOT_YOURS`. |
 
@@ -176,7 +176,7 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 **`DELETE /lists/moderators/{uid}`**: owner. `204`.
 
-**`DELETE /lists/bans/{uid}`**: owner. Lifts the ban on that account, whoever set it, and writes `ban.lift` to the audit log: `204`, also when there was none. `400 INVALID` for something that is not a uid; any other method on `/lists/bans/{uid}` is `405`.
+**`DELETE /lists/bans/{uid}`**: owner. Lifts the ban on that account, whoever set it: `bans/{uid}` and the `bannedIdentities` records it is kept by, through the erased account's `identityKeys` or the keys of the account signed in as that uid now (see `DELETE /boards/account`), so a ban kept past an erasure is lifted by the old uid or the new one. When there was anything to lift it writes `ban.lift` to the audit log, `{before: {until, bannedAt, reason, keptRecords: <records deleted>}, after: null}` (`before` has only `keptRecords` when `bans/{uid}` was not there): `204`, also when there was nothing. `400 INVALID` for something that is not a uid; any other method on `/lists/bans/{uid}` is `405`.
 
 **`POST /lists/search-misses`**: body `{q}`. Notes a search that found nothing anywhere (only the folded words, never who). Always `204`.
 
@@ -308,7 +308,15 @@ Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, c
 
 **`DELETE /boards/{uid}`**: account. Leaves a marker `{deleted: true}` with a new revision so other phones drop it too: `204`, also for none.
 
-**`DELETE /boards/account`**: account. Erases the account and everything the service holds about it: `204`. A guest gets `403 NOT_SIGNED_IN`.
+**`DELETE /boards/account`**: account. Erases the account and everything the service holds about it: `204`. A guest gets `403 NOT_SIGNED_IN`. Safe to repeat: a call after an erasure that failed halfway, or after one that finished while the token is still good, is let through and answers `204` too. The first thing it writes is **`erasedAccounts/{uid}`** `{erasedAt}`, which stays: from then on every write with that account's token is `401 ACCOUNT_ERASED` (Conventions), and `checkUpload` deletes what it uploads to Storage. Among what goes:
+- its moderator role (`roles/{uid}`), so it leaves `GET /lists/moderators`;
+- the sections and topics it proposed or made: one still waiting, declined or rejected is deleted with its pictures; an approved or merged one stays without its proposer (a section's `proposerUid` and `proposerName` become `null`, a topic's `createdBy` and `proposerName` become `""`).
+
+What stays: a ban in force when the account is erased. It is kept as **`bannedIdentities/{key}`** `{until, bannedAt}`, one document per key of the person, and nothing else about them. A key is the lower-case hex SHA-256 of the UTF-8 text `email:<address>` for the account's verified e-mail (trimmed, lower-cased), and `<provider>:<id>` for each federated sign-in (`google.com:<Google's sub>`; `firebase.identities` in an ID token, `providerData` in Auth). `password`, `email`, `anonymous` and `custom` give no key. A new account whose token gives one of these keys counts as banned until that ban's `until`. Two bans on one key keep the one that lifts last.
+- The erased account's own `bans/{uid}` stays, and gains `identityKeys: string[]`, the keys it left. The `auditLog` row `{who: <uid>, role: "account", what: "ban.kept_past_erasure", target: "bans/{uid}", before: null, after: {until, keys: <how many>}, at}` records it, with no name.
+- A ban staff set later on the new account (`POST /lists/{id}/takedown`) replaces the `until` of every kept record of that person, shorter or longer: the newest decision is the one in force.
+- Lifting a ban (`liftBan` in `functions/src/banIdentities.ts`, for the owner's route) deletes `bans/{uid}`, every record its `identityKeys` name, and the records of the account signed in as that uid now, so the erased account's uid and the new one both lift it.
+- A record whose ban ran out is deleted when it is next read, and by `sweepGuests` every day.
 
 ## `adoptGuestCredits`
 
@@ -329,11 +337,11 @@ Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, c
 ## Background functions
 
 Not callable:
-- `sweepGuests`: daily, deletes guest identities unused for 30 days.
+- `sweepGuests`: daily, deletes guest identities unused for 30 days, and `bannedIdentities` records whose `until` has passed.
 - `sweepPictures`: daily, deletes own pictures no board names, after their first day.
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `houseFill`: answers picture-search jobs that `scripts/house-fill.ts` writes to `houseFillJobs`.
-- `checkUpload` (us-east1, beside the bucket): on every file landing in `users/{uid}/pictures/`, removes it if its first bytes are not JPEG, PNG, GIF or WebP, or if it is the account's 2001st upload that UTC day. The client is not told; its download URL then answers 404, and `keep` or publishing treat the picture as missing.
+- `checkUpload` (us-east1, beside the bucket): on every file landing in `users/{uid}/pictures/`, removes it if the account was erased (`erasedAccounts/{uid}`), if its first bytes are not JPEG, PNG, GIF or WebP, or if it is the account's 2001st upload that UTC day. The client is not told; its download URL then answers 404, and `keep` or publishing treat the picture as missing.
 
 ## Shapes
 
@@ -434,7 +442,9 @@ Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`;
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew;
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`). Either of these two rows keeps a removed list's rankings hidden.
-- `bans/{uid}`: `{until, bannedAt, reason}`; banned while it exists and `until === null || until > now`.
+- `bans/{uid}`: `{until, bannedAt, reason, identityKeys?}`; banned while it exists and `until === null || until > now`. `identityKeys` is only on an erased account's ban.
+- `bannedIdentities/{key}`: `{until, bannedAt}`, a ban kept from an erased account, by the same rule. The caller's keys come from its ID token as `DELETE /boards/account` describes; an account is banned when `bans/{uid}` or any of these says so. The proxy's reading of both is `readBan` in `functions/src/banIdentities.ts`.
+- `erasedAccounts/{uid}`: `{erasedAt}`, present once the account was erased. Its ID tokens stay valid for up to an hour; the proxy refuses their writes with `401 ACCOUNT_ERASED`.
 
 Renaming those fields or those `what` values is a change to this section, agreed with the website first.
 
