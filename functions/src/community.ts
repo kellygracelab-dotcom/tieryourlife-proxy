@@ -569,7 +569,8 @@ export const lists = onRequest(
   {
     region: "europe-west1",
     timeoutSeconds: 30,
-    memory: "256MiB",
+    // Room for a board, its own photographs and the pictures from other sites in flight.
+    memory: "512MiB",
     maxInstances: 10,
     // Picture search asks TMDB itself (src/pictureSearch.ts).
     secrets: secretsOutsideDemo([pictureTmdbToken, igdbClientId, igdbClientSecret]),

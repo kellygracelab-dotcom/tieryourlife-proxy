@@ -57,7 +57,7 @@ The one description of what the proxy answers, read by the website and by the An
 | A list snapshot, a board, as JSON | 700 000 bytes, else `413 TOO_LARGE` | `MAX_SNAPSHOT_BYTES`, `MAX_BOARD_BYTES` |
 | Own photographs (distinct picture ids) per list | 200 | `MAX_OWN_PICTURES_PER_LIST` |
 | Pictures from other sites (distinct addresses, not catalogue art, not already copied) per list | 200, else `413 TOO_LARGE` | `MAX_OUTSIDE_PICTURES_PER_LIST` |
-| Fetching a picture from another site to publish it | https only, no private or loopback address, 4 MB (read no further), 3 redirects, 8 s a hop, JPEG, PNG, GIF or WebP by the bytes; 8 at once and 12 s for a whole publication (6 s for a face), what is not done by then is dropped; 400 fetches per account per UTC day, faces included, reused copies free | `outsidePictures.ts` |
+| Fetching a picture from another site to publish it | https only, no private or loopback address, 4 MB (read no further), 3 redirects, 8 s a hop, JPEG, PNG, GIF or WebP by the bytes; 4 at once; 12 s for a whole publication (6 s for a face), counted from the start and never waited past: what is not done by then is dropped; 400 fetches per account per UTC day, faces included, reused copies free | `outsidePictures.ts` |
 | Cover collage (`coverImageUrls`) | 6, deduplicated | `MAX_PREVIEW_IMAGES` |
 | Published lists per author | 50 (the house has none) | `MAX_LISTS_PER_AUTHOR` |
 | Boards kept per account | 200 not deleted | `MAX_BOARDS_PER_ACCOUNT` |

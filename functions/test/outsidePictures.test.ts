@@ -44,12 +44,18 @@ function fakeTools({
   left = 1000,
   slow = new Set<string>(),
   onFetch = () => undefined,
+  stuck = new Set<string>(),
+  looking = () => Promise.resolve(),
 }: {
   pictures?: Record<string, FetchedPicture>;
   verdicts?: Record<string, SafeSearchVerdict | null>;
   left?: number;
   slow?: Set<string>;
   onFetch?: (count: number) => unknown;
+  /** Never answer, whatever the signal says: a server that hangs, or a fetch that ignores its abort. */
+  stuck?: Set<string>;
+  /** What Vision waits for before it answers. */
+  looking?: () => Promise<void>;
 } = {}): Fake {
   const byBytes = new Map<Buffer, string>();
   let inFlight = 0;
@@ -73,6 +79,7 @@ function fakeTools({
       inFlight++;
       fake.maxInFlight = Math.max(fake.maxInFlight, inFlight);
       onFetch(fake.fetched.length);
+      if (stuck.has(url)) return new Promise<FetchedPicture>(() => undefined);
       try {
         if (slow.has(url)) {
           await new Promise((resolve, reject) => {
@@ -90,6 +97,7 @@ function fakeTools({
     },
     lookAt: async (bytes) => {
       fake.looked++;
+      await looking();
       const url = byBytes.get(bytes) ?? "";
       return url in verdicts ? verdicts[url] ?? null : SAFE;
     },
@@ -257,6 +265,41 @@ describe("copying pictures from other sites", () => {
     const done = await copyOutside(folder, [TRACKER, INSIDE], tools);
     assert.deepEqual(done, { ok: false, overDailyLimit: true });
     assert.deepEqual(tools.fetched, []);
+  });
+
+  it("fetches four at a time unless told otherwise", async () => {
+    const tools = fakeTools();
+    const urls = Array.from({ length: 30 }, (_, at) => `https://pictures.example/${at}.jpg`);
+    const done = await copyOutside(folder, urls, tools);
+    assert.ok(done.ok);
+    assert.equal(tools.maxInFlight, 4);
+  });
+
+  it("stops at its deadline even when a fetch never answers, and drops what was not done", async () => {
+    const urls = ["https://stuck.example/1.jpg", "https://stuck.example/2.jpg", TRACKER];
+    const timeUp = new AbortController();
+    const tools = fakeTools({ stuck: new Set(urls.slice(0, 2)), onFetch: (count) => count === 2 && setImmediate(() => timeUp.abort()) });
+    const done = await copyOutside(folder, urls, tools, { atOnce: 2, until: timeUp.signal });
+    assert.ok(done.ok);
+    assert.deepEqual(urls.map((url) => done.copies.get(url)), [null, null, null]);
+    assert.equal(tools.used, 2, "the one never begun goes back to the day");
+    assert.equal(tools.files.size, 0);
+  });
+
+  it("keeps nothing that Vision answers for after the deadline", async () => {
+    const timeUp = new AbortController();
+    let answer = () => undefined as void;
+    const looked = new Promise<void>((resolve) => (answer = resolve));
+    const tools = fakeTools({ looking: () => {
+      setImmediate(() => timeUp.abort());
+      return looked;
+    } });
+    const done = await copyOutside(folder, [TRACKER], tools, { until: timeUp.signal });
+    assert.ok(done.ok);
+    assert.equal(done.copies.get(TRACKER), null);
+    answer();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(tools.files.size, 0);
   });
 
   it("fetches a few at a time", async () => {
