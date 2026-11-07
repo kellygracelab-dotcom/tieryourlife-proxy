@@ -17,6 +17,7 @@ const RANKINGS = "rankings";
 const PUBLISH_HOLDS = "publishHolds";
 const SECTIONS = "sections";
 const SECTION_PROPOSERS = "sectionProposers";
+const PUBLISH_LOCKS = "publishLocks";
 const AUDIT_LOG = "auditLog";
 
 /** Firestore's own ceiling for one batch. */
@@ -89,6 +90,7 @@ export async function eraseAccount(uid: string): Promise<void> {
     }
   }
   await db.collection(SECTION_PROPOSERS).doc(uid).delete();
+  await db.collection(PUBLISH_LOCKS).doc(uid).delete();
 
   // Other people's copies of their lists now credit nobody, and the log keeps
   // their uid, which bans are kept by, without their name.

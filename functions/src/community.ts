@@ -8,6 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
+import { claimListSlot } from "./publishLimit";
 import { countsAsTake } from "./takes";
 import { banTarget, decideHide, groupReports, mayJudge, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
@@ -250,6 +251,8 @@ const REPORTS = "reports";
 const FOLLOWS = "follows";
 const TAKES = "takes";
 const BANS = "bans";
+/** One document per author, written with each new list so parallel publishes meet in it (src/publishLimit.ts). */
+const PUBLISH_LOCKS = "publishLocks";
 const TOPICS = "topics";
 const TOPIC_FOLLOWS = "topicFollows";
 const ROLES = "roles";
@@ -3003,6 +3006,16 @@ async function publish(
     const reserve = topicRef !== null && attachment.kind === "create"
       ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
       : false;
+    // Counted again here, after the other reads and before any write: the count before the pictures was a quick refusal, not the limit.
+    if (existingId === null && byline.speaker === null) {
+      const lock = db.collection(PUBLISH_LOCKS).doc(byline.uid);
+      const claimed = await claimListSlot({
+        readLock: async () => void (await transaction.get(lock)),
+        countLists: async () => (await transaction.get(collection.where("authorUid", "==", byline.uid).count())).data().count,
+        writeLock: () => void transaction.set(lock, { lastPublishAt: FieldValue.serverTimestamp() }),
+      });
+      if (!claimed) return TOO_MANY_LISTS;
+    }
     // The topics' counts of lists follow the list: off the one it leaves, onto
     // the one it joins, and a new topic starts at one.
     const previousTopic = previous?.topicId ?? null;
@@ -3058,6 +3071,10 @@ async function publish(
   if (earlier !== null) {
     // Its pictures were copied into a folder no list names.
     await discardPublished(target);
+    if (earlier === TOO_MANY_LISTS) {
+      response.status(409).json({ error: "Too many published lists", code: "TOO_MANY_LISTS" });
+      return;
+    }
     return answerRepeat(response, earlier);
   }
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
@@ -3080,6 +3097,8 @@ async function publish(
   }
   response.status(201).json({ id: target, topicId, underReview: document.underReview });
 }
+
+const TOO_MANY_LISTS = "too_many_lists";
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
   response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true });

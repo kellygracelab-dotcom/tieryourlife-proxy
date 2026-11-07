@@ -57,7 +57,7 @@ The one description of what the proxy answers, read by the website and by the An
 | A list snapshot, a board, as JSON | 700 000 bytes, else `413 TOO_LARGE` | `MAX_SNAPSHOT_BYTES`, `MAX_BOARD_BYTES` |
 | Own photographs (distinct picture ids) per list | 200 | `MAX_OWN_PICTURES_PER_LIST` |
 | Cover collage (`coverImageUrls`) | 6, deduplicated | `MAX_PREVIEW_IMAGES` |
-| Published lists per author | 50 (the house has none) | `MAX_LISTS_PER_AUTHOR` |
+| Published lists per author | 50 (the house has none), counted again inside the transaction that writes a new list, so parallel publishes cannot pass it | `MAX_LISTS_PER_AUTHOR`, `publishLimit.ts` |
 | Boards kept per account | 200 not deleted | `MAX_BOARDS_PER_ACCOUNT` |
 | Board uid, tier uid, item uid, `boardUid` of a publication | 1–100 characters | `sync.ts`, `readBoardUid` |
 | Board fingerprint | 128 | `MAX_FINGERPRINT_LENGTH` |
@@ -126,7 +126,7 @@ Answers:
 - `underReview: true` means the list was kept but starts out of the feed (held, or replacing a hidden list): its link answers 404 to others until staff look. Tell the author it waits for moderation.
 - **`200 {id, topicId, existing: true}`**: this author already published this `boardUid` (on `POST /lists` only). Nothing is written and the existing list is named, even for an author at the 50-list limit. This is what makes a retried publish idempotent. Once that list is unpublished the same `boardUid` publishes anew.
 
-Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS`, **`400 TOO_MANY_TIERS`** (`error` names the limit), `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
+Refusals: `403 NOT_SIGNED_IN`, `403 BANNED`, `409 TOO_MANY_LISTS` (also when parallel publishes would pass the limit together: all but those that fit are refused), **`400 TOO_MANY_TIERS`** (`error` names the limit), `413 TOO_LARGE` (`error` names which limit), `400 INVALID` (`error` says what), `400 TOPIC_UNAVAILABLE` (someone else's waiting topic, or a rejected or merged one), `409 TOO_MANY_PENDING_TOPICS`, `422 {code: "PICTURE_REFUSED", because: "adult" | "racy" | "violence"}`, and for `POST /lists/{id}` `404 NOT_FOUND` and `403 NOT_YOURS`. A photograph that is missing from Storage is not a refusal: its card publishes without art.
 
 Words of 20 characters or more go to the Natural Language classifier. It never refuses: a doubtful board is put in the reports queue, and a very doubtful one is also taken out of the feed until someone looks.
 
