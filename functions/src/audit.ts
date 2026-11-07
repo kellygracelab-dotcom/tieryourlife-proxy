@@ -25,6 +25,8 @@ export const AUDIT_ACTIONS = [
   "report.takedown",
   "report.dismiss",
   "ban.set",
+  /** Not staff: a ban in force kept by the person's hashed sign-ins when they erased the account. */
+  "ban.kept_past_erasure",
   "list.move",
   "list.editorial_publish",
   "list.editorial_edit",

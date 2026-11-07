@@ -8,6 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
+import { readBan, replaceKeptBans } from "./banIdentities";
 import { banTarget, decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
@@ -1563,7 +1564,7 @@ async function refuseWriter(response: Response, identity: Identity): Promise<boo
     response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
     return true;
   }
-  const ban = await readBan(identity.uid);
+  const ban = await readBan(identity);
   if (isBanned(ban, Date.now())) {
     response.status(403).json({ error: "You cannot propose sections at the moment", ...noticeFor(ban) });
     return true;
@@ -2692,6 +2693,7 @@ async function settleReports(
     : takeDown && filed.docs.some((doc) => doc.get("reporterUid") === HELD) ? [db.collection(PUBLISH_HOLDS).doc(listed.authorUid)] : [];
   holds.forEach((ref) => batch.delete(ref));
   const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
+  let banned: { uid: string; ban: Ban } | null = null;
   if (takeDown) {
     auditInBatch(batch, auditEntry(identity.uid, role, "report.takedown", `${PUBLISHED}/${listId}`,
       { ...standing, reports: filed.size }, { removed: true }));
@@ -2705,6 +2707,7 @@ async function settleReports(
       const ban = banFrom(banLength, Date.now(), reasonForBan);
       batch.set(db.collection(BANS).doc(authorUid), ban);
       auditInBatch(batch, auditEntry(identity.uid, role, "ban.set", `${BANS}/${authorUid}`, null, { ...ban, length: banLength }));
+      banned = { uid: authorUid, ban };
     }
   } else {
     const change = changedFields(standing, { underReview: false, reviewed: true });
@@ -2716,6 +2719,7 @@ async function settleReports(
     if (listDoc.exists) batch.update(listDoc.ref, { underReview: false, reviewed: true });
   }
   await batch.commit();
+  if (banned !== null) await replaceKeptBans(banned.uid, banned.ban);
   if (takeDown) {
     await discardPublished(listId);
     await discardCopiesOf(listId);
@@ -2768,7 +2772,7 @@ async function publish(
   // Before anything is read or written: somebody who may not publish may not
   // replace what they published either, or a ban would last exactly as long
   // as it took them to edit an old list.
-  const ban = await readBan(identity.uid);
+  const ban = await readBan(identity);
   if (isBanned(ban, Date.now())) {
     response.status(403).json({ error: "You cannot publish at the moment", ...noticeFor(ban) });
     return;
@@ -3189,7 +3193,7 @@ type RankingOutcome = { refused: "not_signed_in" | "banned" | "missing" | "own_l
  * up once, for a ranking that was not there before.
  */
 async function putMyRanking(response: Response, identity: Identity, listId: string, body: unknown): Promise<void> {
-  const ban = identity.isAnonymous ? null : await readBan(identity.uid);
+  const ban = identity.isAnonymous ? null : await readBan(identity);
   const caller = { uid: identity.uid, isAnonymous: identity.isAnonymous, banned: isBanned(ban, Date.now()) };
   const db = getFirestore();
   const list = readTakenFrom(listId) === null ? null : db.collection(PUBLISHED).doc(listId);
@@ -3496,7 +3500,7 @@ async function report(
   // One report per person per list: a second is the same complaint, not a
   // stronger one.
   const anonymous = isAnonymous(stored);
-  const banned = !identity.isAnonymous && isBanned(await readBan(identity.uid), Date.now());
+  const banned = !identity.isAnonymous && isBanned(await readBan(identity), Date.now());
   const accountAgeMs = identity.isAnonymous
     ? 0
     : Date.now() - (Date.parse((await getAuth().getUser(identity.uid)).metadata.creationTime) || Date.now());
@@ -3539,11 +3543,6 @@ async function withTheirSources(listIds: string[]): Promise<string[]> {
 async function discardCopiesOf(listId: string): Promise<void> {
   const copies = await getFirestore().collection(PUBLISHED).where("picturesFrom", "array-contains", listId).get();
   await discardCopiesIn(copies.docs.map((copy) => copy.id), listId);
-}
-
-async function readBan(uid: string): Promise<Ban | null> {
-  const doc = await getFirestore().collection(BANS).doc(uid).get();
-  return doc.exists ? (doc.data() as Ban) : null;
 }
 
 async function unpublish(response: Response, identity: Identity, id: string, byline: Byline = bylineOf(identity)): Promise<void> {

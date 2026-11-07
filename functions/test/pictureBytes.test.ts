@@ -40,10 +40,11 @@ describe("ownPictureOwner", () => {
 
 describe("judgeUpload", () => {
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xdb]);
+  const live = async () => false;
 
   it("keeps a picture up to the daily limit and removes the one past it", async () => {
-    assert.equal(await judgeUpload(jpeg, async () => UPLOADS_PER_DAY), "keep");
-    assert.equal(await judgeUpload(jpeg, async () => UPLOADS_PER_DAY + 1), "overDailyLimit");
+    assert.equal(await judgeUpload(jpeg, async () => UPLOADS_PER_DAY, live), "keep");
+    assert.equal(await judgeUpload(jpeg, async () => UPLOADS_PER_DAY + 1, live), "overDailyLimit");
   });
 
   it("does not count a file that is not a picture", async () => {
@@ -51,9 +52,21 @@ describe("judgeUpload", () => {
     const verdict = await judgeUpload(ascii("%PDF"), async () => {
       counted = true;
       return 1;
-    });
+    }, live);
 
     assert.equal(verdict, "notAPicture");
+    assert.equal(counted, false);
+  });
+
+  // QA S16: another phone of an erased account uploads with the token it still holds.
+  it("removes a picture an erased account uploads, without counting it", async () => {
+    let counted = false;
+    const verdict = await judgeUpload(jpeg, async () => {
+      counted = true;
+      return 1;
+    }, async () => true);
+
+    assert.equal(verdict, "accountErased");
     assert.equal(counted, false);
   });
 });
