@@ -70,6 +70,14 @@ import {
   publishedNamesIn,
 } from "./publishedPictures";
 import {
+  checkedFace,
+  copyOutside,
+  MAX_OUTSIDE_PICTURES_PER_LIST,
+  outsideAddressesIn,
+  realOutsideTools,
+  withCopies,
+} from "./outsidePictures";
+import {
   FEED_PAGE_SIZE,
   REPORT_PAGE_SIZE,
   MAX_TITLE_LENGTH,
@@ -2850,6 +2858,16 @@ async function publish(
       })
     : null;
 
+  // A new list is named before it is written. The pictures have to be copied
+  // somewhere, and that somewhere is the list's own folder.
+  const target = existingId ?? collection.doc().id;
+  const pictureTools = realOutsideTools(identity.uid);
+  const outsideUrls = outsideAddressesIn(settle(decision.draft, new Map()), target, pictureTools.bucket);
+  if (outsideUrls.length > MAX_OUTSIDE_PICTURES_PER_LIST) {
+    refuse(response, { ok: false, reason: "too_large", detail: "Too many pictures from other sites" });
+    return;
+  }
+
   // Asked before the pictures, because it costs one call and no bytes.
   // Answered after the board is stored, because the answer is a report about
   // a list and there has to be a list to report.
@@ -2857,9 +2875,23 @@ async function publish(
   const wording = byline.speaker === null && words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
   const concern = wording === null ? "none" : decideWordingConcern(wording);
 
-  // A new list is named before it is written. The pictures have to be copied
-  // somewhere, and that somewhere is the list's own folder.
-  const target = existingId ?? collection.doc().id;
+  const [outside, authorPhotoUrl] = await Promise.all([
+    copyOutside(`published/${target}/`, outsideUrls, pictureTools),
+    checkedFace(byline.uid, byline.photoUrl, pictureTools),
+  ]);
+  if (!outside.ok) {
+    if ("overDailyLimit" in outside) {
+      response.status(429).json({ error: "Too many pictures from other sites today", code: "WEB_PICTURES_DAILY_LIMIT" });
+      return;
+    }
+    response.status(422).json({
+      error: "That picture cannot go in the feed",
+      code: "PICTURE_REFUSED",
+      because: outside.refused.because,
+      imageUrl: outside.refused.url,
+    });
+    return;
+  }
 
   const outcomes = await copyForPublication(
     identity.uid,
@@ -2870,6 +2902,7 @@ async function publish(
     (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
   );
   if (refused) {
+    await Promise.all(outside.saved.map((path) => pictureTools.remove(path).catch(() => undefined)));
     response.status(422).json({
       error: "That picture cannot go in the feed",
       code: "PICTURE_REFUSED",
@@ -2882,7 +2915,7 @@ async function publish(
     outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
   );
   const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
-  const list = adopted.list;
+  const list = withCopies(adopted.list, outside.copies);
   // A copy of a copy holds the original's pictures too, and goes with them.
   const ownNames = publishedNamesIn(target, [
     ...list.items.map((item) => item.imageUrl),
@@ -2907,7 +2940,7 @@ async function publish(
   const document = {
     authorUid: byline.uid,
     authorName: byline.name,
-    authorPhotoUrl: byline.photoUrl,
+    authorPhotoUrl,
     title: list.title,
     titleLower: list.titleLower,
     // A title kept keeps its keys, translations and all; a new one starts from its own words.
@@ -3089,6 +3122,7 @@ async function rank(
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
   const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
   await db.runTransaction(async (transaction) => {
     const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
     if (!source.exists) {
@@ -3099,7 +3133,7 @@ async function rank(
       listId,
       uid: identity.uid,
       authorName: identity.name ?? "Anonymous",
-      authorPhotoUrl: identity.picture,
+      authorPhotoUrl: face,
       arrangement: arrangementOver(cards, draft.items),
       tierLabels: draft.tiers.map((tier) => tier.label),
       updatedAt: FieldValue.serverTimestamp(),
@@ -3146,6 +3180,7 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
   const db = getFirestore();
   const list = readTakenFrom(listId) === null ? null : db.collection(PUBLISHED).doc(listId);
   const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
   const outcome = await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
     const [source, existing] = list === null ? [null, null] : await Promise.all([transaction.get(list), transaction.get(ranking)]);
     const data = source?.exists ? (source.data() as StoredList) : null;
@@ -3158,7 +3193,7 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
       listId,
       uid: identity.uid,
       authorName: identity.name ?? "Anonymous",
-      authorPhotoUrl: identity.picture,
+      authorPhotoUrl: face,
       arrangement: read.arrangement,
       ...(read.rows === null ? {} : { rows: rowsToDocument(read.rows) }),
       tierLabels: read.tierLabels,
@@ -3397,11 +3432,12 @@ async function refreshAuthor(response: Response, identity: Identity): Promise<vo
     return;
   }
 
+  const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
   const batch = db.batch();
   for (const doc of mine.docs) {
     batch.update(doc.ref, {
       authorName: identity.name ?? "Anonymous",
-      authorPhotoUrl: identity.picture,
+      authorPhotoUrl: face,
     });
   }
   await batch.commit();

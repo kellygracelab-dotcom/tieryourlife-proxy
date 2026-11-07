@@ -42,6 +42,12 @@ export type PictureOutcome =
 export type LookAtPictures = (images: Buffer[]) => Promise<SafeSearchVerdict[]>;
 
 export async function realSafeSearch(images: Buffer[]): Promise<SafeSearchVerdict[]> {
+  const unknown: SafeSearchVerdict = { adult: "UNKNOWN", racy: "UNKNOWN", violence: "UNKNOWN" };
+  return (await safeSearchOrNothing(images)).map((verdict) => verdict ?? unknown);
+}
+
+/** Null for a picture Vision answered nothing about, which a picture from another site is not published on. */
+export async function safeSearchOrNothing(images: Buffer[]): Promise<(SafeSearchVerdict | null)[]> {
   if (isDemoEmulator()) return images.map(() => SAFE_VERDICT);
   // Imported here rather than at the top: a cold start that never publishes
   // anything should not pay to load the Vision client.
@@ -56,12 +62,13 @@ export async function realSafeSearch(images: Buffer[]): Promise<SafeSearchVerdic
 
   return (response.responses ?? []).map((one) => {
     const found = one.safeSearchAnnotation;
+    if (!found) return null;
     const read = (value: unknown): Likelihood =>
       typeof value === "string" ? (value as Likelihood) : "UNKNOWN";
     return {
-      adult: read(found?.adult),
-      racy: read(found?.racy),
-      violence: read(found?.violence),
+      adult: read(found.adult),
+      racy: read(found.racy),
+      violence: read(found.violence),
     };
   });
 }
