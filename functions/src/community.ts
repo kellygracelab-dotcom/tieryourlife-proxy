@@ -2722,7 +2722,9 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
   const data = doc.data() as StoredList;
   // Hidden from the feed but open to anyone holding the address would hide it
   // from nobody. The moderator is the exception: the queue sends them here.
-  if (data.underReview === true && !(await isModeratorNow(identity))) {
+  // So is its author, who would otherwise lose their own list on a new device.
+  const own = !identity.isAnonymous && identity.uid === data.authorUid;
+  if (data.underReview === true && !own && !(await isModeratorNow(identity))) {
     response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
     return;
   }
@@ -2738,6 +2740,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     items: data.items,
     translations: data.translations ?? {},
     picturesFrom: Array.isArray(data.picturesFrom) ? data.picturesFrom : [],
+    underReview: data.underReview === true,
   });
 }
 
