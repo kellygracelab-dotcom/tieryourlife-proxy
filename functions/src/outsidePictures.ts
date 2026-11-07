@@ -85,6 +85,22 @@ interface PictureAddresses {
   previewImages: string[];
 }
 
+/** Reuse only names referenced by the committed snapshot, never another attempt's pending files. */
+export function committedOutsideCopies(list: PictureAddresses, urls: readonly string[], folder: string, bucket: string): Map<string, string> {
+  const held = [...list.items.map((item) => item.imageUrl), list.coverImageUrl, ...list.previewImages]
+    .filter((url): url is string => url !== null && isOurCopy(url, bucket, folder));
+  const copies = new Map<string, string>();
+  for (const url of urls) {
+    const stem = addressOf(bucket, folder + outsideName(url)).split("?")[0];
+    const existing = held.find((address) => {
+      const path = address.split(/[?#]/)[0];
+      return path === stem || (path.startsWith(stem + "_p_") && /^_p_[a-f0-9-]{36}$/.test(path.slice(stem.length)));
+    });
+    if (existing) copies.set(url, existing);
+  }
+  return copies;
+}
+
 /**
  * The addresses of a list that must be fetched and looked at: not catalogue
  * art, not already this list's copy, and not another list's copy, which
@@ -144,11 +160,11 @@ export async function copyOutside(
   folder: string,
   urls: readonly string[],
   tools: OutsideTools,
-  { atOnce = FETCHING_AT_ONCE, withinMs = LIST_WINDOW_MS, until }: { atOnce?: number; withinMs?: number; until?: AbortSignal } = {},
+  { atOnce = FETCHING_AT_ONCE, withinMs = LIST_WINDOW_MS, until, nameSuffix = "", committed = new Map<string, string>() }: { atOnce?: number; withinMs?: number; until?: AbortSignal; nameSuffix?: string; committed?: ReadonlyMap<string, string> } = {},
 ): Promise<OutsideCopies> {
   if (urls.length === 0) return { ok: true, copies: new Map(), saved: [], dropped: 0 };
   const stop = until ?? AbortSignal.timeout(withinMs);
-  const run: Run = { copies: new Map(), saved: [], refused: null, fresh: [], next: 0, reserved: false, late: false };
+  const run: Run = { copies: new Map(urls.flatMap((url) => committed.has(url) ? [[url, committed.get(url)!] as [string, string]] : [])), saved: [], refused: null, fresh: [], next: 0, reserved: false, late: false, nameSuffix };
   const timeUp = new Promise<"late">((resolve) => {
     if (stop.aborted) resolve("late");
     else stop.addEventListener("abort", () => resolve("late"), { once: true });
@@ -172,6 +188,7 @@ function counted(done: Copied): OutsideCopies {
 }
 
 interface Run {
+  nameSuffix: string;
   copies: Map<string, string | null>;
   saved: string[];
   refused: { url: string; because: SafetyRefusal } | null;
@@ -192,7 +209,8 @@ async function copyWithin(
 ): Promise<Copied | Exclude<OutsideCopies, { ok: true }>> {
   const here = await tools.namesIn(folder);
   for (const url of urls) {
-    if (here.has(outsideName(url))) run.copies.set(url, addressOf(tools.bucket, folder + outsideName(url)));
+    if (run.copies.has(url)) continue;
+    if (here.has(outsideName(url) + run.nameSuffix)) run.copies.set(url, addressOf(tools.bucket, folder + outsideName(url) + run.nameSuffix));
     else run.fresh.push(url);
   }
   if (run.fresh.length === 0) return { ok: true, copies: run.copies, saved: [] };
@@ -215,7 +233,7 @@ async function copyWithin(
       run.refused ??= { url, because: decision.because };
       return null;
     }
-    const path = folder + outsideName(url);
+    const path = folder + outsideName(url) + run.nameSuffix;
     try {
       await tools.save(path, fetched.bytes, type);
     } catch {

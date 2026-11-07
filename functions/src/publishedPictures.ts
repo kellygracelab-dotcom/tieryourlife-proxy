@@ -117,6 +117,7 @@ export async function copyForPublication(
   listId: string,
   pictureIds: string[],
   lookAt: LookAtPictures = realSafeSearch,
+  { nameSuffix = "", onSaved = () => undefined }: { nameSuffix?: string; onSaved?: (path: string) => void } = {},
 ): Promise<PictureOutcome[]> {
   if (pictureIds.length === 0) return [];
 
@@ -129,10 +130,10 @@ export async function copyForPublication(
     existing.map((file) => file.name.slice(`published/${listId}/`.length)),
   );
   const settled: PictureOutcome[] = pictureIds
-    .filter((id) => alreadyHere.has(id))
-    .map((id) => ({ id, ok: true as const, address: addressOf(bucket.name, publishedPath(listId, id)) }));
+    .filter((id) => alreadyHere.has(id + nameSuffix))
+    .map((id) => ({ id, ok: true as const, address: addressOf(bucket.name, publishedPath(listId, id + nameSuffix)) }));
 
-  const fresh = pictureIds.filter((id) => !alreadyHere.has(id));
+  const fresh = pictureIds.filter((id) => !alreadyHere.has(id + nameSuffix));
   if (fresh.length === 0) return settled;
 
   const loaded = await Promise.all(
@@ -170,14 +171,18 @@ export async function copyForPublication(
   // whole publication down, and a half-copied folder would be litter.
   if (outcomes.some((one) => !one.ok && one.because !== "missing")) return [...settled, ...outcomes];
 
-  await Promise.all(
-    passed.map((one) =>
-      bucket.file(publishedPath(listId, one.id)).save(one.bytes, {
+  const saved = await Promise.allSettled(
+    passed.map(async (one) => {
+      const path = publishedPath(listId, one.id + nameSuffix);
+      await bucket.file(path).save(one.bytes, {
         contentType: "image/jpeg",
         resumable: false,
-      }),
-    ),
+      });
+      onSaved(path);
+    }),
   );
+  const failed = saved.find((one): one is PromiseRejectedResult => one.status === "rejected");
+  if (failed) throw failed.reason;
 
   return [
     ...settled,
@@ -185,7 +190,7 @@ export async function copyForPublication(
     ...passed.map((one) => ({
       id: one.id,
       ok: true as const,
-      address: addressOf(bucket.name, publishedPath(listId, one.id)),
+      address: addressOf(bucket.name, publishedPath(listId, one.id + nameSuffix)),
     })),
   ];
 }
@@ -246,12 +251,13 @@ const COPYING_AT_ONCE = 20;
 export async function adoptForeignCopies<T extends PictureAddresses>(
   listId: string,
   list: T,
+  { nameSuffix = "", onSaved = () => undefined }: { nameSuffix?: string; onSaved?: (path: string) => void } = {},
 ): Promise<{ list: T; picturesFrom: string[] }> {
   const urls = [...list.items.map((item) => item.imageUrl), list.coverImageUrl, ...list.previewImages];
   const wanted = new Map<string, { from: string; to: string; list: string }>();
   for (const url of urls) {
     const copy = foreignCopyOf(listId, url);
-    if (copy !== null && url !== null) wanted.set(url, copy);
+    if (copy !== null && url !== null) wanted.set(url, { ...copy, to: copy.to + nameSuffix });
   }
   if (wanted.size === 0) return { list, picturesFrom: [] };
 
@@ -263,6 +269,7 @@ export async function adoptForeignCopies<T extends PictureAddresses>(
       pending.slice(at, at + COPYING_AT_ONCE).map(async ([url, copy]) => {
         try {
           await bucket.file(copy.from).copy(bucket.file(copy.to));
+          onSaved(copy.to);
           moved.set(url, addressOf(bucket.name, copy.to));
         } catch {
           moved.set(url, null);
@@ -354,14 +361,18 @@ export function publishedNamesIn(listId: string, urls: readonly (string | null |
  * A board somebody edited for a month can leave a great many behind, and they
  * are nobody's: the snapshot that pointed at them has been replaced.
  */
-export async function discardUnusedPublished(listId: string, keeping: string[]): Promise<void> {
+export async function discardUnusedPublished(listId: string, keeping: string[], candidates?: readonly string[]): Promise<void> {
   const kept = new Set(keeping);
+  const eligible = candidates === undefined ? null : new Set(candidates);
   const [files] = await getStorage()
     .bucket()
     .getFiles({ prefix: `published/${listId}/` });
   await Promise.all(
     files
-      .filter((file) => !kept.has(file.name.slice(`published/${listId}/`.length)))
+      .filter((file) => {
+        const name = file.name.slice(`published/${listId}/`.length);
+        return !kept.has(name) && (eligible === null || eligible.has(name));
+      })
       .map((file) => file.delete().catch(() => undefined)),
   );
 }

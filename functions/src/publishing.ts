@@ -6,6 +6,8 @@ import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
 import { isSectionId } from "./sections";
 import { readAnonymous } from "./anonymous";
 import { isDeezerPicture } from "./pictureSources";
+import { MAX_CREDIT_LENGTH } from "./pictureCredit";
+export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
 /**
  * Twenty was low enough that an enthusiastic person would meet it, and it also
@@ -26,7 +28,6 @@ export const MAX_RANKED_TIERS = 19;
 export const MAX_SNAPSHOT_BYTES = 700_000;
 export const MAX_TITLE_LENGTH = 80;
 export const MAX_CAPTION_LENGTH = 60;
-export const MAX_CREDIT_LENGTH = 200;
 export const FEED_PAGE_SIZE = 20;
 export const REPORT_PAGE_SIZE = 50;
 export const MAX_PREVIEW_IMAGES = 6;
@@ -315,7 +316,7 @@ export function decidePublish({
   // Weighed against the addresses our own copies will have, which are longer
   // than nothing and shorter than most posters'. Weighing the draft instead
   // would let a board pass here and outgrow the document later.
-  if (JSON.stringify(settle(draft, new Map())).length > MAX_SNAPSHOT_BYTES) {
+  if (!snapshotFits(settle(draft, new Map()))) {
     return { ok: false, reason: "too_large", detail: "The list is too heavy to store" };
   }
 
@@ -353,6 +354,11 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
         .slice(0, MAX_PREVIEW_IMAGES),
     tierColors: draft.tierColors,
   };
+}
+
+/** The wire and Firestore limits are bytes, including multibyte names and credits. */
+export function snapshotFits(value: object): boolean {
+  return Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_SNAPSHOT_BYTES;
 }
 
 /**

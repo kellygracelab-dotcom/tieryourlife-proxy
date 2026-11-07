@@ -10,6 +10,8 @@ import {
   decidePublish,
   picturesWanted,
   readBoardUid,
+  snapshotFits,
+  MAX_SNAPSHOT_BYTES,
 } from "../src/publishing";
 import { MAX_OWN_PICTURES_PER_LIST } from "../src/safety";
 
@@ -36,6 +38,19 @@ function publish(
 }
 
 describe("decidePublish", () => {
+  it("refuses a multibyte snapshot before it reaches Firestore", () => {
+    const decision = publish({ items: Array.from({ length: 2000 }, () => ({ title: "Card", credit: "界".repeat(190) })) });
+    assert.deepEqual(decision, { ok: false, reason: "too_large", detail: "The list is too heavy to store" });
+  });
+
+  it("weighs the actual UTF-8 bytes at the limit, including resolved image addresses", () => {
+    const overhead = Buffer.byteLength(JSON.stringify({ payload: "" }));
+    const payload = "界".repeat(Math.floor((MAX_SNAPSHOT_BYTES - overhead) / 3));
+    assert.equal(snapshotFits({ payload }), true);
+    assert.equal(snapshotFits({ payload: payload + "界" }), false);
+    assert.equal(snapshotFits({ payload, imageUrl: "https://example.org/" + "a".repeat(2000) }), false);
+  });
+
   it("accepts a list and keeps its https image", () => {
     const decision = publish();
 

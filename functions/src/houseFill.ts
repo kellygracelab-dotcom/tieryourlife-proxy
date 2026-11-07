@@ -131,6 +131,6 @@ export function extendList(list: HouseList, cards: readonly PublishedItem[]): Ex
   const derived = JSON.stringify(previous) === JSON.stringify(cardArt(list.items));
   const previewImages = derived ? cardArt(items) : previous;
   const fields = { items, itemCount: items.length, previewImages, tierCounts: tierCountsOf(list.tiers.length, items) };
-  if (JSON.stringify({ ...list, ...fields }).length > MAX_SNAPSHOT_BYTES) return { ok: false, detail: "The list is too heavy to store" };
+  if (Buffer.byteLength(JSON.stringify({ ...list, ...fields }), "utf8") > MAX_SNAPSHOT_BYTES) return { ok: false, detail: "The list is too heavy to store" };
   return { ok: true, fields, added, duplicates };
 }

@@ -47,14 +47,14 @@ The one description of what the proxy answers, read by the website and by the An
 |---|---|---|
 | List title, tier label, card title, board title, tier name in a ranking | 80 characters | `publishing.ts`, `sync.ts` |
 | Tier caption | 60 | `publishing.ts`, `sync.ts` |
-| Picture credit | 200 | `publishing.ts`, `sync.ts` |
+| Picture credit | 1000 | `pictureCredit.ts`, `publishing.ts`, `sync.ts` |
 | Picture address (`https://` only, others dropped) | 2000 | `publishing.ts`, `sync.ts` |
 | Ranked tiers per list | 19 on a new list, else `400 TOO_MANY_TIERS`; a replace keeps up to as many as the stored list has, if that is more (some lists have 20) | `MAX_RANKED_TIERS`, `tierLimitFor` |
 | Tiers per board | 20, **the pool included**: 19 ranked tiers and the pool | `MAX_TIERS_PER_BOARD` |
 | Tier names in a ranking | 20 | `MAX_TIERS_PER_LIST` |
 | Cards per list | 2000 (at least 1) | `MAX_ITEMS_PER_LIST` |
 | Cards per board | 2000 live (without `deletedAt`, 0 allowed), plus up to 2000 more in the trash: at most 4000 in the body | `MAX_ITEMS_PER_BOARD`, `MAX_TRASHED_ITEMS_PER_BOARD` |
-| A list snapshot, a board, as JSON | 700 000 bytes, else `413 TOO_LARGE` | `MAX_SNAPSHOT_BYTES`, `MAX_BOARD_BYTES` |
+| A list snapshot, a board, as JSON | 700 000 UTF-8 bytes, else `413 TOO_LARGE`; resolved image URLs and retained publication fields count too | `MAX_SNAPSHOT_BYTES`, `MAX_BOARD_BYTES` |
 | Own photographs (distinct picture ids) per list | 200 | `MAX_OWN_PICTURES_PER_LIST` |
 | Pictures from other sites (distinct addresses, not catalogue art, not already copied) per list | 200, else `413 TOO_LARGE` | `MAX_OUTSIDE_PICTURES_PER_LIST` |
 | Fetching a picture from another site to publish it | https only, no private or loopback address, 4 MB (read no further), 3 redirects, 8 s a hop, JPEG, PNG, GIF or WebP by the bytes; 4 at once; 12 s for a whole publication (6 s for a face), counted from the start and never waited past: what is not done by then is dropped; 400 fetches per account per UTC day, faces included, reused copies free | `outsidePictures.ts` |
@@ -277,6 +277,10 @@ Lists the house publishes, stored under author `tyl-editorial`, always anonymous
 **House translations and `names`.** A reader shows `translations[locale]?.[text] ?? text` for every text of a house list (`GET /lists/{id}` carries `translations`). Every list summary carries `names`: its title in each locale it has been translated into (empty for a list that is not the house's), so a feed card needs no second read. A copy of a house list keeps those words. Topics and sections carry `names` of their own.
 
 ### Picture search
+
+**Image attribution.** Commons search requests `extmetadata` and carries the supplied author/custom attribution, licence and safe source/licence links as plain text in the existing optional `credit` string. Source links use Commons page ids when available. Missing metadata adds no credit; a known attribution that cannot fit whole in 1000 characters is not offered as a new search result. Search cache shape is 9. Existing saved boards are not rewritten. Older clients that truncate this field at 200 cannot be relied on to preserve longer credits.
+
+**Publication attempts.** Newly copied private, external and adopted pictures use an attempt-specific `_p_UUID` suffix; filenames and URLs are opaque to clients. A refused or failed write removes only that attempt's new files. Replacing a list reuses external copies referenced by the committed snapshot without another fetch, scan or quota charge; pending files of another attempt are never a cache. Successful cleanup considers only files referenced by the previous committed snapshot. Overlapping replacements compare `updatedAt` in the final transaction: the losing request returns `409 PUBLICATION_CHANGED`, keeps the current publication intact and may be retried. A client must retain its local edit and offer to publish again, rather than treating this as the author's list-count limit.
 
 **`GET /lists/pictures?q=&scope=&lang=&page=&web=&part=`**: the catalogues a scope names, asked together.
 - `scope`: `all` (default), `film_tv`, `anime`, `games`, `music`, `books`, `people`, `animals`. `music` asks Wikidata (pictures from Wikimedia Commons) only, and only for items that are music (a genre is named, or the item is a band, album, single, song or musical work); its tiles take photos as wide as 3:2, like `all` and `animals`, where the other scopes take only covers and posters, no wider than tall.

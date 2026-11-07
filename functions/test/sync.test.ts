@@ -64,6 +64,19 @@ function store(
 }
 
 describe("decideStore", () => {
+  it("refuses a multibyte credit payload before it reaches Firestore", () => {
+    const items = Array.from({ length: 2000 }, (_, index) => ({ uid: `i-${index}`, tierUid: TIER_UID, position: index, title: "Card", credit: "界".repeat(190) }));
+    const decision = store({ items });
+    assert.deepEqual(decision, { ok: false, reason: "too_large", detail: "The board is too heavy to keep" });
+  });
+
+  it("keeps a whole attribution longer than the former 200-character limit", () => {
+    const credit = "© Jane Doe " + "collection ".repeat(30) + "CC BY 4.0 · https://creativecommons.org/licenses/by/4.0/ · https://commons.wikimedia.org/?curid=12345";
+    const decision = store({ items: [{ uid: "i-1", tierUid: TIER_UID, title: "Fox", credit }] });
+    assert.ok(decision.ok);
+    assert.equal(decision.board.items[0].credit, credit);
+  });
+
   it("keeps a board whole, tiers and cards and where each card sits", () => {
     const decision = store();
 
@@ -109,7 +122,7 @@ describe("decideStore", () => {
     const decision = store({
       items: [
         { uid: "item-1", tierUid: TIER_UID, position: 0, title: "Red fox", credit: "  © Jane   Doe, CC BY " },
-        { uid: "item-2", tierUid: TIER_UID, position: 1, title: "Badger", credit: "x".repeat(500) },
+        { uid: "item-2", tierUid: TIER_UID, position: 1, title: "Badger", credit: "x".repeat(MAX_CREDIT_LENGTH + 20) },
         { uid: "item-3", tierUid: TIER_UID, position: 2, title: "Arrival", credit: 7 },
       ],
     });
