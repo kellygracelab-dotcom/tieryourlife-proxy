@@ -200,6 +200,7 @@ describe("copying pictures from other sites", () => {
     const done = await copyOutside(folder, [TRACKER, "https://pictures.example/b.jpg"], tools);
     assert.ok(done.ok);
     assert.equal(done.copies.get(TRACKER), copyAddress(folder, TRACKER));
+    assert.equal(done.dropped, 0);
     assert.equal(tools.looked, 2);
     assert.deepEqual([...tools.files.keys()].sort(), [folder + outsideName(TRACKER), folder + outsideName("https://pictures.example/b.jpg")].sort());
     const list = withCopies({ items: [{ imageUrl: TRACKER }, { imageUrl: POSTER }], coverImageUrl: TRACKER, previewImages: [TRACKER, POSTER] }, done.copies);
@@ -216,6 +217,7 @@ describe("copying pictures from other sites", () => {
     assert.equal(done.copies.get(TRACKER), copyAddress(folder, TRACKER));
     assert.deepEqual(tools.fetched, []);
     assert.equal(tools.used, 0);
+    assert.equal(done.dropped, 0);
   });
 
   it("drops what cannot be fetched, is not a picture, or Vision says nothing about", async () => {
@@ -231,6 +233,7 @@ describe("copying pictures from other sites", () => {
     const done = await copyOutside(folder, urls, tools);
     assert.ok(done.ok);
     assert.deepEqual(urls.map((url) => done.copies.get(url) ?? null), [null, null, null, null, copyAddress(folder, TRACKER)]);
+    assert.equal(done.dropped, 4);
     assert.deepEqual([...tools.files.keys()], [folder + outsideName(TRACKER)]);
     const list = withCopies({ items: [{ imageUrl: INSIDE }], coverImageUrl: INSIDE, previewImages: [INSIDE, TRACKER] }, done.copies);
     assert.deepEqual(list, { items: [{ imageUrl: null }], coverImageUrl: null, previewImages: [copyAddress(folder, TRACKER)] });
@@ -251,6 +254,7 @@ describe("copying pictures from other sites", () => {
     assert.ok(done.ok);
     assert.deepEqual([animatedGif, animatedWebp, stillGif].map((url) => done.copies.get(url) ?? null), [null, null, copyAddress(folder, stillGif)]);
     assert.equal(tools.looked, 1);
+    assert.equal(done.dropped, 2);
   });
 
   it("refuses the lot over one Vision refuses, and leaves nothing behind", async () => {
@@ -283,6 +287,7 @@ describe("copying pictures from other sites", () => {
     const done = await copyOutside(folder, urls, tools, { atOnce: 2, until: timeUp.signal });
     assert.ok(done.ok);
     assert.deepEqual(urls.map((url) => done.copies.get(url)), [null, null, null]);
+    assert.equal(done.dropped, 3);
     assert.equal(tools.used, 2, "the one never begun goes back to the day");
     assert.equal(tools.files.size, 0);
   });

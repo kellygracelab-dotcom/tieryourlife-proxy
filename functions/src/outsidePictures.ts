@@ -124,8 +124,11 @@ export interface OutsideTools {
   giveBack(count: number): Promise<void>;
 }
 
+type Copied = { ok: true; copies: Map<string, string | null>; saved: string[] };
+
 export type OutsideCopies =
-  | { ok: true; copies: Map<string, string | null>; saved: string[] }
+  /** `dropped`: how many of the addresses copied to null. */
+  | (Copied & { dropped: number })
   | { ok: false; refused: { url: string; because: SafetyRefusal } }
   | { ok: false; overDailyLimit: true };
 
@@ -142,7 +145,7 @@ export async function copyOutside(
   tools: OutsideTools,
   { atOnce = FETCHING_AT_ONCE, withinMs = LIST_WINDOW_MS, until }: { atOnce?: number; withinMs?: number; until?: AbortSignal } = {},
 ): Promise<OutsideCopies> {
-  if (urls.length === 0) return { ok: true, copies: new Map(), saved: [] };
+  if (urls.length === 0) return { ok: true, copies: new Map(), saved: [], dropped: 0 };
   const stop = until ?? AbortSignal.timeout(withinMs);
   const run: Run = { copies: new Map(), saved: [], refused: null, fresh: [], next: 0, reserved: false, late: false };
   const timeUp = new Promise<"late">((resolve) => {
@@ -150,7 +153,7 @@ export async function copyOutside(
     else stop.addEventListener("abort", () => resolve("late"), { once: true });
   });
   const finished = await Promise.race([copyWithin(folder, urls, tools, atOnce, stop, run), timeUp]);
-  if (finished !== "late") return finished;
+  if (finished !== "late") return finished.ok ? counted(finished) : finished;
 
   run.late = true;
   const neverTried = run.fresh.length - run.next;
@@ -160,7 +163,11 @@ export async function copyOutside(
     return { ok: false, refused: run.refused };
   }
   const copies = new Map(urls.map((url) => [url, run.copies.get(url) ?? null]));
-  return { ok: true, copies, saved: [...run.saved] };
+  return counted({ ok: true, copies, saved: [...run.saved] });
+}
+
+function counted(done: Copied): OutsideCopies {
+  return { ...done, dropped: [...done.copies.values()].filter((address) => address === null).length };
 }
 
 interface Run {
@@ -181,7 +188,7 @@ async function copyWithin(
   atOnce: number,
   stop: AbortSignal,
   run: Run,
-): Promise<OutsideCopies> {
+): Promise<Copied | Exclude<OutsideCopies, { ok: true }>> {
   const here = await tools.namesIn(folder);
   for (const url of urls) {
     if (here.has(outsideName(url))) run.copies.set(url, addressOf(tools.bucket, folder + outsideName(url)));

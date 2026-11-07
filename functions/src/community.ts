@@ -3054,6 +3054,7 @@ async function publish(
   });
   if (stored === null) return;
   const { document, topicId, addresses } = stored;
+  const dropped = outside.dropped > 0 ? { droppedPictures: outside.dropped } : {};
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
   if (held) await noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined);
 
@@ -3069,10 +3070,10 @@ async function publish(
         ...document.previewImages,
       ]),
     ]);
-    response.status(200).json({ id: existingId, topicId, underReview: document.underReview });
+    response.status(200).json({ id: existingId, topicId, underReview: document.underReview, ...dropped });
     return;
   }
-  response.status(201).json({ id: target, topicId, underReview: document.underReview });
+  response.status(201).json({ id: target, topicId, underReview: document.underReview, ...dropped });
 }
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
