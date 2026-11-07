@@ -35,8 +35,19 @@ export function pictureScopeOf(raw: unknown): PictureScope {
   return (PICTURE_SCOPES as readonly string[]).includes(raw) ? (raw as PictureScope) : "all";
 }
 
+/**
+ * Catalogues never asked, whatever the scope. Deezer is off for the first
+ * release: the right to show its covers publicly is unclear. Lists that
+ * already hold its covers keep them (`CATALOGUE_HOSTS`).
+ */
+export const DISABLED_SOURCES: readonly PictureSource[] = ["deezer"];
+
 /** The catalogues a scope asks, best first; the order also breaks ties between equally good titles. */
 export function sourcesFor(scope: PictureScope): PictureSource[] {
+  return everySourceFor(scope).filter((source) => !DISABLED_SOURCES.includes(source));
+}
+
+function everySourceFor(scope: PictureScope): PictureSource[] {
   switch (scope) {
     case "film_tv":
       return ["tmdb", "wikidata"];

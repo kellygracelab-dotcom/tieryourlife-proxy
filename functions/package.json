@@ -20,6 +20,7 @@
     "house-fill": "tsc -p tsconfig.test.json && node lib-test/scripts/house-fill.js",
     "recount-takes": "tsc -p tsconfig.test.json && node lib-test/scripts/recount-takes.js",
     "check-outside-pictures": "tsc -p tsconfig.test.json && node lib-test/scripts/check-outside-pictures.js",
+    "count-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/count-deezer-covers.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
     "emulators:e2e": "npm run build && firebase emulators:start --only functions,firestore,auth,storage --project demo-tieryourlife",
     "emulators:e2e:exec": "npm run build && firebase emulators:exec --only functions,firestore,auth,storage --project demo-tieryourlife",
