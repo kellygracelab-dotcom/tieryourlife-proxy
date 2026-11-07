@@ -140,9 +140,7 @@ export const boards = onRequest(
     // one, the same way "face" and "follow" cannot be a list id.
     const aboutTheAccount = id === ACCOUNT;
 
-    const identity = await requireUser(request, response, {
-      evenIfErased: aboutTheAccount && segments.length === 1 && request.method === "DELETE",
-    });
+    const identity = await requireUser(request, response, { evenIfErased: erasesTheAccount(request.method, segments) });
     if (!identity) {
       return;
     }
@@ -176,6 +174,11 @@ export const boards = onRequest(
     }
   },
 );
+
+/** `DELETE /boards/account` and nothing else: the one write an erased account's token may still make, to finish erasing. */
+export function erasesTheAccount(method: string, segments: readonly string[]): boolean {
+  return method === "DELETE" && segments.length === 1 && segments[0] === ACCOUNT;
+}
 
 /**
  * Offered inside the app because Google requires an app that creates

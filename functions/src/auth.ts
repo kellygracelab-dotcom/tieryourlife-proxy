@@ -75,7 +75,8 @@ export async function requireUser(
     response.status(401).json({ error: "Invalid ID token", code: "UNAUTHENTICATED" });
     return null;
   }
-  if (identity.isAnonymous || options.evenIfErased === true || !writes(request.method)) {
+  // Guests too: a guest that linked a provider keeps its uid, and its anonymous token stays good for an hour.
+  if (options.evenIfErased === true || !writes(request.method)) {
     return identity;
   }
   try {

@@ -4,6 +4,7 @@ import type { DecodedIdToken } from "firebase-admin/auth";
 import type { Request } from "firebase-functions/https";
 import type { Response } from "express";
 import { requireUser, writes, type UserChecks } from "../src/auth";
+import { erasesTheAccount } from "../src/boards";
 
 function call(method: string) {
   const answer: { status?: number; body?: unknown } = {};
@@ -57,8 +58,15 @@ describe("requireUser after the account was erased", () => {
     assert.equal((await requireUser(request, response, { evenIfErased: true }, checks("google.com", true)))?.uid, "erased-uid");
   });
 
-  it("never looks for a guest, whom nothing erases this way", async () => {
-    const { request, response } = call("PUT");
+  // A guest that linked Google keeps its uid, and the anonymous token from before the link still passes.
+  it("refuses a guest token's write too once its uid was erased", async () => {
+    const { request, response, answer } = call("PUT");
+    assert.equal(await requireUser(request, response, {}, checks("anonymous", true)), null);
+    assert.equal((answer.body as { code: string }).code, "ACCOUNT_ERASED");
+  });
+
+  it("lets a guest read without looking", async () => {
+    const { request, response } = call("GET");
     const looking = checks("anonymous", true);
     assert.equal((await requireUser(request, response, {}, looking))?.isAnonymous, true);
     assert.deepEqual(looking.asked, []);
@@ -82,5 +90,16 @@ describe("requireUser after the account was erased", () => {
 describe("writes", () => {
   it("is every method but the reads", () => {
     assert.deepEqual(["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"].map(writes), [false, false, false, true, true, true, true]);
+  });
+});
+
+describe("erasesTheAccount", () => {
+  it("is DELETE /boards/account and nothing else", () => {
+    assert.equal(erasesTheAccount("DELETE", ["account"]), true);
+    assert.equal(erasesTheAccount("PUT", ["account"]), false);
+    assert.equal(erasesTheAccount("GET", ["account"]), false);
+    assert.equal(erasesTheAccount("DELETE", ["board1"]), false);
+    assert.equal(erasesTheAccount("DELETE", ["account", "board1"]), false);
+    assert.equal(erasesTheAccount("DELETE", []), false);
   });
 });
