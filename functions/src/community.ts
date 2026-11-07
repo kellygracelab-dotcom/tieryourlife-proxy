@@ -8,7 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
-import { readBan } from "./banIdentities";
+import { readBan, replaceKeptBans } from "./banIdentities";
 import { banTarget, decideHide, groupReports, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
@@ -2682,6 +2682,7 @@ async function settleReports(
     : takeDown && filed.docs.some((doc) => doc.get("reporterUid") === HELD) ? [db.collection(PUBLISH_HOLDS).doc(listed.authorUid)] : [];
   holds.forEach((ref) => batch.delete(ref));
   const standing = { underReview: listed?.underReview === true, reviewed: listed?.reviewed === true };
+  let banned: { uid: string; ban: Ban } | null = null;
   if (takeDown) {
     auditInBatch(batch, auditEntry(identity.uid, role, "report.takedown", `${PUBLISHED}/${listId}`,
       { ...standing, reports: filed.size }, { removed: true }));
@@ -2695,6 +2696,7 @@ async function settleReports(
       const ban = banFrom(banLength, Date.now(), reasonForBan);
       batch.set(db.collection(BANS).doc(authorUid), ban);
       auditInBatch(batch, auditEntry(identity.uid, role, "ban.set", `${BANS}/${authorUid}`, null, { ...ban, length: banLength }));
+      banned = { uid: authorUid, ban };
     }
   } else {
     const change = changedFields(standing, { underReview: false, reviewed: true });
@@ -2706,6 +2708,7 @@ async function settleReports(
     if (listDoc.exists) batch.update(listDoc.ref, { underReview: false, reviewed: true });
   }
   await batch.commit();
+  if (banned !== null) await replaceKeptBans(banned.uid, banned.ban);
   if (takeDown) {
     await discardPublished(listId);
     await discardCopiesOf(listId);

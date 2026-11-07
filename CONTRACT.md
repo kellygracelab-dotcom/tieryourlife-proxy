@@ -309,6 +309,10 @@ Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, c
 - the sections and topics it proposed or made: one still waiting, declined or rejected is deleted with its pictures; an approved or merged one stays without its proposer (a section's `proposerUid` and `proposerName` become `null`, a topic's `createdBy` and `proposerName` become `""`).
 
 What stays: a ban in force when the account is erased. It is kept as **`bannedIdentities/{key}`** `{until, bannedAt}`, one document per key of the person, and nothing else about them. A key is the lower-case hex SHA-256 of the UTF-8 text `email:<address>` for the account's verified e-mail (trimmed, lower-cased), and `<provider>:<id>` for each federated sign-in (`google.com:<Google's sub>`; `firebase.identities` in an ID token, `providerData` in Auth). `password`, `email`, `anonymous` and `custom` give no key. A new account whose token gives one of these keys counts as banned until that ban's `until`. Two bans on one key keep the one that lifts last.
+- The erased account's own `bans/{uid}` stays, and gains `identityKeys: string[]`, the keys it left. The `auditLog` row `{who: <uid>, role: "account", what: "ban.kept_past_erasure", target: "bans/{uid}", before: null, after: {until, keys: <how many>}, at}` records it, with no name.
+- A ban staff set later on the new account (`POST /lists/{id}/takedown`) replaces the `until` of every kept record of that person, shorter or longer: the newest decision is the one in force.
+- Lifting a ban (`liftBan` in `functions/src/banIdentities.ts`, for the owner's route) deletes `bans/{uid}`, every record its `identityKeys` name, and the records of the account signed in as that uid now, so the erased account's uid and the new one both lift it.
+- A record whose ban ran out is deleted when it is next read, and by `sweepGuests` every day.
 
 ## `adoptGuestCredits`
 
@@ -329,7 +333,7 @@ What stays: a ban in force when the account is erased. It is kept as **`bannedId
 ## Background functions
 
 Not callable:
-- `sweepGuests`: daily, deletes guest identities unused for 30 days.
+- `sweepGuests`: daily, deletes guest identities unused for 30 days, and `bannedIdentities` records whose `until` has passed.
 - `sweepPictures`: daily, deletes own pictures no board names, after their first day.
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `houseFill`: answers picture-search jobs that `scripts/house-fill.ts` writes to `houseFillJobs`.
@@ -434,7 +438,7 @@ Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`;
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "report.takedown"`, to tell a list staff took down from one its author withdrew;
 - `auditLog` rows with `target == "publishedLists/{id}"` and `what == "list.withdrawn_hidden"`: its author withdrew it while it was out of the feed (`underReview`). Either of these two rows keeps a removed list's rankings hidden.
-- `bans/{uid}`: `{until, bannedAt, reason}`; banned while it exists and `until === null || until > now`.
+- `bans/{uid}`: `{until, bannedAt, reason, identityKeys?}`; banned while it exists and `until === null || until > now`. `identityKeys` is only on an erased account's ban.
 - `bannedIdentities/{key}`: `{until, bannedAt}`, a ban kept from an erased account, by the same rule. The caller's keys come from its ID token as `DELETE /boards/account` describes; an account is banned when `bans/{uid}` or any of these says so. The proxy's reading of both is `readBan` in `functions/src/banIdentities.ts`.
 - `erasedAccounts/{uid}`: `{erasedAt}`, present once the account was erased. Its ID tokens stay valid for up to an hour; the proxy refuses their writes with `401 ACCOUNT_ERASED`.
 
