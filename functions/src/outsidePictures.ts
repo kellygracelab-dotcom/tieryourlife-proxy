@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
-import { pictureTypeOf } from "./pictureBytes";
+import { isAnimated, pictureTypeOf } from "./pictureBytes";
 import { downloadPicture } from "./pictureSearch";
 import { addressOf, foreignCopyOf, safeSearchOrNothing } from "./publishedPictures";
 import { dayKey } from "./quota";
@@ -130,7 +130,7 @@ export type OutsideCopies =
 
 /**
  * Copies each address into [folder] once it has passed SafeSearch. One that
- * cannot be fetched, is not a JPEG, PNG, GIF or WebP, or that Vision says
+ * cannot be fetched, is not a JPEG, PNG, GIF or WebP, is animated, or that Vision says
  * nothing about, copies to null. One Vision refuses refuses them all, and
  * whatever this call saved is removed again.
  */
@@ -160,7 +160,7 @@ export async function copyOutside(
     const fetched = await tools.fetch(url, stop).catch((): FetchedPicture => ({ error: "UNREACHABLE" }));
     if ("error" in fetched) return null;
     const type = pictureTypeOf(fetched.bytes);
-    if (type === null || stop.aborted || state.refused !== null) return null;
+    if (type === null || isAnimated(fetched.bytes) || stop.aborted || state.refused !== null) return null;
     const verdict = await tools.lookAt(fetched.bytes).catch(() => null);
     if (verdict === null) return null;
     const decision = decideSafe(verdict);

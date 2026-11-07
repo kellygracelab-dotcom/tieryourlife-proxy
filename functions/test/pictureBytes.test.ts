@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { UPLOADS_PER_DAY, judgeUpload, looksLikePicture, ownPictureOwner } from "../src/pictureBytes";
+import { UPLOADS_PER_DAY, isAnimated, judgeUpload, looksLikePicture, ownPictureOwner } from "../src/pictureBytes";
+import { gifOf, webpOf } from "./pictureFixtures";
 import { STUB_PICTURE } from "../src/emulator";
 
 const ascii = (text: string) => Buffer.from(text, "latin1");
@@ -54,5 +55,31 @@ describe("judgeUpload", () => {
 
     assert.equal(verdict, "notAPicture");
     assert.equal(counted, false);
+  });
+});
+
+describe("isAnimated", () => {
+  it("knows a GIF of more than one image", () => {
+    assert.equal(isAnimated(gifOf(1)), false);
+    assert.equal(isAnimated(gifOf(1, { palette: true, comment: true })), false);
+    assert.equal(isAnimated(gifOf(2)), true);
+    assert.equal(isAnimated(gifOf(3, { palette: true, comment: true })), true);
+  });
+
+  it("knows a WebP by its animation flag or an animation chunk", () => {
+    const still = webpOf(["VP8 ", [1, 2, 3, 4]]);
+    const extendedStill = webpOf(["VP8X", [0x10, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ["VP8 ", [1, 2]]);
+    const flagged = webpOf(["VP8X", [0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ["VP8 ", [1, 2]]);
+    const chunked = webpOf(["VP8X", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ["ANIM", [0, 0, 0, 0, 0, 0]], ["ANMF", [1, 2, 3]]);
+    assert.equal(isAnimated(still), false);
+    assert.equal(isAnimated(extendedStill), false);
+    assert.equal(isAnimated(flagged), true);
+    assert.equal(isAnimated(chunked), true);
+  });
+
+  it("leaves a JPEG, a PNG and bytes cut short alone", () => {
+    assert.equal(isAnimated(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), false);
+    assert.equal(isAnimated(STUB_PICTURE), false);
+    assert.equal(isAnimated(gifOf(2).subarray(0, 20)), false);
   });
 });

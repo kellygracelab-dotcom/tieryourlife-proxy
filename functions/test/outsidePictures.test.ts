@@ -14,6 +14,7 @@ import {
   type OutsideTools,
 } from "../src/outsidePictures";
 import { pictureTypeOf } from "../src/pictureBytes";
+import { gifOf, webpOf } from "./pictureFixtures";
 import { downloadPicture } from "../src/pictureSearch";
 import { addressOf, foreignCopyOf, isCopiedFrom, sourcesInNames } from "../src/publishedPictures";
 import { decidePublish, settle } from "../src/publishing";
@@ -224,6 +225,23 @@ describe("copying pictures from other sites", () => {
     assert.deepEqual([...tools.files.keys()], [folder + outsideName(TRACKER)]);
     const list = withCopies({ items: [{ imageUrl: INSIDE }], coverImageUrl: INSIDE, previewImages: [INSIDE, TRACKER] }, done.copies);
     assert.deepEqual(list, { items: [{ imageUrl: null }], coverImageUrl: null, previewImages: [copyAddress(folder, TRACKER)] });
+  });
+
+  it("drops an animated GIF or WebP, which Vision only sees the first frame of", async () => {
+    const animatedGif = "https://pictures.example/moving.gif";
+    const animatedWebp = "https://pictures.example/moving.webp";
+    const stillGif = "https://pictures.example/still.gif";
+    const tools = fakeTools({
+      pictures: {
+        [animatedGif]: { bytes: gifOf(2), type: "image/gif" },
+        [animatedWebp]: { bytes: webpOf(["VP8X", [0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ["ANIM", [0, 0, 0, 0, 0, 0]]), type: "image/webp" },
+        [stillGif]: { bytes: gifOf(1), type: "image/gif" },
+      },
+    });
+    const done = await copyOutside(folder, [animatedGif, animatedWebp, stillGif], tools);
+    assert.ok(done.ok);
+    assert.deepEqual([animatedGif, animatedWebp, stillGif].map((url) => done.copies.get(url) ?? null), [null, null, copyAddress(folder, stillGif)]);
+    assert.equal(tools.looked, 1);
   });
 
   it("refuses the lot over one Vision refuses, and leaves nothing behind", async () => {
