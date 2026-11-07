@@ -41,7 +41,7 @@ export interface PublishedTier {
 
 export interface PublishedItem {
   title: string;
-  /** Only ever an https URL. Somebody else's, or our own published copy. */
+  /** Catalogue art where the catalogue keeps it, or our own published copy (`outsidePictures.ts`). */
   imageUrl: string | null;
   /**
    * Which tier the author put this card in, by position in [PublishedList.tiers],

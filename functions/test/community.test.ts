@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { authorRoleOf, isModerator, nextCursor, segmentsOf } from "../src/community";
+import { authorRoleOf, isModerator, lists, nextCursor, segmentsOf } from "../src/community";
 
 describe("segmentsOf", () => {
   it("drops the function's own name, which Hosting puts first and a direct call does not", () => {
@@ -83,5 +83,11 @@ describe("isModerator", () => {
 
   it("makes nobody a moderator when only an empty address is configured", () => {
     assert.equal(isModerator(who("other", "me@example.com"), "", ""), false);
+  });
+});
+
+describe("the lists function", () => {
+  it("has the memory for pictures from other sites in flight beside a board", () => {
+    assert.equal((lists as unknown as { __endpoint: { availableMemoryMb: number } }).__endpoint.availableMemoryMb, 512);
   });
 });

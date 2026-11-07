@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addressOf, discardCopiesIn, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn } from "../src/publishedPictures";
+import { addressOf, discardCopiesIn, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
+import type { SafeSearchVerdict } from "../src/safety";
 
 describe("taking a list down", () => {
   it("clears the feed's copies and the site's share cards for it", () => {
@@ -78,5 +79,37 @@ describe("taking down a list others made copies of", () => {
     assert.equal(isCopiedFrom("M-L-p1", "L"), true);
     assert.equal(isCopiedFrom("M-p1", "L"), false);
     assert.equal(isCopiedFrom("LL-p1", "L"), false);
+  });
+});
+
+describe("asking Vision about many photographs", () => {
+  const SAFE: SafeSearchVerdict = { adult: "VERY_UNLIKELY", racy: "VERY_UNLIKELY", violence: "VERY_UNLIKELY" };
+
+  it("asks at most sixteen at a time", () => {
+    const images = Array.from({ length: 40 }, () => Buffer.alloc(10));
+    assert.deepEqual(visionBatches(images).map((batch) => batch.length), [16, 16, 8]);
+  });
+
+  it("keeps each call to about eight megabytes of base64, a photograph bigger than that alone", () => {
+    const three = Buffer.alloc(3_000_000);
+    assert.deepEqual(visionBatches([three, three, three]).map((batch) => batch.length), [2, 1]);
+    const big = Buffer.alloc(7_000_000);
+    assert.deepEqual(visionBatches([Buffer.alloc(1), big, Buffer.alloc(1)]).map((batch) => batch.length), [1, 1, 1]);
+    assert.deepEqual(visionBatches([]), []);
+  });
+
+  it("answers in the order asked, one call per batch, and a missing answer as unknown", async () => {
+    const images = Array.from({ length: 20 }, (_, at) => Buffer.from([at]));
+    const calls: number[] = [];
+    const annotate = async (batch: Buffer[]) => {
+      calls.push(batch.length);
+      return batch.map((one) => (one[0] === 3 ? null : { ...SAFE, racy: one[0] === 17 ? "LIKELY" as const : "VERY_UNLIKELY" as const }));
+    };
+    const verdicts = await safeSearchOrNothing(images, annotate);
+    assert.deepEqual(calls, [16, 4]);
+    assert.equal(verdicts.length, 20);
+    assert.equal(verdicts[3], null);
+    assert.equal(verdicts[17]?.racy, "LIKELY");
+    assert.equal((await realSafeSearch(images, annotate))[3]?.adult, "UNKNOWN");
   });
 });

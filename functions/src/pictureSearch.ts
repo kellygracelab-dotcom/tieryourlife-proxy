@@ -525,13 +525,19 @@ async function keepPicture(raw: string, uid: string): Promise<Kept> {
   return { pictureId };
 }
 
-async function downloadPicture(start: URL): Promise<{ bytes: Buffer; type: string } | { error: string }> {
+/** Also how publishing fetches a picture from another site: the same rules, and [stop] to give up sooner. */
+export async function downloadPicture(start: URL, stop?: AbortSignal): Promise<{ bytes: Buffer; type: string } | { error: string }> {
   let url = start;
   let reply: globalThis.Response | null = null;
+  const timeout = () => AbortSignal.timeout(8_000);
   for (let hop = 0; hop <= KEEP_MAX_REDIRECTS; hop++) {
     if (!(await safeToFetch(url))) return { error: "NOT_ALLOWED" };
     try {
-      reply = await fetch(url, { redirect: "manual", headers: { "User-Agent": USER_AGENT, Accept: "image/*" }, signal: AbortSignal.timeout(8_000) });
+      reply = await fetch(url, {
+        redirect: "manual",
+        headers: { "User-Agent": USER_AGENT, Accept: "image/*" },
+        signal: stop ? AbortSignal.any([timeout(), stop]) : timeout(),
+      });
     } catch {
       return { error: "UNREACHABLE" };
     }

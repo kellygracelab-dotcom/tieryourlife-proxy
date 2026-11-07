@@ -266,6 +266,18 @@ export function rankingRefusal(
   return null;
 }
 
+/** Everything a reader's ranking is refused for, asked before anything about it costs a fetch. */
+export function rankingPrecheck(
+  caller: RankingCaller,
+  list: { authorUid: string; underReview: boolean; itemCount: number } | null,
+  body: unknown,
+): { ok: true } | { refused: RankingRefusal } | { invalid: string } {
+  const refused = rankingRefusal(caller, list);
+  if (refused !== null || list === null) return { refused: refused ?? "missing" };
+  const read = readRankingBody(body, list.itemCount);
+  return read.ok ? { ok: true } : { invalid: read.detail };
+}
+
 /** What writing a reader's ranking does to the list's count: one more only for a ranking that was not there. */
 export function rankingWrite(existed: boolean): { created: boolean; countChange: 0 | 1 } {
   return existed ? { created: false, countChange: 0 } : { created: true, countChange: 1 };
