@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { install, type Fakes } from "./fakeFirebase";
 import { eraseAccount } from "../src/erase";
-import { identityKeys, liftBan, readBan, replaceKeptBans, sweepExpiredBans } from "../src/banIdentities";
+import { identityKeys, liftBan, liftBanLogged, readBan, replaceKeptBans, sweepExpiredBans } from "../src/banIdentities";
 import { banFrom } from "../src/bans";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -22,6 +22,7 @@ function seedErasable(uid: string, banned = true) {
   users.set(uid, person(uid));
   if (banned) db.seed(`bans/${uid}`, { ...banFrom("week", Date.now(), "spam") });
   db.seed(`roles/${uid}`, { moderator: true, name: "Erased Person", photoUrl: "https://x.test/face.png" });
+  db.seed(`publishLocks/${uid}`, { lastPublishAt: 1 });
   for (const status of ["pending", "rejected", "approved", "merged"]) {
     db.seed(`topics/${status}`, { name: status, status, createdBy: uid, proposerName: "Erased Person" });
   }
@@ -46,6 +47,7 @@ describe("eraseAccount", () => {
     await eraseAccount("old1");
     const { db, log } = fakes;
     assert.equal(db.get("roles/old1"), undefined);
+    assert.equal(db.get("publishLocks/old1"), undefined);
     assert.equal(db.get("topics/pending"), undefined);
     assert.equal(db.get("topics/rejected"), undefined);
     assert.ok(log.includes("deleteFiles topics/pending/"));
@@ -127,6 +129,26 @@ describe("liftBan", () => {
     fakes.db.seed("bans/live1", { ...banFrom("forever", Date.now(), null) });
     await liftBan("live1");
     assert.equal(await readBan({ uid: "live1", banKeys: [] }), null);
+  });
+});
+
+describe("liftBanLogged", () => {
+  it("lifts by the new uid a ban kept from the erased one, and logs what it cleared", async () => {
+    seedErasable("old1");
+    await eraseAccount("old1");
+    fakes.users.set("new1", person("new1"));
+    assert.ok(await readBan({ uid: "new1", banKeys: keys }));
+    assert.equal(await liftBanLogged("owner1", "owner", "new1"), true);
+    assert.equal(await readBan({ uid: "new1", banKeys: keys }), null);
+    const rows = [...fakes.db.docs.entries()].filter(([path, row]) => path.startsWith("auditLog/") && row.what === "ban.lift");
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0][1], { who: "owner1", role: "owner", what: "ban.lift", target: "bans/new1", before: { keptRecords: 2 }, after: null, at: "serverTimestamp" });
+  });
+
+  it("logs nothing when there was nothing to lift", async () => {
+    fakes.users.set("live1", { uid: "live1", providerData: [] });
+    assert.equal(await liftBanLogged("owner1", "owner", "live1"), false);
+    assert.ok(![...fakes.db.docs.keys()].some((path) => path.startsWith("auditLog/")));
   });
 });
 

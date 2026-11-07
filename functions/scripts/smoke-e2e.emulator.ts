@@ -113,6 +113,9 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await call(owner, "POST", `/lists/${published.body.id}/takedown`, { ban: "week" })).status, 204);
     const ban = await getFirestore(initializeApp({ projectId: PROJECT }, "smoke-ban")).collection("bans").doc(row.authorUid).get();
     assert.ok(ban.exists, "the anonymous author was not banned");
+
+    assert.equal((await call(owner, "DELETE", `/lists/bans/${row.authorUid}`)).status, 204);
+    assert.equal((await ban.ref.get()).exists, false, "the owner could not lift the ban");
   });
 
   it("keeps a hidden list hidden when its author publishes it again", async () => {

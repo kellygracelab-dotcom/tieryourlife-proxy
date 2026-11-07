@@ -36,6 +36,14 @@ export function weighsOnHiding(reporter: { isAnonymous: boolean; banned: boolean
 }
 
 /**
+ * Staff do not judge staff: a list by the owner or a moderator, a moderator's
+ * own included, is the owner's alone to take down, ban for, dismiss, move or report.
+ */
+export function mayJudge(actor: "owner" | "moderator", author: "owner" | "moderator" | null): boolean {
+  return actor === "owner" || author === null;
+}
+
+/**
  * Whom a takedown bans: the author the list itself names, and only when the
  * list is gone, the one a complaint kept. A complaint about an anonymous list
  * names nobody, so the list has to be asked first.

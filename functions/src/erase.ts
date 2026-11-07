@@ -20,6 +20,7 @@ const RANKINGS = "rankings";
 const PUBLISH_HOLDS = "publishHolds";
 const SECTIONS = "sections";
 const SECTION_PROPOSERS = "sectionProposers";
+const PUBLISH_LOCKS = "publishLocks";
 const AUDIT_LOG = "auditLog";
 const ROLES = "roles";
 
@@ -40,8 +41,8 @@ export const NAMED_IN: readonly { collection: string; field: string }[] = [
   { collection: PUBLISH_HOLDS, field: "authorUid" },
 ];
 
-/** Documents kept under the person's own uid: their recent proposals, and the moderator's role. */
-export const OWN_DOCUMENTS: readonly string[] = [SECTION_PROPOSERS, ROLES];
+/** Documents kept under the person's own uid: their recent proposals, the moderator's role, and their publish lock. */
+export const OWN_DOCUMENTS: readonly string[] = [SECTION_PROPOSERS, ROLES, PUBLISH_LOCKS];
 
 /**
  * Follows and rankings that a count stands on: each one removed takes one off
