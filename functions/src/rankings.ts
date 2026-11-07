@@ -5,6 +5,7 @@
  * the rest of the deciding here; `community.ts` does the reads and writes.
  */
 
+import { isDeezerPicture } from "./pictureSources";
 import { cleanTierLabel, MAX_TIERS_PER_LIST } from "./publishing";
 
 export const RANKINGS_PAGE_SIZE = 30;
@@ -50,10 +51,12 @@ export type Publication =
 /**
  * What makes a card the same card on two boards: its picture, when it has
  * one, and otherwise its name, read loosely. A poster is a poster whatever
- * caption sits under it; a card typed by hand is its words.
+ * caption sits under it; a card typed by hand is its words. A Deezer cover
+ * counts as none: publishing drops it, so a list still holding one and a
+ * ranking of it sent again are the same cards.
  */
 export function cardIdentity(card: Card): string {
-  if (card.imageUrl) return `picture:${card.imageUrl}`;
+  if (card.imageUrl && !isDeezerPicture(card.imageUrl)) return `picture:${card.imageUrl}`;
   return `title:${card.title.replace(/\s+/g, " ").trim().toLowerCase()}`;
 }
 

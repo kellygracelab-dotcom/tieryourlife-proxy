@@ -133,7 +133,7 @@ describe("Deezer is off", () => {
     assert.deepEqual(askedDeezer(), []);
   });
 
-  it("a list that already holds Deezer's covers is published again with them as they are", () => {
+  it("Deezer's covers on a list are never copied into our storage", () => {
     const list = { items: [{ imageUrl: DEEZER_HIT.imageUrl }, { imageUrl: DEEZER_HIT.thumbUrl }], coverImageUrl: DEEZER_HIT.imageUrl, previewImages: [DEEZER_HIT.thumbUrl as string] };
     assert.deepEqual(outsideAddressesIn(list, "list1", "fake-bucket"), []);
   });

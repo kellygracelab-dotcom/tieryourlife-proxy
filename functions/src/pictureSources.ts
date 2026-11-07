@@ -42,6 +42,17 @@ export function pictureScopeOf(raw: unknown): PictureScope {
  */
 export const DISABLED_SOURCES: readonly PictureSource[] = ["deezer"];
 
+/** A picture on Deezer's servers: publishing drops it, and nothing copies it. */
+export function isDeezerPicture(url: string | null): boolean {
+  if (url === null) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "dzcdn.net" || host.endsWith(".dzcdn.net");
+  } catch {
+    return false;
+  }
+}
+
 /** The catalogues a scope asks, best first; the order also breaks ties between equally good titles. */
 export function sourcesFor(scope: PictureScope): PictureSource[] {
   return everySourceFor(scope).filter((source) => !DISABLED_SOURCES.includes(source));
