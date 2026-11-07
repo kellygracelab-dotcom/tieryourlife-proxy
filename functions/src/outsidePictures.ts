@@ -24,6 +24,7 @@ export const CATALOGUE_HOSTS: ReadonlySet<string> = new Set([
   "s4.anilist.co",
   "images.igdb.com",
   "shared.akamai.steamstatic.com",
+  // Deezer is no longer searched, but lists published before keep its covers as they are.
   "cdn-images.dzcdn.net",
   "e-cdns-images.dzcdn.net",
   "covers.openlibrary.org",
