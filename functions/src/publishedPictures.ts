@@ -34,21 +34,54 @@ export type PictureOutcome =
   | { id: string; ok: false; because: "missing" };
 
 /**
- * Vision, called once for the whole batch rather than once per picture.
+ * Vision for a list's photographs, in as few calls as it takes.
  *
  * Injected so the deciding can be exercised without a network: `community.ts`
  * passes the real one, tests pass whatever verdict they want to reason about.
  */
 export type LookAtPictures = (images: Buffer[]) => Promise<SafeSearchVerdict[]>;
 
-export async function realSafeSearch(images: Buffer[]): Promise<SafeSearchVerdict[]> {
+/** One call to Vision: at most sixteen images, as many verdicts back, null where it answered nothing. */
+export type Annotate = (images: Buffer[]) => Promise<(SafeSearchVerdict | null)[]>;
+
+/** Vision takes sixteen images a call, and a request of about ten megabytes; images travel as base64. */
+const IMAGES_PER_CALL = 16;
+const BASE64_PER_CALL = 8_000_000;
+
+export function visionBatches(images: readonly Buffer[]): Buffer[][] {
+  const batches: Buffer[][] = [];
+  let weight = 0;
+  for (const image of images) {
+    const size = 4 * Math.ceil(image.length / 3);
+    const last = batches[batches.length - 1];
+    if (last === undefined || last.length >= IMAGES_PER_CALL || weight + size > BASE64_PER_CALL) {
+      batches.push([image]);
+      weight = size;
+    } else {
+      last.push(image);
+      weight += size;
+    }
+  }
+  return batches;
+}
+
+export async function realSafeSearch(images: Buffer[], annotate: Annotate = visionAnnotate): Promise<SafeSearchVerdict[]> {
   const unknown: SafeSearchVerdict = { adult: "UNKNOWN", racy: "UNKNOWN", violence: "UNKNOWN" };
-  return (await safeSearchOrNothing(images)).map((verdict) => verdict ?? unknown);
+  return (await safeSearchOrNothing(images, annotate)).map((verdict) => verdict ?? unknown);
 }
 
 /** Null for a picture Vision answered nothing about, which a picture from another site is not published on. */
-export async function safeSearchOrNothing(images: Buffer[]): Promise<(SafeSearchVerdict | null)[]> {
+export async function safeSearchOrNothing(images: Buffer[], annotate: Annotate = visionAnnotate): Promise<(SafeSearchVerdict | null)[]> {
   if (isDemoEmulator()) return images.map(() => SAFE_VERDICT);
+  const verdicts: (SafeSearchVerdict | null)[] = [];
+  for (const batch of visionBatches(images)) {
+    const answered = await annotate(batch);
+    verdicts.push(...batch.map((_, at) => answered[at] ?? null));
+  }
+  return verdicts;
+}
+
+async function visionAnnotate(images: Buffer[]): Promise<(SafeSearchVerdict | null)[]> {
   // Imported here rather than at the top: a cold start that never publishes
   // anything should not pay to load the Vision client.
   const { ImageAnnotatorClient } = await import("@google-cloud/vision");

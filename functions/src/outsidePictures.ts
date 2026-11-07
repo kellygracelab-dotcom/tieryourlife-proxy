@@ -240,6 +240,21 @@ async function copyWithin(
   return { ok: true, copies: run.copies, saved: run.saved };
 }
 
+/** Runs [publish]; unless it answers what it wrote, the copies [saved] are removed, whether it answered or threw. */
+export async function removeUnlessWritten<T>(
+  saved: readonly string[],
+  remove: (path: string) => Promise<void>,
+  publish: () => Promise<T | null>,
+): Promise<T | null> {
+  let written: T | null = null;
+  try {
+    written = await publish();
+    return written;
+  } finally {
+    if (written === null) await Promise.all(saved.map((path) => remove(path).catch(() => undefined)));
+  }
+}
+
 /**
  * The face an author is shown with: a Google account photo or a copy in their
  * own `avatars/` stays as it is; any other picture is copied there and looked

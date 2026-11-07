@@ -75,6 +75,7 @@ import {
   MAX_OUTSIDE_PICTURES_PER_LIST,
   outsideAddressesIn,
   realOutsideTools,
+  removeUnlessWritten,
   withCopies,
 } from "./outsidePictures";
 import {
@@ -2895,158 +2896,164 @@ async function publish(
     return;
   }
 
-  const outcomes = await copyForPublication(
-    identity.uid,
-    target,
-    picturesWanted(decision.draft),
-  );
-  const refused = outcomes.find(
-    (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
-  );
-  if (refused) {
-    await Promise.all(outside.saved.map((path) => pictureTools.remove(path).catch(() => undefined)));
-    response.status(422).json({
-      error: "That picture cannot go in the feed",
-      code: "PICTURE_REFUSED",
-      because: refused.because,
+  // Until the list is written, the copies of other sites' pictures are nobody's: any way out removes them.
+  const stored = await removeUnlessWritten(outside.saved, (path) => pictureTools.remove(path), async () => {
+    const outcomes = await copyForPublication(
+      identity.uid,
+      target,
+      picturesWanted(decision.draft),
+    );
+    const refused = outcomes.find(
+      (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
+    );
+    if (refused) {
+      response.status(422).json({
+        error: "That picture cannot go in the feed",
+        code: "PICTURE_REFUSED",
+        because: refused.because,
+      });
+      return null;
+    }
+
+    const addresses = new Map(
+      outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
+    );
+    const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
+    const list = withCopies(adopted.list, outside.copies);
+    // A copy of a copy holds the original's pictures too, and goes with them.
+    const ownNames = publishedNamesIn(target, [
+      ...list.items.map((item) => item.imageUrl),
+      list.coverImageUrl,
+      ...list.previewImages,
+    ]);
+    const picturesFrom = await withTheirSources([...new Set([...adopted.picturesFrom, ...sourcesInNames(ownNames)])]);
+
+    // A new topic is named here, with the list, so the two are written together.
+    const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
+    const topicId = attachment.kind === "attach" ? attachment.topic.id : topicRef?.id ?? implied?.topicId ?? null;
+    const topicName = attachment.kind === "attach"
+      ? attachment.topic.name
+      : attachment.kind === "create"
+        ? attachment.name
+        : implied?.topicName ?? null;
+    // A topic decides the section: an approved one brings its own, a waiting
+    // one holds the list under "other" until somebody has looked. So a list
+    // with a topic never waits for a proposed section as well.
+    const category = attachment.kind === "none" ? implied?.category ?? section.category : attachment.category;
+
+    const document = {
+      authorUid: byline.uid,
+      authorName: byline.name,
+      authorPhotoUrl,
+      title: list.title,
+      titleLower: list.titleLower,
+      // A title kept keeps its keys, translations and all; a new one starts from its own words.
+      ...(previous?.title === list.title && previous.searchKeys !== undefined ? {} : searchFieldsFor([list.title])),
+      category,
+      proposedSection: attachment.kind === "none" && implied === null ? section.proposedSection : null,
+      topicId,
+      topicName,
+      tiers: list.tiers,
+      items: list.items,
+      itemCount: list.items.length,
+      coverImageUrl: list.coverImageUrl,
+      previewImages: list.previewImages,
+      // Whose published pictures this list holds copies of, so taking that list
+      // down for its pictures takes them out of the copies too.
+      picturesFrom,
+      tierColors: list.tierColors,
+      tierCounts: tierCountsOf(list.tiers.length, list.items),
+      ...(boardUid === null ? {} : { boardUid }),
+      ...(previous === null ? {} : { movedByStaff: stillMoved(placed.held, { category, topicId }) ?? FieldValue.delete() }),
+      basedOn: publication.basedOn,
+      anonymous: byline.speaker !== null || anonymityAfter(decision.draft.anonymous, previous),
+      updatedAt: FieldValue.serverTimestamp(),
+      // Replacing the contents replaces the snapshot, so it has not been looked
+      // at. Merging without these left a shield for anything published behind it.
+      // A list out of the feed stays out until somebody looks: republishing is not looking.
+      underReview: previous?.underReview === true || held,
+      reviewed: false,
+    };
+
+    // One transaction, so a new topic's name is reserved with the topic as a
+    // moderator's is, and two claims to one name meet in one document. A name
+    // somebody else's topic already holds stays theirs; this one waits beside
+    // it, as waiting twins always have, for a moderator to merge.
+    const earlier = await db.runTransaction(async (transaction) => {
+      // The same board's first request got here first: its list stands, and this one writes nothing.
+      if (fromBoard !== null) {
+        const there = await transaction.get(fromBoard);
+        if (!there.empty) return there.docs[0];
+      }
+      // The house's translations stay with a replaced list, as far as it still shows what they translate.
+      const keptTranslations = existingId && byline.speaker !== null
+        ? pruneTranslations((await transaction.get(collection.doc(existingId))).get("translations"), translatableStrings(list)).translations
+        : null;
+      const reserve = topicRef !== null && attachment.kind === "create"
+        ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
+        : false;
+      // The topics' counts of lists follow the list: off the one it leaves, onto
+      // the one it joins, and a new topic starts at one.
+      const previousTopic = previous?.topicId ?? null;
+      if (previousTopic !== null && previousTopic !== topicId) {
+        transaction.update(db.collection(TOPICS).doc(previousTopic), { listCount: FieldValue.increment(-1) });
+      }
+      if (topicRef !== null && attachment.kind === "create") {
+        transaction.set(topicRef, {
+          name: attachment.name,
+          nameLower: attachment.nameLower,
+          names: {},
+          ...searchFieldsFor([attachment.name]),
+          section: null,
+          status: "pending",
+          requestedSection: attachment.requestedSection,
+          createdBy: identity.uid,
+          proposerName: identity.name ?? "Anonymous",
+          ...(document.anonymous ? { proposedAnonymously: true } : {}),
+          createdAt: FieldValue.serverTimestamp(),
+          decidedAt: null,
+          decidedBy: null,
+          listCount: 1,
+          followerCount: 0,
+          mergedInto: null,
+        });
+        if (reserve) reserveTopicName(transaction, attachment.nameLower, topicRef.id);
+      } else if (topicId !== null && topicId !== previousTopic) {
+        transaction.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
+      }
+      if (byline.speaker !== null) {
+        // Who spoke for the house lives here and nowhere a reader can reach.
+        const what = existingId ? "list.editorial_edit" : "list.editorial_publish";
+        auditInTransaction(transaction, auditEntry(identity.uid, byline.speaker, what, `${PUBLISHED}/${target}`, null, { title: list.title, category: document.category }));
+      }
+      if (existingId && keptTranslations !== null) {
+        // Named fields are written whole, so a translation dropped here does not survive in a merge.
+        const fields = { ...document, translations: keptTranslations };
+        transaction.set(collection.doc(existingId), fields, { mergeFields: Object.keys(fields) });
+      } else if (existingId) {
+        transaction.set(collection.doc(existingId), document, { merge: true });
+      } else {
+        // Only on a new list: republishing merges, and a count written here would
+        // reset it. Taking is about the list, not the snapshot.
+        transaction.set(collection.doc(target), {
+          ...document,
+          publishedAt: FieldValue.serverTimestamp(),
+          takeCount: 0,
+          rankingCount: 0,
+        });
+      }
+      return null;
     });
-    return;
-  }
-
-  const addresses = new Map(
-    outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
-  );
-  const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses));
-  const list = withCopies(adopted.list, outside.copies);
-  // A copy of a copy holds the original's pictures too, and goes with them.
-  const ownNames = publishedNamesIn(target, [
-    ...list.items.map((item) => item.imageUrl),
-    list.coverImageUrl,
-    ...list.previewImages,
-  ]);
-  const picturesFrom = await withTheirSources([...new Set([...adopted.picturesFrom, ...sourcesInNames(ownNames)])]);
-
-  // A new topic is named here, with the list, so the two are written together.
-  const topicRef = attachment.kind === "create" ? db.collection(TOPICS).doc() : null;
-  const topicId = attachment.kind === "attach" ? attachment.topic.id : topicRef?.id ?? implied?.topicId ?? null;
-  const topicName = attachment.kind === "attach"
-    ? attachment.topic.name
-    : attachment.kind === "create"
-      ? attachment.name
-      : implied?.topicName ?? null;
-  // A topic decides the section: an approved one brings its own, a waiting
-  // one holds the list under "other" until somebody has looked. So a list
-  // with a topic never waits for a proposed section as well.
-  const category = attachment.kind === "none" ? implied?.category ?? section.category : attachment.category;
-
-  const document = {
-    authorUid: byline.uid,
-    authorName: byline.name,
-    authorPhotoUrl,
-    title: list.title,
-    titleLower: list.titleLower,
-    // A title kept keeps its keys, translations and all; a new one starts from its own words.
-    ...(previous?.title === list.title && previous.searchKeys !== undefined ? {} : searchFieldsFor([list.title])),
-    category,
-    proposedSection: attachment.kind === "none" && implied === null ? section.proposedSection : null,
-    topicId,
-    topicName,
-    tiers: list.tiers,
-    items: list.items,
-    itemCount: list.items.length,
-    coverImageUrl: list.coverImageUrl,
-    previewImages: list.previewImages,
-    // Whose published pictures this list holds copies of, so taking that list
-    // down for its pictures takes them out of the copies too.
-    picturesFrom,
-    tierColors: list.tierColors,
-    tierCounts: tierCountsOf(list.tiers.length, list.items),
-    ...(boardUid === null ? {} : { boardUid }),
-    ...(previous === null ? {} : { movedByStaff: stillMoved(placed.held, { category, topicId }) ?? FieldValue.delete() }),
-    basedOn: publication.basedOn,
-    anonymous: byline.speaker !== null || anonymityAfter(decision.draft.anonymous, previous),
-    updatedAt: FieldValue.serverTimestamp(),
-    // Replacing the contents replaces the snapshot, so it has not been looked
-    // at. Merging without these left a shield for anything published behind it.
-    // A list out of the feed stays out until somebody looks: republishing is not looking.
-    underReview: previous?.underReview === true || held,
-    reviewed: false,
-  };
-
-  // One transaction, so a new topic's name is reserved with the topic as a
-  // moderator's is, and two claims to one name meet in one document. A name
-  // somebody else's topic already holds stays theirs; this one waits beside
-  // it, as waiting twins always have, for a moderator to merge.
-  const earlier = await db.runTransaction(async (transaction) => {
-    // The same board's first request got here first: its list stands, and this one writes nothing.
-    if (fromBoard !== null) {
-      const there = await transaction.get(fromBoard);
-      if (!there.empty) return there.docs[0];
+    if (earlier !== null) {
+      // Its pictures were copied into a folder no list names.
+      await discardPublished(target);
+      answerRepeat(response, earlier);
+      return null;
     }
-    // The house's translations stay with a replaced list, as far as it still shows what they translate.
-    const keptTranslations = existingId && byline.speaker !== null
-      ? pruneTranslations((await transaction.get(collection.doc(existingId))).get("translations"), translatableStrings(list)).translations
-      : null;
-    const reserve = topicRef !== null && attachment.kind === "create"
-      ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
-      : false;
-    // The topics' counts of lists follow the list: off the one it leaves, onto
-    // the one it joins, and a new topic starts at one.
-    const previousTopic = previous?.topicId ?? null;
-    if (previousTopic !== null && previousTopic !== topicId) {
-      transaction.update(db.collection(TOPICS).doc(previousTopic), { listCount: FieldValue.increment(-1) });
-    }
-    if (topicRef !== null && attachment.kind === "create") {
-      transaction.set(topicRef, {
-        name: attachment.name,
-        nameLower: attachment.nameLower,
-        names: {},
-        ...searchFieldsFor([attachment.name]),
-        section: null,
-        status: "pending",
-        requestedSection: attachment.requestedSection,
-        createdBy: identity.uid,
-        proposerName: identity.name ?? "Anonymous",
-        ...(document.anonymous ? { proposedAnonymously: true } : {}),
-        createdAt: FieldValue.serverTimestamp(),
-        decidedAt: null,
-        decidedBy: null,
-        listCount: 1,
-        followerCount: 0,
-        mergedInto: null,
-      });
-      if (reserve) reserveTopicName(transaction, attachment.nameLower, topicRef.id);
-    } else if (topicId !== null && topicId !== previousTopic) {
-      transaction.update(db.collection(TOPICS).doc(topicId), { listCount: FieldValue.increment(1) });
-    }
-    if (byline.speaker !== null) {
-      // Who spoke for the house lives here and nowhere a reader can reach.
-      const what = existingId ? "list.editorial_edit" : "list.editorial_publish";
-      auditInTransaction(transaction, auditEntry(identity.uid, byline.speaker, what, `${PUBLISHED}/${target}`, null, { title: list.title, category: document.category }));
-    }
-    if (existingId && keptTranslations !== null) {
-      // Named fields are written whole, so a translation dropped here does not survive in a merge.
-      const fields = { ...document, translations: keptTranslations };
-      transaction.set(collection.doc(existingId), fields, { mergeFields: Object.keys(fields) });
-    } else if (existingId) {
-      transaction.set(collection.doc(existingId), document, { merge: true });
-    } else {
-      // Only on a new list: republishing merges, and a count written here would
-      // reset it. Taking is about the list, not the snapshot.
-      transaction.set(collection.doc(target), {
-        ...document,
-        publishedAt: FieldValue.serverTimestamp(),
-        takeCount: 0,
-        rankingCount: 0,
-      });
-    }
-    return null;
+    return { document, topicId, addresses };
   });
-  if (earlier !== null) {
-    // Its pictures were copied into a folder no list names.
-    await discardPublished(target);
-    return answerRepeat(response, earlier);
-  }
+  if (stored === null) return;
+  const { document, topicId, addresses } = stored;
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
   if (held) await noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined);
 

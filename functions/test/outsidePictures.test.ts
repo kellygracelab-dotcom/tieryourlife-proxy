@@ -9,6 +9,7 @@ import {
   MAX_OUTSIDE_PICTURES_PER_LIST,
   outsideAddressesIn,
   outsideName,
+  removeUnlessWritten,
   withCopies,
   type FetchedPicture,
   type OutsideTools,
@@ -392,5 +393,33 @@ describe("fetching a picture from another site", () => {
     assert.equal(pictureTypeOf(Buffer.from("GIF89a\x01\x00", "latin1")), "image/gif");
     assert.equal(pictureTypeOf(Buffer.from("RIFF\x24\x00\x00\x00WEBPVP8 ", "latin1")), "image/webp");
     assert.equal(pictureTypeOf(Buffer.from("<svg xmlns=")), null);
+  });
+});
+
+describe("a publication that stops after its pictures were copied", () => {
+  const saved = ["published/L/w-1", "published/L/w-2"];
+  const removing = () => {
+    const removed: string[] = [];
+    return { removed, remove: async (path: string) => void removed.push(path) };
+  };
+
+  it("removes the copies when it is turned down", async () => {
+    const { removed, remove } = removing();
+    await removeUnlessWritten(saved, remove, async () => null);
+    assert.deepEqual(removed, saved);
+  });
+
+  it("removes the copies when it fails, and still fails", async () => {
+    const { removed, remove } = removing();
+    await assert.rejects(removeUnlessWritten(saved, remove, async () => {
+      throw new Error("Firestore went away");
+    }), /Firestore went away/);
+    assert.deepEqual(removed, saved);
+  });
+
+  it("keeps them once the list is written", async () => {
+    const { removed, remove } = removing();
+    assert.deepEqual(await removeUnlessWritten(saved, remove, async () => ({ id: "L" })), { id: "L" });
+    assert.deepEqual(removed, []);
   });
 });
