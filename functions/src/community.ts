@@ -96,6 +96,7 @@ import {
   mineFirst,
   rankingCursor,
   readRankingCursor,
+  rankingPrecheck,
   rankingRefusal,
   rankingWrite,
   RANKINGS_PAGE_SIZE,
@@ -3122,6 +3123,10 @@ async function rank(
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
   const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  if (!(await list.get()).exists) {
+    response.status(200).json({ id: listId, ranking: true });
+    return;
+  }
   const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
   await db.runTransaction(async (transaction) => {
     const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
@@ -3180,8 +3185,16 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
   const db = getFirestore();
   const list = readTakenFrom(listId) === null ? null : db.collection(PUBLISHED).doc(listId);
   const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
-  const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
-  const outcome = await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
+  // Judged once before the face is fetched, so a refusal costs no fetch, and again in the transaction.
+  const before = list === null ? null : await list.get();
+  const seen = before?.exists ? (before.data() as StoredList) : null;
+  const first = rankingPrecheck(
+    caller,
+    seen === null ? null : { authorUid: seen.authorUid, underReview: seen.underReview === true, itemCount: (seen.items ?? []).length },
+    body,
+  );
+  const face = "ok" in first ? await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid)) : null;
+  const outcome = !("ok" in first) ? first : await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
     const [source, existing] = list === null ? [null, null] : await Promise.all([transaction.get(list), transaction.get(ranking)]);
     const data = source?.exists ? (source.data() as StoredList) : null;
     const refused = rankingRefusal(caller, data === null ? null : { authorUid: data.authorUid, underReview: data.underReview === true });

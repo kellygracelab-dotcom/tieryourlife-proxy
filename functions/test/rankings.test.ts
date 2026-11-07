@@ -8,6 +8,7 @@ import {
   decidePublication,
   isOwnedRanking,
   mineFirst,
+  rankingPrecheck,
   rankingRefusal,
   rankingWrite,
   arrangementFromRows,
@@ -349,5 +350,24 @@ describe("rows of a ranking", () => {
 
   it("leave a card in no row unranked", () => {
     assert.deepEqual(arrangementFromRows([[2], []], 4), [null, null, 0, null]);
+  });
+});
+
+describe("what a reader's ranking must pass before their face is fetched", () => {
+  const reader = { uid: "r1", isAnonymous: false, banned: false };
+  const list = { authorUid: "a1", underReview: false, itemCount: 2 };
+  const body = { tierLabels: ["S", "A"], rows: [[0], [1]] };
+
+  it("passes a signed-in reader with a fitting placing of somebody else's list", () => {
+    assert.deepEqual(rankingPrecheck(reader, list, body), { ok: true });
+  });
+
+  it("stops at the guest, the ban, the missing or hidden list, one's own list, and a placing that does not fit", () => {
+    assert.deepEqual(rankingPrecheck({ ...reader, isAnonymous: true }, list, body), { refused: "not_signed_in" });
+    assert.deepEqual(rankingPrecheck({ ...reader, banned: true }, list, body), { refused: "banned" });
+    assert.deepEqual(rankingPrecheck(reader, null, body), { refused: "missing" });
+    assert.deepEqual(rankingPrecheck(reader, { ...list, underReview: true }, body), { refused: "missing" });
+    assert.deepEqual(rankingPrecheck(reader, { ...list, authorUid: "r1" }, body), { refused: "own_list" });
+    assert.deepEqual(rankingPrecheck(reader, list, { tierLabels: [] }), { invalid: "tierLabels" });
   });
 });
