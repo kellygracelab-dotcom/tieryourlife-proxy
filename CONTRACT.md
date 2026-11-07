@@ -304,7 +304,9 @@ Board body: `{title, displayMode?, category?, coverImageUrl?, coverPictureId?, c
 
 **`DELETE /boards/{uid}`**: account. Leaves a marker `{deleted: true}` with a new revision so other phones drop it too: `204`, also for none.
 
-**`DELETE /boards/account`**: account. Erases the account and everything the service holds about it: `204`. A guest gets `403 NOT_SIGNED_IN`.
+**`DELETE /boards/account`**: account. Erases the account and everything the service holds about it: `204`. A guest gets `403 NOT_SIGNED_IN`. Among what goes:
+- its moderator role (`roles/{uid}`), so it leaves `GET /lists/moderators`;
+- the sections and topics it proposed or made: one still waiting, declined or rejected is deleted with its pictures; an approved or merged one stays without its proposer (a section's `proposerUid` and `proposerName` become `null`, a topic's `createdBy` and `proposerName` become `""`).
 
 ## `adoptGuestCredits`
 

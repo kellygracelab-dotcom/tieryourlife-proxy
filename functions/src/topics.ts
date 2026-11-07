@@ -25,6 +25,18 @@ export const HOLDING_SECTION = OTHER;
 export const TOPIC_STATUSES = ["pending", "approved", "rejected", "merged"] as const;
 export type TopicStatus = (typeof TOPIC_STATUSES)[number];
 
+/**
+ * What erasing an account does to a topic it proposed, as for a section: one
+ * nobody approved goes with the account, an approved or merged one stays
+ * without the name on it.
+ */
+export function topicAfterErasure(status: TopicStatus): "remove" | "forget" {
+  return status === "pending" || status === "rejected" ? "remove" : "forget";
+}
+
+/** A kept topic's proposer once that account is erased: nobody. */
+export const ERASED_PROPOSER = { createdBy: "", proposerName: "" } as const;
+
 /** A topic as the deciding here needs to see it. */
 export interface KnownTopic {
   id: string;
