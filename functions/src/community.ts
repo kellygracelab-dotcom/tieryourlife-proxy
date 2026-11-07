@@ -8,6 +8,7 @@ import { requireAppCheck } from "./appCheck";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
+import { countsAsTake } from "./takes";
 import { banTarget, decideHide, groupReports, mayJudge, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
 import {
   decideWordingConcern,
@@ -2546,33 +2547,39 @@ function refuseFollow(response: Response, reason: string): void {
 }
 
 /**
- * The only thing the popular ordering counts. Once per person and written
+ * The only thing the popular ordering counts. Once per account and written
  * down as a document, or one phone tapping all afternoon would decide what
- * everybody sees. Taking your own list back does not count either.
+ * everybody sees. Taking your own list back does not count, and neither does
+ * anybody whose report would not weigh: a guest costs one request.
  */
 async function recordTake(response: Response, identity: Identity, listId: string): Promise<void> {
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
-  const snapshot = await list.get();
-  if (!snapshot.exists) {
-    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
-    return;
-  }
-  if ((snapshot.data() as StoredList).authorUid === identity.uid) {
-    response.status(200).json({ counted: false });
-    return;
-  }
-
   const take = db.collection(TAKES).doc(`${listId}_${identity.uid}`);
+  const weighs = await weighsNow(identity);
   const counted = await db.runTransaction(async (transaction) => {
-    if ((await transaction.get(take)).exists) {
+    const [snapshot, taken] = await transaction.getAll(list, take);
+    if (!snapshot.exists) return null;
+    if (!countsAsTake({ takerUid: identity.uid, authorUid: snapshot.get("authorUid"), weighs, alreadyTaken: taken.exists })) {
       return false;
     }
     transaction.set(take, { listId, taker: identity.uid, createdAt: FieldValue.serverTimestamp() });
     transaction.update(list, { takeCount: FieldValue.increment(1) });
     return true;
   });
+  if (counted === null) {
+    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+    return;
+  }
   response.status(200).json({ counted });
+}
+
+/** Whether this caller's word counts: towards hiding a list, and towards its takes. */
+async function weighsNow(identity: Identity): Promise<boolean> {
+  if (identity.isAnonymous) return false;
+  const [ban, account] = await Promise.all([readBan(identity.uid), getAuth().getUser(identity.uid)]);
+  const accountAgeMs = Date.now() - (Date.parse(account.metadata.creationTime) || Date.now());
+  return weighsOnHiding({ isAnonymous: false, banned: isBanned(ban, Date.now()), accountAgeMs });
 }
 
 /**
@@ -3481,11 +3488,7 @@ async function report(
   // One report per person per list: a second is the same complaint, not a
   // stronger one.
   const anonymous = isAnonymous(stored);
-  const banned = !identity.isAnonymous && isBanned(await readBan(identity.uid), Date.now());
-  const accountAgeMs = identity.isAnonymous
-    ? 0
-    : Date.now() - (Date.parse((await getAuth().getUser(identity.uid)).metadata.creationTime) || Date.now());
-  const weighs = weighsOnHiding({ isAnonymous: identity.isAnonymous, banned, accountAgeMs });
+  const weighs = await weighsNow(identity);
   await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
     listId,
     listTitle: stored.title,

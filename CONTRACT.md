@@ -146,7 +146,7 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 **`DELETE /lists/follow/{uid}`**: idempotent, `200 {following: false}`.
 
-**`POST /lists/{id}/taken`**: somebody put this list on their phone. Counted once per person, never for the author: `200 {counted: boolean}`. `404 NOT_FOUND`.
+**`POST /lists/{id}/taken`**: somebody put this list on their phone. Adds one to `takeCount` once per account, in one transaction with the record of the take. Never for the author, and not for anybody whose report would not weigh: guests, banned accounts and accounts younger than 7 days get `counted: false` and nothing is recorded, so the same account counts once it is a week old. `200 {counted: boolean}`. `404 NOT_FOUND`.
 
 ### Reports and moderation
 
