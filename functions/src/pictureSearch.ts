@@ -274,7 +274,11 @@ let igdbToken: { value: string; untilMs: number } | null = null;
 async function igdbAccess(id: string, secret: string): Promise<string> {
   if (igdbToken && igdbToken.untilMs > Date.now()) return igdbToken.value;
   const params = new URLSearchParams({ client_id: id, client_secret: secret, grant_type: "client_credentials" });
-  const body = (await getJson(`https://id.twitch.tv/oauth2/token?${params}`, { method: "POST" })) as { access_token?: unknown; expires_in?: unknown };
+  const body = (await getJson("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  })) as { access_token?: unknown; expires_in?: unknown };
   if (typeof body.access_token !== "string" || typeof body.expires_in !== "number") throw new Error("Twitch gave no IGDB token");
   igdbToken = { value: body.access_token, untilMs: Date.now() + Math.max(0, body.expires_in - 24 * 60 * 60) * 1000 };
   return igdbToken.value;
