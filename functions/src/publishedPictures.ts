@@ -5,6 +5,7 @@
  * snapshot, and the public folder is written by this file alone.
  */
 import { getStorage } from "firebase-admin/storage";
+import { storageMediaUrl } from "./publicMedia";
 import { decideSafe, type Likelihood, type SafeSearchVerdict, type SafetyRefusal } from "./safety";
 import { isDemoEmulator, SAFE_VERDICT } from "./emulator";
 
@@ -19,9 +20,9 @@ export function publishedPath(listId: string, pictureId: string): string {
 }
 
 /**
- * The address the app will fetch. This endpoint applies `storage.rules`, so
- * the folder being world-readable is what makes it work — no signed URL to
- * expire, and nothing to renew.
+ * Canonical stored address. Community serializes public image fields through
+ * the site's existing /img/original route so old image loaders also survive
+ * Storage App Check enforcement; matching and stored snapshots keep this form.
  */
 export function addressOf(bucket: string, path: string): string {
   return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(path)}?alt=media`;
@@ -222,6 +223,7 @@ const PUBLISHED_FILE = /\/o\/published%2F([^/?#%]+)%2F([^/?#]+)/i;
  * takes copies of its own: `{otherList}-{name}`.
  */
 export function foreignCopyOf(listId: string, url: string | null): { from: string; to: string; list: string } | null {
+  url = url === null ? null : storageMediaUrl(url);
   const match = url === null ? null : PUBLISHED_FILE.exec(url);
   if (match === null) return null;
   let other: string;
@@ -344,6 +346,7 @@ export function publishedNamesIn(listId: string, urls: readonly (string | null |
   const marker = `/o/${encodeURIComponent(`published/${listId}/`)}`;
   return urls.flatMap((url) => {
     if (typeof url !== "string") return [];
+    url = storageMediaUrl(url);
     const at = url.indexOf(marker);
     if (at < 0) return [];
     const rest = url.slice(at + marker.length).split(/[?#]/)[0];

@@ -7,6 +7,7 @@ import { isSectionId } from "./sections";
 import { readAnonymous } from "./anonymous";
 import { isDeezerPicture } from "./pictureSources";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
+import { storageMediaUrl } from "./publicMedia";
 export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
 /**
@@ -123,7 +124,7 @@ function httpsUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
-  return trimmed.length > 2000 ? null : trimmed;
+  return trimmed.length > 2000 ? null : storageMediaUrl(trimmed);
 }
 
 const OWN_FOLDER = /\/o\/users%2F([^/?#%]+)%2Fpictures%2F([^/?#]+)/i;

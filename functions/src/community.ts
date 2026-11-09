@@ -5,6 +5,7 @@ import { getAuth } from "firebase-admin/auth";
 import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { requireAppCheck } from "./appCheck";
+import { publicMediaResponses } from "./publicMedia";
 import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
@@ -631,6 +632,8 @@ export const lists = onRequest(
     if (!identity) {
       return;
     }
+
+    publicMediaResponses(response);
 
     // Everything after /lists: nothing, an id, an id plus a verb, or "reports"
     // and "mine". Firestore ids are twenty characters, so no word can be one.

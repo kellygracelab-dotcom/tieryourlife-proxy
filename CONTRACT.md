@@ -7,6 +7,7 @@ The one description of what the proxy answers, read by the website and by the An
 ## Contents
 
 - [Conventions](#conventions)
+- [Public image addresses](#public-image-addresses)
 - [Limits](#limits)
 - [`lists`](#lists): feed, publishing, follows, reports, rankings, topics, sections, staff, house lists, picture search
 - [`boards`](#boards)
@@ -40,6 +41,22 @@ The one description of what the proxy answers, read by the website and by the An
 **Locales.** Sections and topics carry `names` keyed by `en uk ru es pt-BR de fr pl tr ja ar`. House-list translations are keyed by the same set without `en`.
 
 **Built-in sections**, in their order: `anime`, `film_tv`, `games`, `music`, `books`, `food`, `sport`, `people`, `other`. They are made the first time anything reads sections, and `other` is always last and never hidden.
+
+## Public image addresses
+
+In `lists` JSON responses, image fields (including covers, cards, preview images,
+section/topic pictures, collages and author faces) use the existing absolute
+`https://tieryourlife.web.app/img/original/{published|avatars|sections|topics}/{id}/{picture}`
+address for recognized public objects in `tieryourlife.firebasestorage.app`.
+This lets older Android image loaders display them when Storage requires App
+Check. Other image hosts remain unchanged. `users/` and pending `proposals/`
+never become public addresses; their existing authentication/token and visibility
+rules still apply. This does not add a Proxy route or relax Storage rules.
+
+Old Firebase `alt=media` addresses and these site addresses are accepted on
+republish and refer to the same stored picture, copy source, cleanup name and
+ranking card identity. Stored snapshots keep canonical Storage addresses; reads
+do not migrate documents. IDs, titles, credits and private boards are unchanged.
 
 ## Limits
 
