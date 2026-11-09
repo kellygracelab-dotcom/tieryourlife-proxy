@@ -6,6 +6,7 @@
  * address; approval copies it again into the public `sections/` folder.
  */
 import { getStorage } from "firebase-admin/storage";
+import { storageMediaUrl } from "./publicMedia";
 import { addressOf, privatePath } from "./publishedPictures";
 import type { WeightedColour } from "./sectionColours";
 import { isDemoEmulator } from "./emulator";
@@ -116,7 +117,8 @@ export async function discardTopicPictures(topicId: string): Promise<void> {
 /** The Storage path a public address names, or null for one that is not an address of ours. */
 export function storedPathOf(url: unknown): string | null {
   if (typeof url !== "string") return null;
-  const match = /\/v0\/b\/[^/]+\/o\/([^?]+)/.exec(url);
+  const address = storageMediaUrl(url);
+  const match = /\/v0\/b\/[^/]+\/o\/([^?]+)/.exec(address);
   if (match === null) return null;
   try {
     return decodeURIComponent(match[1]);

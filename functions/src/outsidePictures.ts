@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
+import { storageMediaUrl } from "./publicMedia";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
 import { isAnimated, pictureTypeOf } from "./pictureBytes";
 import { downloadPicture } from "./pictureSearch";
@@ -69,6 +70,7 @@ export function isCatalogueAddress(url: string): boolean {
 
 /** A file directly in [folder] of our own bucket, by the address `addressOf` gives it. */
 export function isOurCopy(url: string, bucket: string, folder: string): boolean {
+  url = storageMediaUrl(url);
   const prefix = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(folder)}`;
   if (!url.startsWith(prefix)) return false;
   return /^[A-Za-z0-9_-]+$/.test(url.slice(prefix.length).split(/[?#]/)[0] ?? "");
@@ -88,7 +90,8 @@ interface PictureAddresses {
 /** Reuse only names referenced by the committed snapshot, never another attempt's pending files. */
 export function committedOutsideCopies(list: PictureAddresses, urls: readonly string[], folder: string, bucket: string): Map<string, string> {
   const held = [...list.items.map((item) => item.imageUrl), list.coverImageUrl, ...list.previewImages]
-    .filter((url): url is string => url !== null && isOurCopy(url, bucket, folder));
+    .filter((url): url is string => url !== null && isOurCopy(url, bucket, folder))
+    .map(storageMediaUrl);
   const copies = new Map<string, string>();
   for (const url of urls) {
     const stem = addressOf(bucket, folder + outsideName(url)).split("?")[0];
@@ -293,6 +296,7 @@ export async function checkedFace(
   { until }: { until?: AbortSignal } = {},
 ): Promise<string | null> {
   if (url === null) return null;
+  url = storageMediaUrl(url);
   const host = hostOf(url);
   if (host === null) return null;
   const folder = `avatars/${uid}/`;

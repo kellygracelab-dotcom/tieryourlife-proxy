@@ -6,6 +6,7 @@
  */
 
 import { isDeezerPicture } from "./pictureSources";
+import { storageMediaUrl } from "./publicMedia";
 import { cleanTierLabel, MAX_TIERS_PER_LIST } from "./publishing";
 
 export const RANKINGS_PAGE_SIZE = 30;
@@ -56,7 +57,7 @@ export type Publication =
  * ranking of it sent again are the same cards.
  */
 export function cardIdentity(card: Card): string {
-  if (card.imageUrl && !isDeezerPicture(card.imageUrl)) return `picture:${card.imageUrl}`;
+  if (card.imageUrl && !isDeezerPicture(card.imageUrl)) return `picture:${storageMediaUrl(card.imageUrl)}`;
   return `title:${card.title.replace(/\s+/g, " ").trim().toLowerCase()}`;
 }
 
