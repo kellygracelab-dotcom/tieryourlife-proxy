@@ -159,11 +159,11 @@ describe("decideStore and the weight of a game", () => {
     return { ...base, items };
   }
 
-  it("leaves a game behind rather than the board when the two are too heavy together", () => {
+  it("retains a valid game even when the adapter must store it separately from a heavy board", () => {
     const answers = Array.from({ length: MAX_PLAY_HISTORY }, () => [0, 1, 0]);
     const decision = store({ ...heavyBoard(500), play: play({ history: answers }) });
     assert.equal(decision.ok, true);
-    assert.equal(decision.ok && "play" in decision.board, false);
+    assert.equal(decision.ok && decision.board.play?.history.length, MAX_PLAY_HISTORY);
   });
 
   it("keeps a game that fits", () => {
@@ -335,7 +335,7 @@ describe("a game's scope", () => {
 
   it("keeps the tiers a game was drawn from, one to sixty-four of them", () => {
     assert.deepEqual(readPlay(play({ scope: ["tier-1"] }))?.scope, ["tier-1"]);
-    assert.deepEqual(readPlay(play({ scope: tiers(MAX_PLAY_CARDS) }))?.scope, tiers(MAX_PLAY_CARDS));
+    assert.deepEqual(readPlay(play({ scope: tiers(64) }))?.scope, tiers(64));
   });
 
   it("is the whole board when there is none", () => {
@@ -346,7 +346,7 @@ describe("a game's scope", () => {
   });
 
   it("drops the whole game for a scope that is not one", () => {
-    for (const scope of [[], tiers(MAX_PLAY_CARDS + 1), ["tier-1", "tier-1"], ["tier-1", ""], "tier-1", [7]]) {
+    for (const scope of [[], tiers(65), ["tier-1", "tier-1"], ["tier-1", ""], "tier-1", [7]]) {
       assert.equal(readPlay(play({ scope })), null, JSON.stringify(scope));
     }
   });
@@ -380,6 +380,7 @@ describe("the shared example game", () => {
 
   it("is stored and read back equal, all but the stamp", () => {
     const stored = playToDocument(readPlay(example) as Play, example.startedAt + 1000);
+    assert.ok(Array.isArray(stored.history));
     assert.ok(stored.history.every((one) => typeof one === "number"));
     const kept = playFromDocument(JSON.parse(JSON.stringify(stored)));
     assert.deepEqual(kept?.play, example);

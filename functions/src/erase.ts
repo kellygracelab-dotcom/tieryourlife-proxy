@@ -125,6 +125,7 @@ export async function eraseAccount(uid: string): Promise<void> {
 
   // Their boards, then the account document the balance lives on.
   await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("boards"));
+  await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("plays"));
   await db.collection(ACCOUNTS).doc(uid).delete();
 
   // Their pictures, and the face they gave the community.

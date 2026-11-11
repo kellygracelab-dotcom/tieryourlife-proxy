@@ -2,11 +2,12 @@ import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, Timestamp, getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
-import { requireUser, type Identity } from "./auth";
+import { ERASED_ACCOUNTS, requireUser, type Identity } from "./auth";
 import { eraseAccount } from "./erase";
 import {
   BOARD_PAGE_SIZE,
   MAX_BOARDS_PER_ACCOUNT,
+  MAX_BOARD_BYTES,
   cleanDeviceName,
   decideStore,
   decideWrite,
@@ -14,6 +15,8 @@ import {
   livePlay,
   playFromDocument,
   playToDocument,
+  playAfterWrite,
+  preservedPlayFingerprint,
   type StoreRejection,
   type StoredBoard,
   type StoredPlay,
@@ -39,6 +42,8 @@ const ACCOUNT = "account";
 interface BoardDocument extends Partial<Omit<StoredBoard, "play">> {
   /** A game under way, its answers stored flat; see `playToDocument`. */
   play?: StoredPlay;
+  /** Only a large game's storage changes; the public/private API shape does not. */
+  separatePlay?: true;
   /** Bumped by this file on every accepted write. Never sent by a device. */
   revision: number;
   updatedAt?: Timestamp;
@@ -232,12 +237,31 @@ async function readIndex(response: Response, identity: Identity, after: string |
 }
 
 async function readOne(response: Response, identity: Identity, id: string): Promise<void> {
-  const snapshot = await boardsOf(identity.uid).doc(id).get();
-  if (!snapshot.exists) {
+  const board = await fullBoard(boardsOf(identity.uid).doc(id));
+  if (board === null) {
     return void response.status(404).json({ error: "No such board", code: "NOT_FOUND" });
   }
   response.setHeader("Cache-Control", "no-store");
-  response.status(200).json(toFullBoard(snapshot.id, snapshot.data() as BoardDocument));
+  response.status(200).json(board);
+}
+
+/** Read board and auxiliary game in one consistent snapshot, never quietly lose the game. */
+async function fullBoard(ref: FirebaseFirestore.DocumentReference) {
+  return getFirestore().runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return null;
+    const data = snapshot.data() as BoardDocument;
+    return toFullBoard(snapshot.id, { ...data, play: await storedGame(transaction, ref, data) });
+  });
+}
+
+async function storedGame(transaction: FirebaseFirestore.Transaction, ref: FirebaseFirestore.DocumentReference, data: BoardDocument) {
+  if (!data.separatePlay) return data.play;
+  const game = await transaction.get(ref.parent.parent!.collection("plays").doc(ref.id));
+  if (!game.exists || game.get("revision") !== data.revision || playFromDocument(game.get("play")) === null) {
+    throw new Error("The board's saved game is unavailable");
+  }
+  return game.get("play") as StoredPlay;
 }
 
 async function write(
@@ -255,56 +279,48 @@ async function write(
   const kept = identity.isAnonymous
     ? 0
     : (await boardsOf(identity.uid).where("deleted", "==", false).count().get()).data().count;
-  const existing = await ref.get();
-
   const now = Date.now();
-  const decision = decideStore({
-    body,
-    nowMs: now,
-    storedCoverPictureId: existing.exists ? ((existing.data() as BoardDocument).coverPictureId ?? null) : null,
-    isAnonymous: identity.isAnonymous,
-    // A board that is already here is not another board.
-    boardsAlreadyKept: existing.exists ? kept - 1 : kept,
+  type Answer = { rejection: StoreRejection } | { status: number; body: object };
+  const answer: Answer = await getFirestore().runTransaction(async (transaction): Promise<Answer> => {
+    const erased = await transaction.get(getFirestore().collection(ERASED_ACCOUNTS).doc(identity.uid));
+    if (erased.exists) return { status: 401, body: { error: "This account was deleted", code: "ACCOUNT_ERASED" } };
+    const existing = await transaction.get(ref);
+    const stored = existing.exists ? existing.data() as BoardDocument : null;
+    const previous = stored ? await storedGame(transaction, ref, stored) : undefined;
+    const decision = decideStore({ body, nowMs: now, storedCoverPictureId: stored?.coverPictureId ?? null,
+      isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });
+    if (!decision.ok) return { rejection: decision };
+    if (source.play !== undefined && source.play !== null && decision.board.play === undefined) {
+      return { rejection: { reason: "invalid", detail: "The saved game is invalid" } };
+    }
+    const before = livePlay(playFromDocument(previous), now);
+    const play = playAfterWrite(source, before);
+    const changedGame = JSON.stringify(before) !== JSON.stringify(play);
+    const fingerprint = preservedPlayFingerprint(source, decision.board, play);
+    const verdict = decideWrite(stored ? { revision: stored.revision, fingerprint: stored.fingerprint ?? null } : null,
+      source.basedOn, changedGame ? null : fingerprint);
+    if (verdict === "already") return { status: 200, body: { uid: id, revision: stored!.revision } };
+    if (verdict === "conflict") return { status: 409, body: {
+      error: "That board moved on somewhere else", code: "CONFLICT",
+      board: toFullBoard(id, { ...stored!, play: previous }),
+    } };
+    const revision = (stored?.revision ?? 0) + 1;
+    const { play: _sentPlay, ...board } = decision.board;
+    const game = play === null ? null : playToDocument({ ...play, startedAt: Math.min(play.startedAt, now) }, now);
+    const separate = game !== null && Buffer.byteLength(JSON.stringify({ ...board, play: game }), "utf8") > MAX_BOARD_BYTES;
+    if (game !== null && Buffer.byteLength(JSON.stringify(game), "utf8") > MAX_BOARD_BYTES) {
+      return { rejection: { reason: "too_large", detail: "The game is too heavy to keep" } };
+    }
+    transaction.set(ref, { ...board, fingerprint,
+      ...(game === null ? {} : separate ? { separatePlay: true } : { play: game }),
+      revision, deviceName: cleanDeviceName(source.deviceName), deleted: false, updatedAt: FieldValue.serverTimestamp() });
+    const gameRef = ref.parent.parent!.collection("plays").doc(id);
+    if (separate) transaction.set(gameRef, { revision, play: game });
+    else if (stored?.separatePlay) transaction.delete(gameRef);
+    return { status: 200, body: { uid: id, revision } };
   });
-  if (!decision.ok) {
-    return void refuse(response, decision);
-  }
-
-  const stored = existing.exists ? (existing.data() as BoardDocument) : null;
-  const verdict = decideWrite(
-    stored ? { revision: stored.revision, fingerprint: stored.fingerprint ?? null } : null,
-    source.basedOn,
-    decision.board.fingerprint,
-  );
-  // The same board coming back a second time, because the first answer never
-  // arrived. Storing it again would only spend a write and move the revision
-  // out from under whichever phone did hear the first answer.
-  if (verdict === "already") {
-    return void response.status(200).json({ uid: id, revision: stored!.revision });
-  }
-  if (verdict === "conflict") {
-    // Both versions are somebody's afternoon. The device keeps its own and
-    // takes this one as a second board, which is why the whole thing is here
-    // and not just the revision number.
-    return void response.status(409).json({
-      error: "That board moved on somewhere else",
-      code: "CONFLICT",
-      board: toFullBoard(existing.id, stored as BoardDocument),
-    });
-  }
-
-  const revision = (stored?.revision ?? 0) + 1;
-  const { play, ...board } = decision.board;
-  await ref.set({
-    ...board,
-    ...(play === undefined ? {} : { play: playToDocument(play, now) }),
-    revision,
-    deviceName: cleanDeviceName(source.deviceName),
-    deleted: false,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
-  response.status(200).json({ uid: id, revision });
+  if ("rejection" in answer) refuse(response, answer.rejection);
+  else response.status(answer.status).json(answer.body);
 }
 
 /**
@@ -317,18 +333,26 @@ async function forget(response: Response, identity: Identity, id: string): Promi
   }
 
   const ref = boardsOf(identity.uid).doc(id);
-  const existing = await ref.get();
-  if (!existing.exists) {
-    return void response.status(204).send();
-  }
-
-  const stored = existing.data() as BoardDocument;
-  await ref.set({
-    revision: (stored.revision ?? 0) + 1,
-    deviceName: stored.deviceName ?? null,
-    deleted: true,
-    updatedAt: FieldValue.serverTimestamp(),
+  const erased = await getFirestore().runTransaction(async (transaction) => {
+    const erased = await transaction.get(getFirestore().collection(ERASED_ACCOUNTS).doc(identity.uid));
+    if (erased.exists) return true;
+    const existing = await transaction.get(ref);
+    if (!existing.exists) {
+      transaction.delete(ref.parent.parent!.collection("plays").doc(id));
+      return false;
+    }
+    const stored = existing.data() as BoardDocument;
+    transaction.set(ref, {
+      revision: (stored.revision ?? 0) + 1,
+      deviceName: stored.deviceName ?? null,
+      deleted: true,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    transaction.delete(ref.parent.parent!.collection("plays").doc(id));
+    return false;
   });
+
+  if (erased) return void response.status(401).json({ error: "This account was deleted", code: "ACCOUNT_ERASED" });
 
   response.status(204).send();
 }
