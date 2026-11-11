@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { ERASED_ACCOUNTS, requireUser, type Identity } from "./auth";
 import { eraseAccount } from "./erase";
+import { originState } from "./boardOrigin";
 import {
   BOARD_PAGE_SIZE,
   MAX_BOARDS_PER_ACCOUNT,
@@ -99,6 +100,9 @@ export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Dat
     ...(data.anonymous === true ? { anonymous: true } : {}),
     ...(data.coverPictureId ? { coverPictureId: data.coverPictureId } : {}),
     ...(play === null ? {} : { play }),
+    ...(data.takenFrom ? { takenFrom: data.takenFrom } : {}),
+    ...(data.origin ? { origin: data.origin } : {}),
+    ...(data.rankingChoice ? { rankingChoice: data.rankingChoice } : {}),
   };
 }
 
@@ -288,6 +292,8 @@ async function write(
     const stored = existing.exists ? existing.data() as BoardDocument : null;
     const previous = stored ? await storedGame(transaction, ref, stored) : undefined;
     const decision = decideStore({ body, nowMs: now, storedCoverPictureId: stored?.coverPictureId ?? null,
+      storedOrigin: { ...(stored?.origin ? { origin: stored.origin } : {}), ...(stored?.takenFrom ? { takenFrom: stored.takenFrom } : {}), ...(stored?.rankingChoice ? { rankingChoice: stored.rankingChoice } : {}) },
+      storedSourceIndexes: new Map((stored?.items ?? []).filter((item) => item.sourceIndex !== undefined).map((item) => [item.uid, item.sourceIndex!])),
       isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });
     if (!decision.ok) return { rejection: decision };
     if (source.play !== undefined && source.play !== null && decision.board.play === undefined) {
@@ -297,8 +303,9 @@ async function write(
     const play = playAfterWrite(source, before);
     const changedGame = JSON.stringify(before) !== JSON.stringify(play);
     const fingerprint = preservedPlayFingerprint(source, decision.board, play);
+    const changedMetadata = originState(stored) !== originState(decision.board);
     const verdict = decideWrite(stored ? { revision: stored.revision, fingerprint: stored.fingerprint ?? null } : null,
-      source.basedOn, changedGame ? null : fingerprint);
+      source.basedOn, changedGame || changedMetadata ? null : fingerprint);
     if (verdict === "already") return { status: 200, body: { uid: id, revision: stored!.revision } };
     if (verdict === "conflict") return { status: 409, body: {
       error: "That board moved on somewhere else", code: "CONFLICT",

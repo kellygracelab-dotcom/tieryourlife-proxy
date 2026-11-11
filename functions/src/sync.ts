@@ -12,6 +12,7 @@
 import { chosenPictures } from "./publishing";
 import { createHash } from "node:crypto";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
+import { originAfterWrite, sourceIndexAfterWrite, type OriginMetadata } from "./boardOrigin";
 export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
 export const MAX_BOARD_BYTES = 700_000;
@@ -72,9 +73,10 @@ export interface StoredItem {
   deletedAt: number | null;
   /** Who the picture's license asks to be named; absent when nobody, so a board without one is stored as it always was. */
   credit?: string;
+  sourceIndex?: number;
 }
 
-export interface StoredBoard {
+export interface StoredBoard extends OriginMetadata {
   /**
    * The device's own stand-in for these contents; opaque here, only handed
    * back. Lets a phone whose database returned from a system backup tell "the
@@ -282,11 +284,16 @@ export function playAfterWrite(source: Record<string, unknown>, previous: Play |
   return readPlay(source.play);
 }
 
-/** A legacy writer's hash omits the retained game. Make this changed content visible to upgraded clients. */
+/** A legacy writer's hash omits retained state. Make the full content visible to upgraded clients. */
 export function preservedPlayFingerprint(source: Record<string, unknown>, board: StoredBoard, play: Play | null): string | null {
-  if (Object.hasOwn(source, "play") || play === null || (play.count <= 64 && play.history.length <= 2000)) return board.fingerprint;
+  const preservedGame = !Object.hasOwn(source, "play") && play !== null && (play.count > 64 || play.history.length > 2000);
+  const metadata = ["origin", "takenFrom", "rankingChoice"] as const;
+  const sentItems = new Map(((source.items as Record<string, unknown>[] | undefined) ?? []).map((item) => [item.uid, item.sourceIndex]));
+  const retainedMetadata = metadata.some((key) => JSON.stringify(source[key] ?? null) !== JSON.stringify(board[key] ?? null)) ||
+    board.items.some((item) => item.sourceIndex !== undefined && sentItems.get(item.uid) !== item.sourceIndex);
+  if (!preservedGame && !retainedMetadata) return board.fingerprint;
   const { fingerprint: _opaque, play: _sent, ...content } = board;
-  return `game-v1:${createHash("sha256").update(JSON.stringify({ ...content, play })).digest("hex")}`;
+  return `${preservedGame ? "game-v1" : "state-v1"}:${createHash("sha256").update(JSON.stringify({ ...content, play })).digest("hex")}`;
 }
 
 export type StoreRejection =
@@ -363,6 +370,8 @@ export interface StoreInput {
   nowMs: number;
   /** The cover picture already kept for this board, if any. */
   storedCoverPictureId?: string | null;
+  storedOrigin?: OriginMetadata;
+  storedSourceIndexes?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -389,6 +398,8 @@ export function decideStore({
   boardsAlreadyKept,
   nowMs,
   storedCoverPictureId = null,
+  storedOrigin = {},
+  storedSourceIndexes = new Map(),
 }: StoreInput): StoreDecision {
   // An anonymous identity lives in the install, so keeping its boards would be
   // a backup whose key is destroyed by the very thing it protects against.
@@ -403,6 +414,9 @@ export function decideStore({
   if (!source || typeof source !== "object") {
     return { ok: false, reason: "invalid", detail: "Body must be an object" };
   }
+  const origin = originAfterWrite(source, storedOrigin);
+  if (origin === null) return { ok: false, reason: "invalid", detail: "Invalid board origin or ranking choice" };
+  const sameOriginVersion = JSON.stringify(storedOrigin.origin ?? null) === JSON.stringify(origin.origin ?? null) && storedOrigin.takenFrom === origin.takenFrom;
 
   const title = cleanText(source.title, MAX_TITLE_LENGTH);
   if (!title) {
@@ -479,6 +493,8 @@ export function decideStore({
     }
     itemUids.add(itemUid);
     const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
+    const sourceIndex = sourceIndexAfterWrite(item, sameOriginVersion ? storedSourceIndexes.get(itemUid) : undefined);
+    if (sourceIndex === "invalid") return { ok: false, reason: "invalid", detail: "Invalid sourceIndex" };
     items.push({
       uid: itemUid,
       pictureId: itemPictureId,
@@ -489,6 +505,7 @@ export function decideStore({
       source: ITEM_SOURCES.find((known) => known === item.source) ?? "MANUAL",
       deletedAt: timestamp(item.deletedAt),
       ...(credit ? { credit } : {}),
+      ...(sourceIndex === null ? {} : { sourceIndex }),
     });
   }
   const trashed = items.filter((item) => item.deletedAt !== null).length;
@@ -500,6 +517,7 @@ export function decideStore({
   }
 
   const board: StoredBoard = {
+    ...origin,
     fingerprint: cleanText(source.fingerprint, MAX_FINGERPRINT_LENGTH),
     title,
     displayMode: displayModeOf(source.displayMode),

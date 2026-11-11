@@ -87,6 +87,7 @@ import {
   FEED_PAGE_SIZE,
   REPORT_PAGE_SIZE,
   MAX_TITLE_LENGTH,
+  MAX_LISTS_PER_AUTHOR,
   decidePublish,
   picturesWanted,
   readBoardUid,
@@ -94,9 +95,10 @@ import {
   settle,
   tierCountsOf,
   type PublishDecision,
+  type PublishDraft,
 } from "./publishing";
 import {
-  arrangementOver,
+  arrangementFromRows,
   creditNeedsRewrite,
   decidePublication,
   isOwnedRanking,
@@ -106,6 +108,8 @@ import {
   rankingPrecheck,
   rankingRefusal,
   rankingWrite,
+  rankingRowsOver,
+  publicationBaseline,
   RANKINGS_PAGE_SIZE,
   readRankingBody,
   rowsFromDocument,
@@ -114,8 +118,8 @@ import {
   shownCredit,
   type BasedOn,
   type Card,
-  type PlacedCard,
   type Publication,
+  type SourceList,
 } from "./rankings";
 import {
   ACTIVITY_WINDOW_MS,
@@ -485,6 +489,7 @@ interface StoredRanking {
   arrangement: (number | null)[];
   /** The cards of each tier left to right; absent on rankings stored without them. */
   rows?: { items: number[] }[];
+  sourceVersion?: number;
   tierLabels: string[];
   updatedAt?: FirebaseFirestore.Timestamp;
 }
@@ -679,6 +684,9 @@ export const lists = onRequest(
       }
       if (segments[1] === RANKINGS_PATH && segments[0]) {
         return await routeRankings(request.method, segments[0], segments[2] ?? "", query, request.body, response, identity);
+      }
+      if (segments[0] === "classify" && segments.length === 1 && request.method === "POST") {
+        return await classifyPublication(response, identity, request.body);
       }
 
       switch (request.method) {
@@ -2873,7 +2881,8 @@ async function publish(
   const decision = decidePublish({
     body,
     isAnonymous: identity.isAnonymous,
-    listsAlreadyPublished: alreadyPublished,
+    // Rankings do not consume a list slot; the list-only fast refusal follows classification.
+    listsAlreadyPublished: 0,
     uploaderUid: identity.uid,
     storedTierCount: previous?.tiers?.length,
   });
@@ -2887,11 +2896,20 @@ async function publish(
   // A list of the author's own being replaced is a republish whatever it says,
   // and the house only ever publishes lists of its own.
   const source = body as Record<string, unknown>;
-  const publication = existingId || byline.speaker !== null
-    ? ({ kind: "list", basedOn: null } as Publication)
-    : await resolvePublication(identity, readTakenFrom(source.takenFrom), decision.draft.items);
+  const resolved = existingId || byline.speaker !== null
+    ? { publication: { kind: "list", basedOn: null } as Publication }
+    : await resolvePublication(identity, source, decision.draft);
+  if ("code" in resolved) return publicationRefused(response, resolved);
+  const { publication } = resolved;
   if (publication.kind === "ranking") {
-    return await rank(response, identity, publication.listId, decision.draft);
+    return await rank(response, identity, publication.listId, decision.draft, resolved.version!);
+  }
+  if (alreadyPublished >= MAX_LISTS_PER_AUTHOR) {
+    // A parallel first attempt may have committed after the initial retry lookup.
+    const earlier = fromBoard === null ? null : await fromBoard.get();
+    if (earlier && !earlier.empty) return answerRepeat(response, earlier.docs[0]);
+    refuse(response, { ok: false, reason: "too_many_lists" });
+    return;
   }
 
   // Which section, and which topic, settled before the pictures as well: a
@@ -3068,6 +3086,12 @@ async function publish(
       // The house's translations stay with a replaced list, as far as it still shows what they translate.
       const current = existingId ? (await transaction.get(collection.doc(existingId))).data() : null;
       if (existingId && JSON.stringify(current?.updatedAt ?? null) !== JSON.stringify(previous?.updatedAt ?? null)) return PUBLICATION_CHANGED;
+      // The preflight and the write must agree about the exact source snapshot.
+      if (resolved.sourceId) {
+        const original = await transaction.get(collection.doc(resolved.sourceId));
+        const data = original.data() as StoredList | undefined;
+        if (!data || (data.updatedAt?.toMillis() ?? 0) !== resolved.version || JSON.stringify(sourceList(original.id, data)) !== resolved.sourceState || (data.underReview === true && data.authorUid !== identity.uid)) return SOURCE_CHANGED;
+      }
       const keptTranslations = existingId && byline.speaker !== null
         ? pruneTranslations(current?.translations, translatableStrings(list)).translations
         : null;
@@ -3137,6 +3161,10 @@ async function publish(
       response.status(409).json({ error: "The list changed while publishing. Try again.", code: "PUBLICATION_CHANGED" });
       return null;
     }
+    if (earlier === SOURCE_CHANGED) {
+      publicationRefused(response, { code: "LIST_CHANGED" });
+      return null;
+    }
     if (earlier === PUBLISHED_TOO_HEAVY) {
       refuse(response, { ok: false, reason: "too_large", detail: "The list is too heavy to store" });
       return null;
@@ -3182,6 +3210,7 @@ async function publish(
 }
 
 const TOO_MANY_LISTS = "too_many_lists";
+const SOURCE_CHANGED = "source_changed";
 const PUBLISHED_TOO_HEAVY = "published_too_heavy";
 const PUBLICATION_CHANGED = "publication_changed";
 
@@ -3207,24 +3236,48 @@ async function syncCredits(listId: string, anonymous: boolean, authorUid: string
 }
 
 /** What the deciding needs to know about the list a board was saved from. */
-async function resolvePublication(identity: Identity, takenFrom: string | null, items: Card[]): Promise<Publication> {
-  if (takenFrom === null) {
-    return decidePublication({ takenFrom, source: null, callerUid: identity.uid, items });
-  }
+type PublicationResolution = { publication: Publication; sourceId?: string; version?: number; sourceState?: string } | { code: "LIST_CHANGED" | "INVALID"; detail?: string; version?: number };
+
+function publicationRefused(response: Response, refusal: Extract<PublicationResolution, { code: string }>): void {
+  response.status(refusal.code === "INVALID" ? 400 : 409).json({ error: refusal.code === "INVALID" ? "Invalid publication origin" : "The original list changed. Load it again.", ...refusal });
+}
+
+function sourceList(id: string, data: StoredList): SourceList {
+  return { id, authorUid: data.authorUid, title: data.title, authorName: data.authorName,
+    anonymous: isAnonymous(data), underReview: data.underReview === true,
+    items: (data.items as Card[]) ?? [], tiers: (data.tiers as SourceList["tiers"]) ?? [], ...(data.translations ? { translations: data.translations } : {}) };
+}
+
+async function resolvePublication(identity: Identity, body: Record<string, unknown>, draft: PublishDraft): Promise<PublicationResolution> {
+  const boardUid = readBoardUid(body.boardUid);
+  // A client that omits its local provenance still has the private board's source.
+  const board = boardUid ? await getFirestore().collection("accounts").doc(identity.uid).collection("boards").doc(boardUid).get() : null;
+  const storedOrigin = board?.get("origin") as { listId?: unknown; version?: unknown } | undefined;
+  const takenFrom = readTakenFrom(body.takenFrom) ?? readTakenFrom(storedOrigin?.listId) ?? readTakenFrom(board?.get("takenFrom"));
+  const version = body.sourceVersion ?? storedOrigin?.version;
+  if (draft.items.some((item) => item.sourceIndex !== undefined) && (version === undefined || version === null)) return { code: "INVALID", detail: "sourceVersion" };
+  if (version !== undefined && version !== null && (!Number.isSafeInteger(version) || (version as number) < 0 || takenFrom === null)) return { code: "INVALID", detail: "sourceVersion" };
+  if (body.takenFrom !== undefined && body.takenFrom !== null && readTakenFrom(body.takenFrom) === null) return { code: "INVALID", detail: "takenFrom" };
+  if (takenFrom === null) return { publication: { kind: "list", basedOn: null } };
   const doc = await getFirestore().collection(PUBLISHED).doc(takenFrom).get();
   const data = doc.exists ? (doc.data() as StoredList) : null;
-  const source = data === null
-    ? null
-    : {
-        id: doc.id,
-        authorUid: data.authorUid,
-        title: data.title,
-        authorName: data.authorName,
-        anonymous: isAnonymous(data),
-        underReview: data.underReview === true,
-        items: (data.items as Card[]) ?? [],
-      };
-  return decidePublication({ takenFrom, source, callerUid: identity.uid, items });
+  const currentVersion = data?.updatedAt?.toMillis() ?? 0;
+  if (data?.underReview === true && data.authorUid !== identity.uid) return { code: "LIST_CHANGED" };
+  if (version !== undefined && version !== null && (data === null || version !== currentVersion)) return { code: "LIST_CHANGED", version: currentVersion };
+  const original = data === null ? null : sourceList(doc.id, data);
+  const publication = decidePublication({ takenFrom, source: original, callerUid: identity.uid, ...draft });
+  if (publication.kind === "ranking" && rankingRowsOver(publicationBaseline(original!, draft)!.items, draft.items, draft.tiers.length) === null) return { code: "INVALID", detail: "sourceIndex" };
+  return { publication, ...(data === null ? {} : { sourceId: doc.id, version: currentVersion, sourceState: JSON.stringify(original) }) };
+}
+
+/** A read-only preflight, also for guests, before a client names the public action. */
+async function classifyPublication(response: Response, identity: Identity, body: unknown): Promise<void> {
+  const decision = decidePublish({ body, isAnonymous: false, listsAlreadyPublished: 0, uploaderUid: identity.uid });
+  if (!decision.ok) return refuse(response, decision);
+  const resolved = await resolvePublication(identity, body as Record<string, unknown>, decision.draft);
+  if ("code" in resolved) return publicationRefused(response, resolved);
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ ...resolved.publication, ...(resolved.version === undefined ? {} : { version: resolved.version }) });
 }
 
 /**
@@ -3236,35 +3289,38 @@ async function rank(
   response: Response,
   identity: Identity,
   listId: string,
-  draft: { tiers: { label: string }[]; items: PlacedCard[] },
+  draft: PublishDraft,
+  version: number,
 ): Promise<void> {
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
   const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
-  if (!(await list.get()).exists) {
-    response.status(200).json({ id: listId, ranking: true });
-    return;
-  }
   const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
-  await db.runTransaction(async (transaction) => {
+  const outcome = await db.runTransaction(async (transaction) => {
     const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
-    if (!source.exists) {
-      return;
-    }
-    const cards = ((source.data() as StoredList).items as Card[]) ?? [];
+    const data = source.data() as StoredList | undefined;
+    if (!data || data.underReview === true || (data.updatedAt?.toMillis() ?? 0) !== version) return "changed";
+    const baseline = publicationBaseline(sourceList(listId, data), draft);
+    if (baseline === null) return "changed";
+    const rows = rankingRowsOver(baseline.items, draft.items, draft.tiers.length);
+    if (rows === null) return "invalid";
     transaction.set(ranking, {
       listId,
       uid: identity.uid,
       authorName: identity.name ?? "Anonymous",
       authorPhotoUrl: face,
-      arrangement: arrangementOver(cards, draft.items),
+      arrangement: arrangementFromRows(rows, data.items.length),
+      rows: rowsToDocument(rows),
+      sourceVersion: version,
       tierLabels: draft.tiers.map((tier) => tier.label),
       updatedAt: FieldValue.serverTimestamp(),
     });
     if (!existing.exists) {
       transaction.update(list, { rankingCount: FieldValue.increment(1) });
     }
+    return "saved";
   });
+  if (outcome !== "saved") return publicationRefused(response, outcome === "changed" ? { code: "LIST_CHANGED" } : { code: "INVALID", detail: "sourceIndex" });
   response.status(200).json({ id: listId, ranking: true });
 }
 
@@ -3289,7 +3345,7 @@ async function routeRankings(
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
 }
 
-type RankingOutcome = { refused: "not_signed_in" | "banned" | "missing" | "own_list" } | { invalid: string } | { created: boolean };
+type RankingOutcome = { refused: "not_signed_in" | "banned" | "missing" | "own_list" } | { invalid: string } | { changed: true } | { created: boolean };
 
 /**
  * A reader putting their own placing of somebody's list in its rankings
@@ -3306,17 +3362,21 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
   // Judged once before the face is fetched, so a refusal costs no fetch, and again in the transaction.
   const before = list === null ? null : await list.get();
   const seen = before?.exists ? (before.data() as StoredList) : null;
+  const askedVersion = (body as { version?: unknown } | null)?.version;
   const first = rankingPrecheck(
     caller,
     seen === null ? null : { authorUid: seen.authorUid, underReview: seen.underReview === true, itemCount: (seen.items ?? []).length },
     body,
   );
+  if ("ok" in first && askedVersion !== undefined && (!Number.isSafeInteger(askedVersion) || (askedVersion as number) < 0)) return publicationRefused(response, { code: "INVALID", detail: "version" });
+  if ("ok" in first && seen !== null && askedVersion !== undefined && askedVersion !== (seen.updatedAt?.toMillis() ?? 0)) return publicationRefused(response, { code: "LIST_CHANGED", version: seen.updatedAt?.toMillis() ?? 0 });
   const face = "ok" in first ? await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid)) : null;
   const outcome = !("ok" in first) ? first : await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
     const [source, existing] = list === null ? [null, null] : await Promise.all([transaction.get(list), transaction.get(ranking)]);
     const data = source?.exists ? (source.data() as StoredList) : null;
     const refused = rankingRefusal(caller, data === null ? null : { authorUid: data.authorUid, underReview: data.underReview === true });
     if (refused !== null || data === null || list === null) return { refused: refused ?? "missing" };
+    if (askedVersion !== undefined && askedVersion !== (data.updatedAt?.toMillis() ?? 0)) return { changed: true };
     const read = readRankingBody(body, (data.items ?? []).length);
     if (!read.ok) return { invalid: read.detail };
     const write = rankingWrite(existing?.exists === true);
@@ -3328,6 +3388,7 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
       arrangement: read.arrangement,
       ...(read.rows === null ? {} : { rows: rowsToDocument(read.rows) }),
       tierLabels: read.tierLabels,
+      sourceVersion: data.updatedAt?.toMillis() ?? 0,
       updatedAt: FieldValue.serverTimestamp(),
     });
     if (write.countChange > 0) transaction.update(list, { rankingCount: FieldValue.increment(write.countChange) });
@@ -3354,6 +3415,7 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
     response.status(400).json({ error: "That placing does not fit the list", code: "INVALID", detail: outcome.invalid });
     return;
   }
+  if ("changed" in outcome) return publicationRefused(response, { code: "LIST_CHANGED" });
   const fresh = await ranking.get();
   response.status(200).json({ ...toRanking(fresh.data() as StoredRanking), created: outcome.created });
 }
@@ -5108,6 +5170,7 @@ async function putTranslations(response: Response, identity: Identity, id: strin
     if (!decision.ok) return decision;
     transaction.update(ref, {
       translations: decision.translations,
+      updatedAt: FieldValue.serverTimestamp(),
       ...searchAfterTranslations(list.title, titleNames(list.title, decision.translations)),
     });
     const counts = Object.fromEntries(Object.entries(decision.translations).map(([locale, entries]) => [locale, Object.keys(entries).length]));
