@@ -10,6 +10,7 @@
  * express weight: two hundred cards with long addresses outweigh a thousand short ones.
  */
 import { chosenPictures } from "./publishing";
+import { createHash } from "node:crypto";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
 export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
@@ -103,10 +104,12 @@ export interface StoredBoard {
 export const PLAY_KINDS = ["swiss", "hill", "bracket"] as const;
 export type PlayKind = (typeof PLAY_KINDS)[number];
 
-/** Play is offered for two to sixty-four cards; a bigger board picks a subset first. */
+/** A cloud game can contain every live card of a supported board. */
 export const MIN_PLAY_CARDS = 2;
-export const MAX_PLAY_CARDS = 64;
-export const MAX_PLAY_HISTORY = 2000;
+export const MAX_PLAY_CARDS = MAX_ITEMS_PER_BOARD;
+/** Swiss rounds plus one refine round, each asking at most floor(n / 2) duels. */
+export const MAX_PLAY_HISTORY = (32 - Math.clz32(MAX_PLAY_CARDS - 1) + 3) * Math.floor(MAX_PLAY_CARDS / 2);
+const MAX_PLAY_SCOPE = 64;
 
 /** A game nobody has touched for a month is not coming back; it stops travelling. */
 export const PLAY_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
@@ -150,7 +153,7 @@ function playOutcome(value: unknown, count: number): PlayOutcome | null {
 
 /**
  * A game, read strictly: every field present and of its kind, the cards two
- * to sixty-four distinct ids with `count` saying as many, every answer naming
+ * to the board's live-card limit with `count` saying as many, every answer naming
  * two different cards of them and a winner that is one of the two or nobody.
  * Anything else is no game at all, and the board is kept without it.
  */
@@ -193,7 +196,7 @@ export function readPlay(value: unknown): Play | null {
  */
 function playScope(source: Record<string, unknown>): Pick<Play, "scope" | "keepTier"> | null {
   if (source.scope === undefined || source.scope === null) return {};
-  if (!Array.isArray(source.scope) || source.scope.length < 1 || source.scope.length > MAX_PLAY_CARDS) return null;
+  if (!Array.isArray(source.scope) || source.scope.length < 1 || source.scope.length > MAX_PLAY_SCOPE) return null;
   const tiers = source.scope.map(uid);
   if (tiers.some((tier) => tier === null) || new Set(tiers).size !== tiers.length) return null;
   const scope = tiers as string[];
@@ -206,7 +209,9 @@ function playScope(source: Record<string, unknown>): Pick<Play, "scope" | "keepT
  * service last stored the game, which is what its month is counted from.
  */
 export interface StoredPlay extends Omit<Play, "history"> {
-  history: number[];
+  history: number[] | string;
+  /** Internal only. The API always reads/writes the original outcome triples. */
+  historyEncoding?: "u16le-v1";
   touchedAt: number;
 }
 
@@ -218,6 +223,15 @@ export interface KeptPlay {
 
 /** A game as stored, stamped with the server's own time of this write. */
 export function playToDocument(play: Play, touchedAt: number): StoredPlay {
+  if (play.history.length > 2000) {
+    const bytes = Buffer.alloc(play.history.length * 6);
+    play.history.forEach(([first, second, winner], at) => {
+      bytes.writeUInt16LE(first, at * 6);
+      bytes.writeUInt16LE(second, at * 6 + 2);
+      bytes.writeUInt16LE(winner ?? 65535, at * 6 + 4);
+    });
+    return { ...play, history: bytes.toString("base64"), historyEncoding: "u16le-v1", touchedAt };
+  }
   return {
     ...play,
     history: play.history.flatMap(([first, second, winner]) => [first, second, winner ?? -1]),
@@ -231,11 +245,25 @@ export function playToDocument(play: Play, touchedAt: number): StoredPlay {
  */
 export function playFromDocument(stored: unknown): KeptPlay | null {
   if (typeof stored !== "object" || stored === null) return null;
-  const { history: flat, touchedAt, ...rest } = stored as { history?: unknown; touchedAt?: unknown };
-  if (!Array.isArray(flat) || flat.length % 3 !== 0) return null;
+  const { history: encoded, historyEncoding, touchedAt, ...rest } = stored as {
+    history?: unknown; historyEncoding?: unknown; touchedAt?: unknown;
+  };
   const history: unknown[] = [];
-  for (let at = 0; at < flat.length; at += 3) {
-    history.push([flat[at], flat[at + 1], flat[at + 2] === -1 ? null : flat[at + 2]]);
+  if (historyEncoding === "u16le-v1" && typeof encoded === "string") {
+    if (encoded.length > MAX_PLAY_HISTORY * 8) return null;
+    const bytes = Buffer.from(encoded, "base64");
+    if (bytes.length % 6 !== 0 || bytes.toString("base64") !== encoded) return null;
+    for (let at = 0; at < bytes.length; at += 6) {
+      const winner = bytes.readUInt16LE(at + 4);
+      history.push([bytes.readUInt16LE(at), bytes.readUInt16LE(at + 2), winner === 65535 ? null : winner]);
+    }
+  } else if (historyEncoding === undefined && Array.isArray(encoded)) {
+    if (encoded.length % 3 !== 0 || encoded.length > MAX_PLAY_HISTORY * 3) return null;
+    for (let at = 0; at < encoded.length; at += 3) {
+      history.push([encoded[at], encoded[at + 1], encoded[at + 2] === -1 ? null : encoded[at + 2]]);
+    }
+  } else {
+    return null;
   }
   const play = readPlay({ ...rest, history });
   if (play === null) return null;
@@ -246,6 +274,19 @@ export function playFromDocument(stored: unknown): KeptPlay | null {
 export function livePlay(kept: KeptPlay | null, nowMs: number): Play | null {
   if (kept === null) return null;
   return nowMs - kept.touchedAt <= PLAY_LIFETIME_MS ? kept.play : null;
+}
+
+/** Legacy clients can omit games they cannot decode; updated clients explicitly send null to finish one. */
+export function playAfterWrite(source: Record<string, unknown>, previous: Play | null): Play | null {
+  if (!Object.hasOwn(source, "play") && previous !== null && (previous.count > 64 || previous.history.length > 2000)) return previous;
+  return readPlay(source.play);
+}
+
+/** A legacy writer's hash omits the retained game. Make this changed content visible to upgraded clients. */
+export function preservedPlayFingerprint(source: Record<string, unknown>, board: StoredBoard, play: Play | null): string | null {
+  if (Object.hasOwn(source, "play") || play === null || (play.count <= 64 && play.history.length <= 2000)) return board.fingerprint;
+  const { fingerprint: _opaque, play: _sent, ...content } = board;
+  return `game-v1:${createHash("sha256").update(JSON.stringify({ ...content, play })).digest("hex")}`;
 }
 
 export type StoreRejection =
@@ -481,11 +522,11 @@ export function decideStore({
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
   }
   const play = readPlay(source.play);
-  // A game never costs the board itself: one that would push it past the
-  // ceiling is left behind, and a clock running ahead cannot start one later than now.
+  // Keep every valid game. The storage adapter puts it in a separate private
+  // document when it would otherwise exceed the board's unchanged size limit.
   if (play !== null) {
     const kept = { ...play, startedAt: Math.min(play.startedAt, nowMs) };
-    if (Buffer.byteLength(JSON.stringify({ ...board, play: kept }), "utf8") <= MAX_BOARD_BYTES) board.play = kept;
+    board.play = kept;
   }
 
   return { ok: true, board };

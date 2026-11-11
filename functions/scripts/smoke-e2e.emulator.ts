@@ -10,6 +10,7 @@ import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { STUB_PICTURE } from "../src/emulator";
+import { decideStore, MAX_BOARD_BYTES, MAX_PLAY_HISTORY } from "../src/sync";
 import { PROJECT, assertEmulatorsOnly, call, identity, ownerToken, seed } from "./seed-e2e";
 
 const TIER = { label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" };
@@ -245,5 +246,79 @@ describe("the proxy under the demo emulators", () => {
     const second = await seed();
     assert.deepEqual(second, first);
     assert.ok(first.sections.includes("other"));
+  });
+
+  it("keeps a near-limit board and long game atomically, including legacy edit, explicit clear and account erasure", async () => {
+    const author = await newAuthor("large-play");
+    const uid = JSON.parse(Buffer.from(author.split(".")[1], "base64url").toString()).user_id as string;
+    const db = getFirestore(initializeApp({ projectId: PROJECT }, "large-play-smoke"));
+    const ref = db.collection("accounts").doc(uid).collection("boards").doc("large-play");
+    const gameRef = db.collection("accounts").doc(uid).collection("plays").doc("large-play");
+    const items = Array.from({ length: 2000 }, (_, i) => ({ uid: `card-${i}`, tierUid: "tier-1", position: i, title: "Card", imageUrl: "" }));
+    const base = { title: "Large board", fingerprint: "large-1", tiers: [{ ...TIER, uid: "tier-1", position: 0 }], items };
+    let bytes = 0;
+    for (const item of items) {
+      const decision = decideStore({ body: base, isAnonymous: false, boardsAlreadyKept: 0, nowMs: Date.now() });
+      assert.ok(decision.ok);
+      bytes = Buffer.byteLength(JSON.stringify(decision.board), "utf8");
+      if (bytes > MAX_BOARD_BYTES - 3000) break;
+      item.imageUrl = `https://img.test/${"x".repeat(1800)}`;
+    }
+    assert.ok(bytes > MAX_BOARD_BYTES - 3000 && bytes < MAX_BOARD_BYTES);
+    const play = { kind: "swiss", count: 2000, seed: 42, refine: true, ids: items.map((x) => x.uid),
+      history: Array.from({ length: MAX_PLAY_HISTORY }, (_, i) => [i % 2000, (i + 1) % 2000, i % 3 === 0 ? null : i % 2000]),
+      round: 12, startedAt: Date.now() - 1000 };
+    const created = await call(author, "PUT", "/boards/large-play", { ...base, play });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.equal((await ref.get()).get("separatePlay"), true);
+    assert.equal((await ref.get()).get("play"), undefined);
+    assert.equal((await gameRef.get()).get("play.historyEncoding"), "u16le-v1");
+    assert.deepEqual((await call(author, "GET", "/boards/large-play")).body.play, play);
+
+    const renamed = { ...base, title: "Legacy rename", fingerprint: "large-2", basedOn: 1 };
+    assert.equal((await call(author, "PUT", "/boards/large-play", renamed)).status, 200);
+    const recovered = (await call(author, "GET", "/boards/large-play")).body;
+    assert.deepEqual(recovered.play, play);
+    assert.match(recovered.fingerprint as string, /^game-v1:[a-f0-9]{64}$/);
+    const index = await call(author, "GET", "/boards");
+    assert.equal((index.body.boards as { uid: string; fingerprint: string }[]).find((x) => x.uid === "large-play")?.fingerprint, recovered.fingerprint);
+    // A repeated legacy request whose acknowledgement was lost remains idempotent.
+    assert.equal((await call(author, "PUT", "/boards/large-play", renamed)).body.revision, 2);
+    const stale = await call(author, "PUT", "/boards/large-play", { ...renamed, play: null });
+    assert.equal(stale.status, 409);
+    assert.deepEqual((stale.body.board as { play: unknown }).play, play);
+
+    // The opaque board fingerprint may not have changed; explicit clear must still be applied.
+    assert.equal((await call(author, "PUT", "/boards/large-play", { ...renamed, fingerprint: recovered.fingerprint, basedOn: 2, play: null })).status, 200);
+    assert.equal((await gameRef.get()).exists, false);
+    assert.equal((await call(author, "GET", "/boards/large-play")).body.play, undefined);
+    assert.equal((await call(author, "PUT", "/boards/large-play", { ...renamed, basedOn: 3, fingerprint: "large-3" })).status, 200);
+    assert.equal((await call(author, "GET", "/boards/large-play")).body.play, undefined);
+
+    const withGame = await call(author, "PUT", "/boards/large-play", { ...base, fingerprint: "large-4", basedOn: 4, play });
+    assert.equal(withGame.status, 200);
+    const concurrent = await Promise.all([
+      call(author, "PUT", "/boards/large-play", { ...base, fingerprint: "concurrent-edit", basedOn: 5 }),
+      call(author, "PUT", "/boards/large-play", { ...base, fingerprint: "concurrent-clear", basedOn: 5, play: null }),
+    ]);
+    assert.deepEqual(concurrent.map((x) => x.status).sort(), [200, 409]);
+    const current = await call(author, "GET", "/boards/large-play");
+    assert.equal(current.status, 200);
+    const reset = await call(author, "PUT", "/boards/large-play", { ...base, fingerprint: "large-5", basedOn: current.body.revision, play });
+    assert.equal(reset.status, 200);
+    assert.equal((await call(author, "DELETE", "/boards/large-play")).status, 204);
+    assert.equal((await gameRef.get()).exists, false);
+    assert.equal((await call(author, "PUT", "/boards/erase-play", { ...base, fingerprint: "erase", play })).status, 200);
+    assert.equal((await db.collection("accounts").doc(uid).collection("plays").doc("erase-play").get()).exists, true);
+    // Race writes already entering the handler against the erasure marker and cleanup.
+    const inflight = [0, 1, 2].map((i) => call(author, "PUT", "/boards/erase-play", { ...base, fingerprint: `inflight-${i}`, basedOn: 1, play }));
+    const erasure = call(author, "DELETE", "/boards/account");
+    const replies = await Promise.all(inflight);
+    assert.ok(replies.every((x) => [200, 401, 409].includes(x.status)), JSON.stringify(replies.map((x) => x.status)));
+    assert.equal((await erasure).status, 204);
+    assert.equal((await db.collection("accounts").doc(uid).collection("plays").get()).size, 0);
+    assert.equal((await db.collection("accounts").doc(uid).collection("boards").get()).size, 0);
+    assert.equal((await db.collection("accounts").doc(uid).get()).exists, false);
+    assert.equal((await call(author, "PUT", "/boards/resurrect", { ...base, play })).status, 401);
   });
 });
