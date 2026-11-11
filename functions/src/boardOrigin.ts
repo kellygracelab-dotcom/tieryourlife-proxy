@@ -5,6 +5,11 @@ export interface BoardOrigin { listId: string; version: number }
 export type RankingChoice = "offered" | "private" | "ranking";
 export interface OriginMetadata { takenFrom?: string; origin?: BoardOrigin; rankingChoice?: RankingChoice }
 
+/** A known list identity cannot be replaced; only that original's version can advance. */
+export function boardLineage(value: { origin?: { listId?: unknown }; takenFrom?: unknown } | null | undefined): string | null {
+  return readTakenFrom(value?.origin?.listId) ?? readTakenFrom(value?.takenFrom);
+}
+
 /** Private metadata is a backup, including after a source disappears; publication checks the real source. */
 export function originAfterWrite(source: Record<string, unknown>, previous: OriginMetadata = {}): OriginMetadata | null {
   const origin = source.origin;
@@ -14,6 +19,8 @@ export function originAfterWrite(source: Record<string, unknown>, previous: Orig
   const taken = source.takenFrom;
   if (taken !== undefined && taken !== null && readTakenFrom(taken) === null) return null;
   if (candidate && taken !== undefined && taken !== null && candidate.listId !== taken) return null;
+  const known = boardLineage(previous);
+  if (known !== null && ((candidate && candidate.listId !== known) || (typeof taken === "string" && taken !== known))) return null;
   const choice = source.rankingChoice;
   if (choice !== undefined && choice !== null && (typeof choice !== "string" || !["offered", "private", "ranking"].includes(choice))) return null;
   // Null, like omission, cannot erase provenance or offer the same question again.

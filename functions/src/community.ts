@@ -10,6 +10,7 @@ import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
 import { claimListSlot } from "./publishLimit";
+import { boardLineage } from "./boardOrigin";
 import { countsAsTake } from "./takes";
 import { liftBanLogged, readBan, replaceKeptBans } from "./banIdentities";
 import { banTarget, decideHide, groupReports, mayJudge, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
@@ -2902,7 +2903,7 @@ async function publish(
   if ("code" in resolved) return publicationRefused(response, resolved);
   const { publication } = resolved;
   if (publication.kind === "ranking") {
-    return await rank(response, identity, publication.listId, decision.draft, resolved.version!);
+    return await rank(response, identity, publication.listId, decision.draft, resolved.version!, resolved.boardUid);
   }
   if (alreadyPublished >= MAX_LISTS_PER_AUTHOR) {
     // A parallel first attempt may have committed after the initial retry lookup.
@@ -3086,6 +3087,11 @@ async function publish(
       // The house's translations stay with a replaced list, as far as it still shows what they translate.
       const current = existingId ? (await transaction.get(collection.doc(existingId))).data() : null;
       if (existingId && JSON.stringify(current?.updatedAt ?? null) !== JSON.stringify(previous?.updatedAt ?? null)) return PUBLICATION_CHANGED;
+      if (resolved.boardUid) {
+        const privateBoard = await transaction.get(db.collection("accounts").doc(identity.uid).collection("boards").doc(resolved.boardUid));
+        const known = boardLineage(privateBoard.data());
+        if (known !== null && known !== resolved.lineageId) return SOURCE_CHANGED;
+      }
       // The preflight and the write must agree about the exact source snapshot.
       if (resolved.sourceId) {
         const original = await transaction.get(collection.doc(resolved.sourceId));
@@ -3236,7 +3242,7 @@ async function syncCredits(listId: string, anonymous: boolean, authorUid: string
 }
 
 /** What the deciding needs to know about the list a board was saved from. */
-type PublicationResolution = { publication: Publication; sourceId?: string; version?: number; sourceState?: string } | { code: "LIST_CHANGED" | "INVALID"; detail?: string; version?: number };
+type PublicationResolution = { publication: Publication; sourceId?: string; version?: number; sourceState?: string; boardUid?: string; lineageId?: string | null } | { code: "LIST_CHANGED" | "INVALID"; detail?: string; version?: number };
 
 function publicationRefused(response: Response, refusal: Extract<PublicationResolution, { code: string }>): void {
   response.status(refusal.code === "INVALID" ? 400 : 409).json({ error: refusal.code === "INVALID" ? "Invalid publication origin" : "The original list changed. Load it again.", ...refusal });
@@ -3253,12 +3259,16 @@ async function resolvePublication(identity: Identity, body: Record<string, unkno
   // A client that omits its local provenance still has the private board's source.
   const board = boardUid ? await getFirestore().collection("accounts").doc(identity.uid).collection("boards").doc(boardUid).get() : null;
   const storedOrigin = board?.get("origin") as { listId?: unknown; version?: unknown } | undefined;
-  const takenFrom = readTakenFrom(body.takenFrom) ?? readTakenFrom(storedOrigin?.listId) ?? readTakenFrom(board?.get("takenFrom"));
+  const knownLineage = boardLineage(board?.data());
+  const askedLineage = readTakenFrom(body.takenFrom);
+  if (knownLineage !== null && askedLineage !== null && knownLineage !== askedLineage) return { code: "INVALID", detail: "takenFrom" };
+  const takenFrom = knownLineage ?? askedLineage;
   const version = body.sourceVersion ?? storedOrigin?.version;
   if (draft.items.some((item) => item.sourceIndex !== undefined) && (version === undefined || version === null)) return { code: "INVALID", detail: "sourceVersion" };
   if (version !== undefined && version !== null && (!Number.isSafeInteger(version) || (version as number) < 0 || takenFrom === null)) return { code: "INVALID", detail: "sourceVersion" };
   if (body.takenFrom !== undefined && body.takenFrom !== null && readTakenFrom(body.takenFrom) === null) return { code: "INVALID", detail: "takenFrom" };
-  if (takenFrom === null) return { publication: { kind: "list", basedOn: null } };
+  const lineage = { ...(boardUid === null ? {} : { boardUid }), lineageId: takenFrom };
+  if (takenFrom === null) return { publication: { kind: "list", basedOn: null }, ...lineage };
   const doc = await getFirestore().collection(PUBLISHED).doc(takenFrom).get();
   const data = doc.exists ? (doc.data() as StoredList) : null;
   const currentVersion = data?.updatedAt?.toMillis() ?? 0;
@@ -3267,7 +3277,7 @@ async function resolvePublication(identity: Identity, body: Record<string, unkno
   const original = data === null ? null : sourceList(doc.id, data);
   const publication = decidePublication({ takenFrom, source: original, callerUid: identity.uid, ...draft });
   if (publication.kind === "ranking" && rankingRowsOver(publicationBaseline(original!, draft)!.items, draft.items, draft.tiers.length) === null) return { code: "INVALID", detail: "sourceIndex" };
-  return { publication, ...(data === null ? {} : { sourceId: doc.id, version: currentVersion, sourceState: JSON.stringify(original) }) };
+  return { publication, ...lineage, ...(data === null ? {} : { sourceId: doc.id, version: currentVersion, sourceState: JSON.stringify(original) }) };
 }
 
 /** A read-only preflight, also for guests, before a client names the public action. */
@@ -3291,6 +3301,7 @@ async function rank(
   listId: string,
   draft: PublishDraft,
   version: number,
+  boardUid?: string,
 ): Promise<void> {
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
@@ -3298,6 +3309,11 @@ async function rank(
   const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
   const outcome = await db.runTransaction(async (transaction) => {
     const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
+    if (boardUid) {
+      const board = await transaction.get(db.collection("accounts").doc(identity.uid).collection("boards").doc(boardUid));
+      const known = boardLineage(board.data());
+      if (known !== null && known !== listId) return "changed";
+    }
     const data = source.data() as StoredList | undefined;
     if (!data || data.underReview === true || (data.updatedAt?.toMillis() ?? 0) !== version) return "changed";
     const baseline = publicationBaseline(sourceList(listId, data), draft);

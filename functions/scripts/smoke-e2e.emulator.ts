@@ -11,14 +11,14 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { STUB_PICTURE } from "../src/emulator";
 import { decideStore, MAX_BOARD_BYTES, MAX_PLAY_HISTORY } from "../src/sync";
-import { PROJECT, assertEmulatorsOnly, call, identity, ownerToken, seed } from "./seed-e2e";
+import { PROJECT, assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, seed } from "./seed-e2e";
 
 const TIER = { label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" };
 
 /** An account of its own: the smoke's main one is banned along the way. */
 async function newAuthor(prefix: string): Promise<string> {
   const guest = (await identity("signUp", {})).idToken;
-  return (await identity("update", { idToken: guest, email: `${prefix}-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
+  return (await passwordAccount(guest, `${prefix}-${Date.now().toString(36)}@e2e.test`)).idToken;
 }
 
 describe("the proxy under the demo emulators", () => {
@@ -28,8 +28,10 @@ describe("the proxy under the demo emulators", () => {
   before(async () => {
     assertEmulatorsOnly();
     guest = (await identity("signUp", {})).idToken;
+    // The account links a different guest; the guest-only assertions need a still-anonymous live session.
+    const accountGuest = (await identity("signUp", {})).idToken;
     const suffix = Date.now().toString(36);
-    token = (await identity("update", { idToken: guest, email: `e2e-${suffix}@e2e.test`, password: "e2e-password" })).idToken;
+    token = (await passwordAccount(accountGuest, `e2e-${suffix}@e2e.test`)).idToken;
   });
 
   it("answers a guest without App Check, and refuses it a publication", async () => {
@@ -122,7 +124,7 @@ describe("the proxy under the demo emulators", () => {
   it("keeps a hidden list hidden when its author publishes it again", async () => {
     // Its own author: the one above was banned with its anonymous list.
     const guest = (await identity("signUp", {})).idToken;
-    const author = (await identity("update", { idToken: guest, email: `hold-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
+    const author = (await passwordAccount(guest, `hold-${Date.now().toString(36)}@e2e.test`)).idToken;
     const body = { title: "Hidden smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
     const published = await call(author, "POST", "/lists", body);
     assert.equal(published.status, 201, JSON.stringify(published.body));
@@ -150,7 +152,7 @@ describe("the proxy under the demo emulators", () => {
 
   it("keeps a hidden list hidden when its author withdraws it and publishes it again from another board", async () => {
     const guest = (await identity("signUp", {})).idToken;
-    const author = (await identity("update", { idToken: guest, email: `again-${Date.now().toString(36)}@e2e.test`, password: "e2e-password" })).idToken;
+    const author = (await passwordAccount(guest, `again-${Date.now().toString(36)}@e2e.test`)).idToken;
     const body = { title: "Withdrawn smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }], boardUid: `held-${Date.now().toString(36)}` };
     const visible = await call(author, "POST", "/lists", { ...body, title: "Visible smoke list", boardUid: `visible-${Date.now().toString(36)}` });
     const first = await call(author, "POST", "/lists", body);

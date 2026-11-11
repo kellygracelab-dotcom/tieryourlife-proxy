@@ -24,6 +24,13 @@ describe("private origin and the one-time choice", () => {
     assert.equal(sourceIndexAfterWrite({ sourceIndex: 2 }, 13), 2);
     assert.equal(sourceIndexAfterWrite({ sourceIndex: 2000 }), "invalid");
   });
+  it("never rebinds an already known original, including a legacy alias, but lets its version advance", () => {
+    assert.equal(originAfterWrite({ origin: { listId: "other", version: 999 }, takenFrom: "other" }, previous), null);
+    assert.equal(originAfterWrite({ takenFrom: "other" }, { takenFrom: "original" }), null);
+    assert.equal(originAfterWrite({ origin: { listId: "other", version: 999 } }, { takenFrom: "original" }), null);
+    assert.equal(originAfterWrite({ origin: { listId: "original", version: 124 } }, previous)?.origin?.version, 124);
+    assert.deepEqual(originAfterWrite({ origin: { listId: "original", version: 123 } }), { origin: { listId: "original", version: 123 }, takenFrom: "original" });
+  });
   it("cannot hide retained metadata behind an old client's incomplete fingerprint", () => {
     const source = { title: "Board", fingerprint: "legacy", tiers: [{ uid: "t", position: 0, label: "S", colorLight: "#000000", colorDark: "#000000" }], items: [{ uid: "i", tierUid: "t", position: 0, title: "Card" }] };
     const stored = decideStore({ body: source, isAnonymous: false, boardsAlreadyKept: 0, nowMs: 1000, storedOrigin: previous, storedSourceIndexes: new Map([["i", 13]]) });

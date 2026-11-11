@@ -2,8 +2,9 @@
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
-import { assertEmulatorsOnly, call, identity, ownerToken, PROJECT } from "./seed-e2e";
+import { assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, PROJECT } from "./seed-e2e";
 
 const TIERS = [{ label: "S", caption: "Best", colorLight: "#FF7777", colorDark: "#773333" }, { label: "A", caption: null, colorLight: "#FFFF77", colorDark: "#777733" }];
 const ITEMS = [{ title: "Duplicate", imageUrl: null, tierIndex: null }, { title: "Duplicate", imageUrl: null, tierIndex: null }, { title: "Picture", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg", tierIndex: null }];
@@ -19,7 +20,7 @@ describe("ranking choices and authoritative publication under the demo emulators
     assertEmulatorsOnly();
     async function account(prefix: string) {
       const start = await identity("signUp", {});
-      return identity("update", { idToken: start.idToken, email: `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}@e2e.test`, password: "e2e-password" });
+      return passwordAccount(start.idToken, `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}@e2e.test`);
     }
     author = (await account("origin")).idToken;
     const person = await account("reader"); reader = person.idToken; readerUid = person.localId;
@@ -36,6 +37,25 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.deepEqual(answer, { status: 200, body: { kind: "ranking", listId: original, version } });
     assert.equal((await db.collection("rankings").where("listId", "==", original).get()).size, before);
     assert.equal((await call(guest, "PUT", `/boards/${boardId}`, privateBoard())).status, 403);
+  });
+
+  it("keeps invalid tokens refused", async () => {
+    const refused = await call("not-a-token", "GET", "/boards");
+    assert.equal(refused.status, 401);
+    assert.equal(refused.body.code, "UNAUTHENTICATED");
+  });
+
+  it("starts a fresh password session across a second boundary without accepting a revoked guest token", async () => {
+    const start = await identity("signUp", {});
+    const oldAuthTime = (JSON.parse(Buffer.from(start.idToken.split(".")[1], "base64url").toString("utf8")) as { auth_time: number }).auth_time;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, (oldAuthTime + 2) * 1000 - Date.now())));
+    const linked = await passwordAccount(start.idToken, `boundary-${Date.now()}@e2e.test`);
+    const auth = getAuth(initializeApp({ projectId: PROJECT }, "password-boundary"));
+    const verified = await auth.verifyIdToken(linked.idToken);
+    assert.equal(linked.localId, start.localId);
+    assert.equal(verified.uid, start.localId);
+    assert.ok(verified.auth_time > oldAuthTime);
+    await assert.rejects(auth.verifyIdToken(start.idToken), { code: "auth/id-token-revoked" });
   });
 
   it("keeps origin/choice/index through legacy rename, same-hash decision, conflict and null", async () => {
@@ -75,7 +95,49 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.equal(board.body.rankingChoice, "private"); assert.equal((board.body.items as unknown[]).length, 3);
   });
 
+  it("cannot rebind a copied board to another list or override its immutable lineage at preflight/publication", async () => {
+    const { takenFrom: _taken, sourceVersion: _version, ...independent } = draft();
+    const ownB = await call(reader, "POST", "/lists", independent);
+    assert.equal(ownB.status, 201, JSON.stringify(ownB));
+    const bId = String(ownB.body.id);
+    const bVersion = Number((await call(reader, "GET", `/lists/${bId}`)).body.updatedAt);
+    const loaded = (await call(reader, "GET", `/boards/${boardId}`)).body;
+    const rebind = await call(reader, "PUT", `/boards/${boardId}`, { ...loaded, basedOn: loaded.revision, origin: { listId: bId, version: bVersion }, takenFrom: bId });
+    assert.equal(rebind.status, 400, JSON.stringify(rebind));
+    const alias = await call(reader, "PUT", `/boards/${boardId}`, { ...loaded, basedOn: loaded.revision, origin: null, takenFrom: bId });
+    assert.equal(alias.status, 400, JSON.stringify(alias));
+    const count = (await db.collection("publishedLists").where("authorUid", "==", readerUid).get()).size;
+    for (const path of ["/lists/classify", "/lists"]) {
+      const spoof = await call(reader, "POST", path, { ...draft(), boardUid: boardId, takenFrom: bId, sourceVersion: bVersion });
+      assert.equal(spoof.status, 400, JSON.stringify(spoof)); assert.equal(spoof.body.detail, "takenFrom");
+    }
+    assert.equal((await db.collection("publishedLists").where("authorUid", "==", readerUid).get()).size, count);
+    assert.deepEqual((await call(reader, "GET", `/boards/${boardId}`)).body.origin, { listId: original, version });
+    const honest = await call(reader, "POST", "/lists/classify", { ...draft(), boardUid: boardId });
+    assert.equal(honest.body.kind, "ranking", JSON.stringify(honest));
+  });
+
+  it("classifies a new private photograph as changed content without leaking it, with the same image priority as publication", async () => {
+    const kept = await call(reader, "POST", "/lists/pictures/keep", { url: "https://example.invalid/private-photo.png" });
+    assert.equal(kept.status, 200, JSON.stringify(kept));
+    const pictureId = String(kept.body.pictureId);
+    const changed = { ...draft(), items: [{ ...ITEMS[0], pictureId }, ...ITEMS.slice(1)] };
+    const preflight = await call(reader, "POST", "/lists/classify", changed);
+    assert.equal(preflight.body.kind, "list", JSON.stringify(preflight));
+    assert.equal(JSON.stringify(preflight.body).includes(pictureId), false);
+    const published = await call(reader, "POST", "/lists", changed);
+    assert.equal(published.status, 201, JSON.stringify(published));
+    assert.equal(published.body.ranking, undefined);
+    const saved = await call(reader, "GET", `/lists/${published.body.id}`);
+    assert.ok((saved.body.items as { imageUrl: string | null }[])[0].imageUrl, "the new photograph must really be published");
+    const samePublicPicture = { ...draft(), items: [ITEMS[0], ITEMS[1], { ...ITEMS[2], pictureId }] };
+    assert.equal((await call(reader, "POST", "/lists/classify", samePublicPicture)).body.kind, "ranking");
+    assert.deepEqual(await call(reader, "POST", "/lists", samePublicPicture), { status: 200, body: { id: original, ranking: true } });
+    assert.equal((await call(reader, "DELETE", `/lists/${original}/rankings/mine`)).status, 204);
+  });
+
   it("rejects invalid duplicate positions without a public mutation", async () => {
+    const before = (await db.collection("publishedLists").doc(original).get()).get("rankingCount");
     for (const indices of [[0, 0, 2], [0, 1, 9], [2, 1, 0]]) {
       const answer = await call(reader, "POST", "/lists", { ...draft(), items: ITEMS.map((item, i) => ({ ...item, sourceIndex: indices[i] })) });
       assert.equal(answer.status, 400, JSON.stringify(answer)); assert.equal(answer.body.detail, "sourceIndex");
@@ -83,7 +145,7 @@ describe("ranking choices and authoritative publication under the demo emulators
     const { sourceVersion: _version, ...unversioned } = draft();
     const unbound = await call(reader, "POST", "/lists/classify", { ...unversioned, items: ITEMS.map((item, sourceIndex) => ({ ...item, sourceIndex })) });
     assert.equal(unbound.status, 400); assert.equal(unbound.body.detail, "sourceVersion");
-    assert.equal((await db.collection("publishedLists").doc(original).get()).get("rankingCount"), 0);
+    assert.equal((await db.collection("publishedLists").doc(original).get()).get("rankingCount"), before);
   });
 
   it("unbinds duplicate indices on an origin version change and preserves ordinary legacy idempotency", async () => {

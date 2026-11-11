@@ -42,6 +42,11 @@ function source(some: Partial<SourceList> = {}): SourceList {
 }
 
 describe("cardIdentity", () => {
+  it("treats a new owned photograph as content while matching publication's public-URL priority", () => {
+    assert.notEqual(cardIdentity(typed("Card")), cardIdentity({ ...typed("Card"), pictureId: "new-photo" }));
+    assert.equal(cardIdentity(poster("Card")), cardIdentity({ ...poster("Card"), pictureId: "new-photo" }));
+    assert.notEqual(cardIdentity({ title: "Card", imageUrl: "https://cdn-images.dzcdn.net/a.jpg" }), cardIdentity({ title: "Card", imageUrl: "https://cdn-images.dzcdn.net/a.jpg", pictureId: "new-photo" }));
+  });
   it("includes a picture card's title, so renaming it is a content change", () => {
     assert.notEqual(cardIdentity({ title: "Arrival", imageUrl: "https://i/a.jpg" }), cardIdentity({ title: "ARRIVAL (2016)", imageUrl: "https://i/a.jpg" }));
   });
