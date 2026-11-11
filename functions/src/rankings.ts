@@ -16,6 +16,8 @@ export const RANKINGS_PAGE_SIZE = 30;
 export interface Card {
   title: string;
   imageUrl: string | null;
+  /** A new private asset is content, but its private id never goes into a preflight result. */
+  pictureId?: string | null;
 }
 
 /** A card with where its owner put it. */
@@ -59,8 +61,10 @@ export type Publication =
  * as publishing drops it. Local identifiers and picture credits do not decide.
  */
 export function cardIdentity(card: Card): string {
+  // Match settle(): a kept public URL wins when both representations were sent.
+  const picture = card.imageUrl && !isDeezerPicture(card.imageUrl) ? storageMediaUrl(card.imageUrl) : card.pictureId ? "owned-picture" : null;
   return JSON.stringify([card.title.replace(/\s+/g, " ").trim(),
-    card.imageUrl && !isDeezerPicture(card.imageUrl) ? storageMediaUrl(card.imageUrl) : null]);
+    picture]);
 }
 
 /** The same cards, each as many times, in any order. Tiers and placing do not count. */
