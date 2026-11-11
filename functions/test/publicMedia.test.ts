@@ -113,10 +113,11 @@ describe("public image API compatibility", () => {
 
   it("preserves card matching and duplicate order across old raw and new public addresses", () => {
     const original = [{ title: "First", imageUrl: raw }, { title: "Second", imageUrl: raw }];
-    const placed = [{ title: "Renamed", imageUrl: shown, tierIndex: 2 }, { title: "Again", imageUrl: shown, tierIndex: 0 }];
+    const placed = [{ title: "First", imageUrl: shown, tierIndex: 2 }, { title: "Second", imageUrl: shown, tierIndex: 0 }];
     assert.equal(sameCards(original, placed), true);
     assert.deepEqual(arrangementOver(original, placed), [2, 0]);
     assert.equal(sameCards(original, [{ ...placed[0], imageUrl: shown + "-other" }, placed[1]]), false);
+    assert.equal(sameCards(original, [{ ...placed[0], title: "Renamed" }, placed[1]]), false);
   });
 
   it("reuses committed copies with their existing names after a display-address round trip", () => {

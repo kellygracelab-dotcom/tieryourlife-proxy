@@ -68,6 +68,7 @@ export interface DraftItem {
   pictureId: string | null;
   tierIndex: number | null;
   credit?: string;
+  sourceIndex?: number;
 }
 
 export interface PublishDraft {
@@ -277,12 +278,16 @@ export function decidePublish({
       return { ok: false, reason: "invalid", detail: "An item needs a title or a picture" };
     }
     const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
+    if (item.sourceIndex !== undefined && item.sourceIndex !== null && (!Number.isSafeInteger(item.sourceIndex) || (item.sourceIndex as number) < 0 || (item.sourceIndex as number) >= MAX_ITEMS_PER_LIST)) {
+      return { ok: false, reason: "invalid", detail: "Invalid sourceIndex" };
+    }
     items.push({
       title: itemTitle ?? "",
       imageUrl,
       pictureId,
       tierIndex: tierIndexOf(item.tierIndex, tiers.length),
       ...(credit ? { credit } : {}),
+      ...(typeof item.sourceIndex === "number" ? { sourceIndex: item.sourceIndex } : {}),
     });
   }
 

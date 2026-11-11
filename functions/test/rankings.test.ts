@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { EDITORIAL_UID } from "../src/editorial";
 import {
   arrangementOver,
   cardIdentity,
@@ -17,6 +18,7 @@ import {
   rowsToDocument,
   readTakenFrom,
   sameCards,
+  rankingRowsOver,
   shownCredit,
   type Card,
   type SourceList,
@@ -34,17 +36,18 @@ function source(some: Partial<SourceList> = {}): SourceList {
     anonymous: false,
     underReview: false,
     items: [poster("arrival"), poster("moon"), typed("Sunshine")],
+    tiers: [{ label: "S", caption: "Best" }, { label: "A", caption: null }],
     ...some,
   };
 }
 
 describe("cardIdentity", () => {
-  it("is the picture when there is one, whatever the caption says", () => {
-    assert.equal(cardIdentity({ title: "Arrival", imageUrl: "https://i/a.jpg" }), cardIdentity({ title: "ARRIVAL (2016)", imageUrl: "https://i/a.jpg" }));
+  it("includes a picture card's title, so renaming it is a content change", () => {
+    assert.notEqual(cardIdentity({ title: "Arrival", imageUrl: "https://i/a.jpg" }), cardIdentity({ title: "ARRIVAL (2016)", imageUrl: "https://i/a.jpg" }));
   });
 
   it("is the name, read loosely, when there is no picture", () => {
-    assert.equal(cardIdentity(typed("  Sun  shine ")), cardIdentity(typed("sun shine")));
+    assert.equal(cardIdentity(typed("  Sun  shine ")), cardIdentity(typed("Sun shine")));
     assert.notEqual(cardIdentity(typed("Sunshine")), cardIdentity(typed("Moon")));
   });
 
@@ -111,43 +114,83 @@ describe("readTakenFrom", () => {
 
 describe("decidePublication", () => {
   const items = source().items;
+  const unchanged = { title: source().title, tiers: source().tiers };
 
   it("is a list of its own when nothing was taken from anywhere", () => {
-    assert.deepEqual(decidePublication({ takenFrom: null, source: null, callerUid: "reader", items }), { kind: "list", basedOn: null });
+    assert.deepEqual(decidePublication({ ...unchanged, takenFrom: null, source: null, callerUid: "reader", items }), { kind: "list", basedOn: null });
   });
 
-  // Two people may share a taste to the letter; the copy is a list of its own, crediting the first.
-  it("is a list of its own based on the source even with the very same cards", () => {
+  it("is a Ranking when only card placement/order or technical IDs change", () => {
     const reordered = [items[2], items[0], items[1]];
-    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source(), callerUid: "reader", items: reordered }), {
-      kind: "list",
-      basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "author-1", authorName: "Artiman" },
-    });
+    assert.deepEqual(decidePublication({ ...unchanged, takenFrom: "list-1", source: source(), callerUid: "reader", items: reordered }), { kind: "ranking", listId: "list-1" });
   });
 
   // A card added or taken away makes it the reader's own list, with the
   // author named on it rather than a copy nobody can tell from the original.
   it("is a new list based on the source once a card has changed", () => {
     const changed = [...items, poster("sunshine")];
-    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source(), callerUid: "reader", items: changed }), {
+    assert.deepEqual(decidePublication({ ...unchanged, takenFrom: "list-1", source: source(), callerUid: "reader", items: changed }), {
       kind: "list",
       basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "author-1", authorName: "Artiman" },
     });
   });
 
   it("ignores a source that is gone", () => {
-    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: null, callerUid: "reader", items }), { kind: "list", basedOn: null });
+    assert.deepEqual(decidePublication({ ...unchanged, takenFrom: "list-1", source: null, callerUid: "reader", items }), { kind: "list", basedOn: null });
   });
 
   it("ignores a source that is under review", () => {
-    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source({ underReview: true }), callerUid: "reader", items }), {
+    assert.deepEqual(decidePublication({ ...unchanged, takenFrom: "list-1", source: source({ underReview: true }), callerUid: "reader", items }), {
       kind: "list",
       basedOn: null,
     });
   });
 
   it("lets an author publish their own list again as a list", () => {
-    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source(), callerUid: "author-1", items }), { kind: "list", basedOn: null });
+    assert.deepEqual(decidePublication({ ...unchanged, takenFrom: "list-1", source: source(), callerUid: "author-1", items }), { kind: "list", basedOn: null });
+  });
+
+  it("permits an attributed list for each meaningful change, but ignores tier colors", () => {
+    const base = { ...unchanged, takenFrom: "list-1", source: source(), callerUid: "reader", items };
+    for (const change of [
+      { title: "Different title" }, { tiers: [{ label: "New criterion" }] },
+      { tiers: [...unchanged.tiers].reverse() }, { tiers: [{ ...unchanged.tiers[0], caption: "Changed criterion" }, unchanged.tiers[1]] },
+      { items: [{ ...items[0], title: "Renamed picture" }, ...items.slice(1)] },
+      { items: [{ ...items[0], imageUrl: "https://i/new.jpg" }, ...items.slice(1)] },
+    ]) assert.equal(decidePublication({ ...base, ...change }).kind, "list");
+    const cosmetic = unchanged.tiers.map((tier) => ({ ...tier, colorLight: "#000000" }));
+    assert.equal(decidePublication({ ...base, tiers: cosmetic }).kind, "ranking");
+  });
+});
+
+describe("positional duplicate ranking mapping", () => {
+  const cards = [typed("Same"), typed("Same"), typed("Third")];
+  it("keeps duplicate identity and left-to-right order from source indices", () => {
+    assert.deepEqual(rankingRowsOver(cards, [{ ...cards[0], sourceIndex: 1, tierIndex: 0 }, { ...cards[2], sourceIndex: 2, tierIndex: 0 }, { ...cards[0], sourceIndex: 0, tierIndex: 1 }], 2), [[1, 2], [0]]);
+  });
+  it("reserves explicit indices before safely matching missing legacy occurrences", () => {
+    assert.deepEqual(rankingRowsOver(cards, [{ ...cards[0], tierIndex: 0 }, { ...cards[0], sourceIndex: 0, tierIndex: 1 }, { ...cards[2], tierIndex: null }], 2), [[1], [0]]);
+  });
+  it("refuses duplicate, out-of-range and wrong-card mappings", () => {
+    for (const indices of [[0, 0, 2], [0, 1, 3], [2, 1, 0]]) assert.equal(rankingRowsOver(cards, cards.map((card, i) => ({ ...card, sourceIndex: indices[i], tierIndex: 0 })), 2), null);
+  });
+});
+
+describe("official translated publication baselines", () => {
+  const original = source({ authorUid: EDITORIAL_UID, title: "Films", tiers: [{ label: "Best", caption: "Criterion" }], items: [typed("Arrival"), typed("Moon")], translations: {
+    ru: { Films: "Фильмы", Best: "Лучшие", Criterion: "Критерий", Arrival: "Прибытие", Moon: "Луна" },
+    uk: { Films: "Фільми", Best: "Найкращі", Criterion: "Критерій", Arrival: "Прибуття", Moon: "Місяць" },
+  } });
+  const translated = { takenFrom: original.id, source: original, callerUid: "reader", title: "Фильмы", tiers: [{ label: "Лучшие", caption: "Критерий" }], items: [typed("Луна"), typed("Прибытие")] };
+  it("recognizes an unchanged complete official language version as a Ranking", () => {
+    assert.equal(decidePublication(translated).kind, "ranking");
+  });
+  it("permits manual edits and mixed-locale field combinations as derivatives", () => {
+    for (const edit of [{ title: "Мои фильмы" }, { items: [typed("Місяць"), typed("Прибытие")] }, { tiers: [{ label: "Найкращі", caption: "Критерий" }] }]) assert.equal(decidePublication({ ...translated, ...edit }).kind, "list");
+  });
+  it("uses the base text when a locale has only a partial official translation", () => {
+    const partial = { ...original, translations: { ru: { Films: "Фильмы" } } };
+    assert.equal(decidePublication({ ...translated, source: partial, tiers: original.tiers, items: original.items }).kind, "ranking");
   });
 });
 
@@ -168,7 +211,7 @@ describe("mineFirst", () => {
 
 describe("credits", () => {
   it("credit an anonymous list by nobody, with an empty uid", () => {
-    assert.deepEqual(decidePublication({ takenFrom: "list-1", source: source({ anonymous: true }), callerUid: "reader", items: [] }), {
+    assert.deepEqual(decidePublication({ title: source().title, tiers: source().tiers, takenFrom: "list-1", source: source({ anonymous: true }), callerUid: "reader", items: [] }), {
       kind: "list",
       basedOn: { id: "list-1", title: "Space films that hold up", authorUid: "", authorName: "" },
     });

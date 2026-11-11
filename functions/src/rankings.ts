@@ -7,7 +7,8 @@
 
 import { isDeezerPicture } from "./pictureSources";
 import { storageMediaUrl } from "./publicMedia";
-import { cleanTierLabel, MAX_TIERS_PER_LIST } from "./publishing";
+import { cleanTierLabel, MAX_TIERS_PER_LIST, MAX_TITLE_LENGTH, MAX_CAPTION_LENGTH } from "./publishing";
+import { EDITORIAL_UID, TRANSLATION_LOCALES, type Translations } from "./editorial";
 
 export const RANKINGS_PAGE_SIZE = 30;
 
@@ -20,6 +21,7 @@ export interface Card {
 /** A card with where its owner put it. */
 export interface PlacedCard extends Card {
   tierIndex: number | null;
+  sourceIndex?: number;
 }
 
 /**
@@ -43,6 +45,8 @@ export interface SourceList {
   anonymous: boolean;
   underReview: boolean;
   items: Card[];
+  tiers: { label: string; caption?: string | null }[];
+  translations?: Translations;
 }
 
 export type Publication =
@@ -50,15 +54,13 @@ export type Publication =
   | { kind: "ranking"; listId: string };
 
 /**
- * What makes a card the same card on two boards: its picture, when it has
- * one, and otherwise its name, read loosely. A poster is a poster whatever
- * caption sits under it; a card typed by hand is its words. A Deezer cover
- * counts as none: publishing drops it, so a list still holding one and a
- * ranking of it sent again are the same cards.
+ * Both its normalized title and canonical public picture identify a card.
+ * Renaming a picture card changes the content. Deezer art counts as absent,
+ * as publishing drops it. Local identifiers and picture credits do not decide.
  */
 export function cardIdentity(card: Card): string {
-  if (card.imageUrl && !isDeezerPicture(card.imageUrl)) return `picture:${storageMediaUrl(card.imageUrl)}`;
-  return `title:${card.title.replace(/\s+/g, " ").trim().toLowerCase()}`;
+  return JSON.stringify([card.title.replace(/\s+/g, " ").trim(),
+    card.imageUrl && !isDeezerPicture(card.imageUrl) ? storageMediaUrl(card.imageUrl) : null]);
 }
 
 /** The same cards, each as many times, in any order. Tiers and placing do not count. */
@@ -109,20 +111,71 @@ export interface PublicationInput {
   source: SourceList | null;
   callerUid: string;
   items: Card[];
+  title: string;
+  tiers: { label: string; caption?: string | null }[];
+}
+
+/** One coherent official language version, with the same source positions and pictures. */
+export function publicationBaseline(source: SourceList, draft: Pick<PublicationInput, "title" | "tiers" | "items">): SourceList | null {
+  const words = (text: string | null | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+  const structure = (rows: PublicationInput["tiers"]) => rows.map((tier) => [words(tier.label), words(tier.caption)]);
+  const same = (variant: SourceList) => words(draft.title) === words(variant.title) && JSON.stringify(structure(draft.tiers)) === JSON.stringify(structure(variant.tiers)) && sameCards(draft.items, variant.items);
+  if (same(source)) return source;
+  if (source.authorUid !== EDITORIAL_UID) return null;
+  for (const locale of TRANSLATION_LOCALES) {
+    const entries = source.translations?.[locale];
+    if (!entries) continue;
+    const translated = (text: string, limit: number) => words(Object.hasOwn(entries, text) && typeof entries[text] === "string" ? entries[text] : text).slice(0, limit);
+    const variant = { ...source, title: translated(source.title, MAX_TITLE_LENGTH),
+      tiers: source.tiers.map((tier) => ({ ...tier, label: translated(tier.label, MAX_TITLE_LENGTH), caption: tier.caption ? translated(tier.caption, MAX_CAPTION_LENGTH) : null })),
+      items: source.items.map((card) => ({ ...card, title: translated(card.title, MAX_TITLE_LENGTH) })) };
+    if (same(variant)) return variant;
+  }
+  return null;
 }
 
 /**
- * A copy is always a list of its own, named after the one it came from, even
- * with the very same cards: two people can share a taste to the letter, and
- * those who follow the second one should still see it (Danylo, 27.10). A
- * source that is gone or under review, or the author's own, credits nobody.
- * Rankings written before this stay readable on their lists.
+ * A new publication with identical content is the reader's Ranking. A title,
+ * card or meaningful tier-structure change permits a new attributed list.
+ * Placement, colors, cover, credit and technical ids are not content changes.
+ * Existing published lists are updated without reclassification or migration.
  */
-export function decidePublication({ takenFrom, source, callerUid }: PublicationInput): Publication {
+export function decidePublication({ takenFrom, source, callerUid, title, tiers, items }: PublicationInput): Publication {
   if (takenFrom === null || source === null || source.underReview || source.authorUid === callerUid) {
     return { kind: "list", basedOn: null };
   }
+  if (publicationBaseline(source, { title, tiers, items }) !== null) {
+    return { kind: "ranking", listId: source.id };
+  }
   return { kind: "list", basedOn: creditFor(source) };
+}
+
+/** Resolve positional identities before writing. Indices distinguish duplicate cards; legacy copies match occurrences. */
+export function rankingRowsOver(source: Card[], placed: PlacedCard[], tierCount: number): number[][] | null {
+  const used = new Set<number>();
+  const positions = new Map<PlacedCard, number>();
+  for (const card of placed) {
+    if (card.sourceIndex === undefined) continue;
+    const at = card.sourceIndex;
+    if (!Number.isSafeInteger(at) || at < 0 || at >= source.length || used.has(at) || cardIdentity(card) !== cardIdentity(source[at])) return null;
+    used.add(at);
+    positions.set(card, at);
+  }
+  const waiting = new Map<string, number[]>();
+  source.forEach((card, at) => {
+    if (used.has(at)) return;
+    const key = cardIdentity(card);
+    const queue = waiting.get(key) ?? [];
+    queue.push(at);
+    waiting.set(key, queue);
+  });
+  const rows: number[][] = Array.from({ length: tierCount }, () => []);
+  for (const card of placed) {
+    const at = positions.get(card) ?? waiting.get(cardIdentity(card))?.shift();
+    if (at === undefined) return null;
+    if (card.tierIndex !== null) rows[card.tierIndex].push(at);
+  }
+  return rows;
 }
 
 /** The credit a copy gives the list it came from. */
