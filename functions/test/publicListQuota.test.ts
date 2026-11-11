@@ -20,6 +20,18 @@ describe("the opt-in, configurable rolling public-list quota", () => {
   it("gives the first time a slot will really be available even after a policy reduction", () => {
     assert.deepEqual(decidePublicListQuota([now - 3, now - 2, now - 1], 2, now), { allowed: false, limit: 2, windowMs: PUBLIC_LIST_WINDOW_MS, retryAt: now - 2 + PUBLIC_LIST_WINDOW_MS });
   });
+  it("keeps committed events live when the next instance's clock moves backward", async () => {
+    let events: number[] = [];
+    let writes = 0;
+    const slot = { readEvents: async () => [...events], writeEvents: (next: number[]) => { events = next; writes++; } };
+    assert.equal((await claimPublicListQuota(slot, 2, now + 60_000)).allowed, true);
+    assert.equal((await claimPublicListQuota(slot, 2, now)).allowed, true);
+    assert.deepEqual([...events].sort((a, b) => a - b), [now, now + 60_000]);
+    const committed = [...events];
+    assert.deepEqual(await claimPublicListQuota(slot, 2, now - 1000), { allowed: false, limit: 2, windowMs: PUBLIC_LIST_WINDOW_MS, retryAt: now + PUBLIC_LIST_WINDOW_MS });
+    assert.deepEqual(events, committed);
+    assert.equal(writes, 2, "the backward clock cannot discard an event or create a third slot");
+  });
   it("rejects an invalid configuration instead of silently inventing a number", () => {
     for (const limit of [0, -1, 1.5, NaN]) assert.throws(() => decidePublicListQuota([], limit, now));
   });

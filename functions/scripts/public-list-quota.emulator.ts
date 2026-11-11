@@ -156,6 +156,19 @@ describe(`new-public-list HTTP quota (${limit === null ? "default OFF" : `demo N
       assert.equal((await lists(person.uid).get()).size, 0);
     });
 
+    it("keeps a full quota refused when committed demo events are one minute ahead of this instance", async () => {
+      const person = await account();
+      const future = Date.now() + 60_000;
+      const history = [future, future + 1000];
+      await lock(person.uid).set({ publicListEvents: history });
+      const answer = await refused(person.token, draft());
+      assert.equal(answer.status, 409);
+      assert.equal(answer.body.code, "TOO_MANY_LISTS");
+      assert.equal(answer.body.retryAt, future + PUBLIC_LIST_WINDOW_MS);
+      assert.deepEqual(await events(person.uid), history, "a clock behind another writer cannot discard its committed history");
+      assert.equal((await lists(person.uid).get()).size, 0);
+    });
+
     it("private boards, preflight, both Ranking APIs and withdraw remain available at a full quota", async () => {
       const person = await account();
       const history = [Date.now() - 2000, Date.now() - 1000];

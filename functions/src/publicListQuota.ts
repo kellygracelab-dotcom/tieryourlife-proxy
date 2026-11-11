@@ -18,7 +18,9 @@ export type PublicListQuota =
 /** Only a genuinely new public list calls this. Retrying one board, rankings and private saves do not. */
 export function decidePublicListQuota(events: readonly number[], limit: number | null, nowMs: number): PublicListQuota {
   if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1)) throw new Error("Invalid public-list quota");
-  const live = events.filter((at) => Number.isSafeInteger(at) && at > nowMs - PUBLIC_LIST_WINDOW_MS && at <= nowMs).sort((a, b) => a - b);
+  // A committed event from an instance whose clock is ahead still occupies a slot.
+  // Only expiry may discard it: dropping future events lets a slower clock reopen the quota.
+  const live = events.filter((at) => Number.isSafeInteger(at) && at > nowMs - PUBLIC_LIST_WINDOW_MS).sort((a, b) => a - b);
   if (limit !== null && live.length >= limit) {
     return { allowed: false, limit, windowMs: PUBLIC_LIST_WINDOW_MS, retryAt: live[live.length - limit] + PUBLIC_LIST_WINDOW_MS };
   }
