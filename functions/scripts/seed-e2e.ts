@@ -37,6 +37,13 @@ export async function identity(method: string, body: object): Promise<{ idToken:
   return (await reply.json()) as { idToken: string; localId: string };
 }
 
+/** A password update revokes the guest's old auth_time. Sign in afresh rather than use update.idToken. */
+export async function passwordAccount(idToken: string, email: string): Promise<{ idToken: string; localId: string }> {
+  const password = "e2e-password";
+  await identity("update", { idToken, email, password });
+  return identity("signInWithPassword", { email, password });
+}
+
 export interface Answer {
   status: number;
   body: Record<string, unknown>;

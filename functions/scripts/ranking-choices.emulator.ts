@@ -2,8 +2,9 @@
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
-import { assertEmulatorsOnly, call, identity, ownerToken, PROJECT } from "./seed-e2e";
+import { assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, PROJECT } from "./seed-e2e";
 
 const TIERS = [{ label: "S", caption: "Best", colorLight: "#FF7777", colorDark: "#773333" }, { label: "A", caption: null, colorLight: "#FFFF77", colorDark: "#777733" }];
 const ITEMS = [{ title: "Duplicate", imageUrl: null, tierIndex: null }, { title: "Duplicate", imageUrl: null, tierIndex: null }, { title: "Picture", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg", tierIndex: null }];
@@ -19,7 +20,7 @@ describe("ranking choices and authoritative publication under the demo emulators
     assertEmulatorsOnly();
     async function account(prefix: string) {
       const start = await identity("signUp", {});
-      return identity("update", { idToken: start.idToken, email: `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}@e2e.test`, password: "e2e-password" });
+      return passwordAccount(start.idToken, `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}@e2e.test`);
     }
     author = (await account("origin")).idToken;
     const person = await account("reader"); reader = person.idToken; readerUid = person.localId;
@@ -36,6 +37,25 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.deepEqual(answer, { status: 200, body: { kind: "ranking", listId: original, version } });
     assert.equal((await db.collection("rankings").where("listId", "==", original).get()).size, before);
     assert.equal((await call(guest, "PUT", `/boards/${boardId}`, privateBoard())).status, 403);
+  });
+
+  it("keeps invalid tokens refused", async () => {
+    const refused = await call("not-a-token", "GET", "/boards");
+    assert.equal(refused.status, 401);
+    assert.equal(refused.body.code, "UNAUTHENTICATED");
+  });
+
+  it("starts a fresh password session across a second boundary without accepting a revoked guest token", async () => {
+    const start = await identity("signUp", {});
+    const oldAuthTime = (JSON.parse(Buffer.from(start.idToken.split(".")[1], "base64url").toString("utf8")) as { auth_time: number }).auth_time;
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, (oldAuthTime + 2) * 1000 - Date.now())));
+    const linked = await passwordAccount(start.idToken, `boundary-${Date.now()}@e2e.test`);
+    const auth = getAuth(initializeApp({ projectId: PROJECT }, "password-boundary"));
+    const verified = await auth.verifyIdToken(linked.idToken);
+    assert.equal(linked.localId, start.localId);
+    assert.equal(verified.uid, start.localId);
+    assert.ok(verified.auth_time > oldAuthTime);
+    await assert.rejects(auth.verifyIdToken(start.idToken), { code: "auth/id-token-revoked" });
   });
 
   it("keeps origin/choice/index through legacy rename, same-hash decision, conflict and null", async () => {
