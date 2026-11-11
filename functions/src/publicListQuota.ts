@@ -1,5 +1,15 @@
-/** Prepared policy only: no runtime limit is enabled until its quantity is approved. */
+/** No runtime quantity is enabled unless an operator explicitly configures one. */
 export const PUBLIC_LIST_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Unset/blank/off preserves the current-list policy. A malformed value must never invent a quota. */
+export function readPublicListQuotaLimit(value: string | undefined): number | null {
+  const text = value?.trim() ?? "";
+  if (text === "" || text.toLowerCase() === "off") return null;
+  if (!/^[1-9]\d*$/.test(text)) throw new Error("Invalid PUBLIC_LISTS_PER_SEVEN_DAYS");
+  const limit = Number(text);
+  if (!Number.isSafeInteger(limit)) throw new Error("Invalid PUBLIC_LISTS_PER_SEVEN_DAYS");
+  return limit;
+}
 
 export type PublicListQuota =
   | { allowed: true; events: number[] }

@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { claimPublicListQuota, decidePublicListQuota, PUBLIC_LIST_WINDOW_MS } from "../src/publicListQuota";
+import { claimPublicListQuota, decidePublicListQuota, PUBLIC_LIST_WINDOW_MS, readPublicListQuotaLimit } from "../src/publicListQuota";
 
-describe("the prepared, configurable rolling public-list quota", () => {
+describe("the opt-in, configurable rolling public-list quota", () => {
   const now = 3 * PUBLIC_LIST_WINDOW_MS;
+  it("defaults to OFF and only enables an explicitly configured positive integer", () => {
+    for (const value of [undefined, "", "  ", "off", " OFF "]) assert.equal(readPublicListQuotaLimit(value), null);
+    assert.equal(readPublicListQuotaLimit("2"), 2);
+    assert.equal(readPublicListQuotaLimit(" 17 "), 17);
+    for (const value of ["0", "-1", "1.5", "yes", "on", "2e1", "02", "9007199254740992"]) assert.throws(() => readPublicListQuotaLimit(value));
+  });
   it("has no enabled quantity and does not touch storage when disabled", async () => {
     assert.deepEqual(await claimPublicListQuota({ readEvents: async () => { throw new Error("unexpected read"); }, writeEvents: () => { throw new Error("unexpected write"); } }, null, now), { allowed: true, events: [] });
   });
