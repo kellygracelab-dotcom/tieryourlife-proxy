@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { claimPublicListQuota, decidePublicListQuota, PUBLIC_LIST_WINDOW_MS } from "../src/publicListQuota";
+import { claimPublicListQuota, decidePublicListQuota, PUBLIC_LIST_WINDOW_MS, readPublicListQuotaLimit } from "../src/publicListQuota";
 
-describe("the prepared, configurable rolling public-list quota", () => {
+describe("the opt-in, configurable rolling public-list quota", () => {
   const now = 3 * PUBLIC_LIST_WINDOW_MS;
+  it("defaults to OFF and only enables an explicitly configured positive integer", () => {
+    for (const value of [undefined, "", "  ", "off", " OFF "]) assert.equal(readPublicListQuotaLimit(value), null);
+    assert.equal(readPublicListQuotaLimit("2"), 2);
+    assert.equal(readPublicListQuotaLimit(" 17 "), 17);
+    for (const value of ["0", "-1", "1.5", "yes", "on", "2e1", "02", "9007199254740992"]) assert.throws(() => readPublicListQuotaLimit(value));
+  });
   it("has no enabled quantity and does not touch storage when disabled", async () => {
     assert.deepEqual(await claimPublicListQuota({ readEvents: async () => { throw new Error("unexpected read"); }, writeEvents: () => { throw new Error("unexpected write"); } }, null, now), { allowed: true, events: [] });
   });
@@ -13,6 +19,18 @@ describe("the prepared, configurable rolling public-list quota", () => {
   });
   it("gives the first time a slot will really be available even after a policy reduction", () => {
     assert.deepEqual(decidePublicListQuota([now - 3, now - 2, now - 1], 2, now), { allowed: false, limit: 2, windowMs: PUBLIC_LIST_WINDOW_MS, retryAt: now - 2 + PUBLIC_LIST_WINDOW_MS });
+  });
+  it("keeps committed events live when the next instance's clock moves backward", async () => {
+    let events: number[] = [];
+    let writes = 0;
+    const slot = { readEvents: async () => [...events], writeEvents: (next: number[]) => { events = next; writes++; } };
+    assert.equal((await claimPublicListQuota(slot, 2, now + 60_000)).allowed, true);
+    assert.equal((await claimPublicListQuota(slot, 2, now)).allowed, true);
+    assert.deepEqual([...events].sort((a, b) => a - b), [now, now + 60_000]);
+    const committed = [...events];
+    assert.deepEqual(await claimPublicListQuota(slot, 2, now - 1000), { allowed: false, limit: 2, windowMs: PUBLIC_LIST_WINDOW_MS, retryAt: now + PUBLIC_LIST_WINDOW_MS });
+    assert.deepEqual(events, committed);
+    assert.equal(writes, 2, "the backward clock cannot discard an event or create a third slot");
   });
   it("rejects an invalid configuration instead of silently inventing a number", () => {
     for (const limit of [0, -1, 1.5, NaN]) assert.throws(() => decidePublicListQuota([], limit, now));

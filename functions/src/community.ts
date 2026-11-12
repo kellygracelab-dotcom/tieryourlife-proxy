@@ -10,6 +10,7 @@ import { secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
 import { claimListSlot } from "./publishLimit";
+import { claimPublicListQuota, decidePublicListQuota, readPublicListQuotaLimit, type PublicListQuota } from "./publicListQuota";
 import { boardLineage } from "./boardOrigin";
 import { countsAsTake } from "./takes";
 import { liftBanLogged, readBan, replaceKeptBans } from "./banIdentities";
@@ -270,7 +271,7 @@ const REPORTS = "reports";
 const FOLLOWS = "follows";
 const TAKES = "takes";
 const BANS = "bans";
-/** One document per author, written with each new list so parallel publishes meet in it (src/publishLimit.ts). */
+/** One document per author: current-list lock or rolling events, claimed in the list-creation transaction. */
 const PUBLISH_LOCKS = "publishLocks";
 const TOPICS = "topics";
 const TOPIC_FOLLOWS = "topicFollows";
@@ -2857,12 +2858,6 @@ async function publish(
   const hold = await getFirestore().collection(PUBLISH_HOLDS).doc(byline.uid).get();
   const held = hold.exists && ((hold.get("untilMs") as number | undefined) ?? 0) > Date.now();
 
-  // Replacing a list the author already published does not add to their count,
-  // and the house has no count.
-  const alreadyPublished = existingId || byline.speaker !== null
-    ? 0
-    : (await collection.where("authorUid", "==", identity.uid).count().get()).data().count;
-
   // Whose list this is, settled before the body is judged (a replaced list's
   // tiers set its limit): replacing somebody else's list should cost nothing.
   let previous: StoredList | null = null;
@@ -2905,11 +2900,22 @@ async function publish(
   if (publication.kind === "ranking") {
     return await rank(response, identity, publication.listId, decision.draft, resolved.version!, resolved.boardUid);
   }
-  if (alreadyPublished >= MAX_LISTS_PER_AUTHOR) {
+  // Default OFF preserves the 50-current-list rule without reading or writing quota events.
+  // A configured rolling quota replaces that rule; fifty older lists do not block a new week.
+  const newPersonalList = existingId === null && byline.speaker === null;
+  const weeklyLimit = newPersonalList ? readPublicListQuotaLimit(process.env.PUBLIC_LISTS_PER_SEVEN_DAYS) : null;
+  const fastQuota = weeklyLimit === null ? null : decidePublicListQuota(
+    publicListEvents((await db.collection(PUBLISH_LOCKS).doc(byline.uid).get()).get("publicListEvents")), weeklyLimit, Date.now(),
+  );
+  const alreadyPublished = newPersonalList && weeklyLimit === null
+    ? (await collection.where("authorUid", "==", identity.uid).count().get()).data().count
+    : 0;
+  if (alreadyPublished >= MAX_LISTS_PER_AUTHOR || fastQuota?.allowed === false) {
     // A parallel first attempt may have committed after the initial retry lookup.
     const earlier = fromBoard === null ? null : await fromBoard.get();
     if (earlier && !earlier.empty) return answerRepeat(response, earlier.docs[0]);
-    refuse(response, { ok: false, reason: "too_many_lists" });
+    if (fastQuota?.allowed === false) refusePublicListQuota(response, fastQuota);
+    else refuse(response, { ok: false, reason: "too_many_lists" });
     return;
   }
 
@@ -3107,15 +3113,24 @@ async function publish(
       const reserve = topicRef !== null && attachment.kind === "create"
         ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
         : false;
-      // Counted again here, after the other reads and before any write: the count before the pictures was a quick refusal, not the limit.
-      if (existingId === null && byline.speaker === null) {
+      // The claim and list creation commit together. Retries/Rankings/updates never reach a claim.
+      if (newPersonalList) {
         const lock = db.collection(PUBLISH_LOCKS).doc(byline.uid);
-        const claimed = await claimListSlot({
-          readLock: async () => void (await transaction.get(lock)),
-          countLists: async () => (await transaction.get(collection.where("authorUid", "==", byline.uid).count())).data().count,
-          writeLock: () => void transaction.set(lock, { lastPublishAt: FieldValue.serverTimestamp() }),
-        });
-        if (!claimed) return TOO_MANY_LISTS;
+        if (weeklyLimit === null) {
+          const claimed = await claimListSlot({
+            readLock: async () => void (await transaction.get(lock)),
+            countLists: async () => (await transaction.get(collection.where("authorUid", "==", byline.uid).count())).data().count,
+            // Retain earlier rolling history if a configured policy was temporarily switched off.
+            writeLock: () => void transaction.set(lock, { lastPublishAt: FieldValue.serverTimestamp() }, { merge: true }),
+          });
+          if (!claimed) return TOO_MANY_LISTS;
+        } else {
+          const quota = await claimPublicListQuota({
+            readEvents: async () => publicListEvents((await transaction.get(lock)).get("publicListEvents")),
+            writeEvents: (events) => void transaction.set(lock, { publicListEvents: events, lastPublishAt: FieldValue.serverTimestamp() }, { merge: true }),
+          }, weeklyLimit, Date.now());
+          if (!quota.allowed) return { quota };
+        }
       }
       // The topics' counts of lists follow the list: off the one it leaves, onto
       // the one it joins, and a new topic starts at one.
@@ -3175,6 +3190,10 @@ async function publish(
       refuse(response, { ok: false, reason: "too_large", detail: "The list is too heavy to store" });
       return null;
     }
+    if (earlier !== null && typeof earlier === "object" && "quota" in earlier) {
+      refusePublicListQuota(response, earlier.quota);
+      return null;
+    }
     if (earlier !== null) {
       // Its pictures were copied into a folder no list names.
       await discardPublished(target);
@@ -3219,6 +3238,15 @@ const TOO_MANY_LISTS = "too_many_lists";
 const SOURCE_CHANGED = "source_changed";
 const PUBLISHED_TOO_HEAVY = "published_too_heavy";
 const PUBLICATION_CHANGED = "publication_changed";
+
+function publicListEvents(value: unknown): number[] {
+  return Array.isArray(value) ? value.filter((at): at is number => typeof at === "number") : [];
+}
+
+function refusePublicListQuota(response: Response, quota: Extract<PublicListQuota, { allowed: false }>): void {
+  response.setHeader("Retry-After", String(Math.max(1, Math.ceil((quota.retryAt - Date.now()) / 1000))));
+  response.status(409).json({ error: "You can publish another new list later", code: "TOO_MANY_LISTS", retryAt: quota.retryAt });
+}
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
   response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true });
