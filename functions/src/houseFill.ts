@@ -4,6 +4,7 @@
  * new cards after the old ones. Pure: the searches run in
  * src/houseFillJobs.ts, the writes in scripts/house-fill.ts.
  */
+import { cleanAttribution, pictureKey } from "./pictureAttribution";
 import { pictureScopeOf, type PictureHit, type PictureKind, type PictureScope } from "./pictureSources";
 import {
   MAX_CREDIT_LENGTH,
@@ -85,6 +86,7 @@ export function cardOf(title: string, hit: PictureHit): PublishedItem {
     imageUrl: hit.imageUrl,
     tierIndex: null,
     ...(credit ? { credit } : {}),
+    ...(hit.attribution ? { attribution: cleanAttribution(hit.attribution) } : {}),
   };
 }
 
@@ -118,7 +120,8 @@ export function extendList(list: HouseList, cards: readonly PublishedItem[]): Ex
   const added: PublishedItem[] = [];
   const duplicates: string[] = [];
   for (const card of cards) {
-    const shown = items.some((item) => sameName(item.title, card.title) || (card.imageUrl !== null && item.imageUrl === card.imageUrl));
+    // A picture the list shows as our copy is the same picture as its catalogue address.
+    const shown = items.some((item) => sameName(item.title, card.title) || (card.imageUrl !== null && item.imageUrl !== null && pictureKey(item.imageUrl) === pictureKey(card.imageUrl)));
     if (shown) {
       duplicates.push(card.title);
       continue;

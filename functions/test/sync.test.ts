@@ -77,6 +77,20 @@ describe("decideStore", () => {
     assert.equal(decision.board.items[0].credit, credit);
   });
 
+  it("keeps a card's picture attribution cleaned, and none on a card without a picture", () => {
+    const attribution = { source: "tmdb", link: "https://www.themoviedb.org/movie/603", nonsense: true };
+    const decision = store({ items: [
+      { uid: "i-1", tierUid: TIER_UID, title: "Matrix", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg", attribution },
+      { uid: "i-2", tierUid: TIER_UID, title: "No picture", attribution },
+      { uid: "i-3", tierUid: TIER_UID, title: "Odd", imageUrl: "https://image.tmdb.org/t/p/w500/b.jpg", attribution: { source: "somewhere" } },
+    ] });
+    assert.ok(decision.ok);
+    if (!decision.ok) return;
+    assert.deepEqual(decision.board.items[0].attribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603" });
+    assert.equal(decision.board.items[1].attribution, undefined);
+    assert.equal(decision.board.items[2].attribution, undefined);
+  });
+
   it("keeps a board whole, tiers and cards and where each card sits", () => {
     const decision = store();
 

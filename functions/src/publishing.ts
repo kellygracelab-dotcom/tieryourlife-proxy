@@ -2,6 +2,7 @@
  * Rules for what may be published and in what shape. Pure, like `quota.ts`:
  * the adapter in `community.ts` turns these decisions into Firestore writes.
  */
+import { MAX_LINK_LENGTH, type PictureAttribution } from "./pictureAttribution";
 import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
 import { isSectionId } from "./sections";
 import { readAnonymous } from "./anonymous";
@@ -54,6 +55,8 @@ export interface PublishedItem {
   tierIndex: number | null;
   /** Who the picture's license asks to be named; absent when nobody. */
   credit?: string;
+  /** Where the picture came from and whom it names (`pictureAttribution.ts`); absent for a person's own photo and on lists from before. */
+  attribution?: PictureAttribution;
 }
 
 /**
@@ -69,6 +72,10 @@ export interface DraftItem {
   tierIndex: number | null;
   credit?: string;
   sourceIndex?: number;
+  /** What the client sent back of the card's attribution: only its page link and original address are read, and both are checked. */
+  sent?: { link?: string; originalUrl?: string };
+  /** Set by the publisher once it knows; `settle` stores it. */
+  attribution?: PictureAttribution;
 }
 
 export interface PublishDraft {
@@ -281,12 +288,14 @@ export function decidePublish({
     if (item.sourceIndex !== undefined && item.sourceIndex !== null && (!Number.isSafeInteger(item.sourceIndex) || (item.sourceIndex as number) < 0 || (item.sourceIndex as number) >= MAX_ITEMS_PER_LIST)) {
       return { ok: false, reason: "invalid", detail: "Invalid sourceIndex" };
     }
+    const sent = sentAttribution(item.attribution);
     items.push({
       title: itemTitle ?? "",
       imageUrl,
       pictureId,
       tierIndex: tierIndexOf(item.tierIndex, tiers.length),
       ...(credit ? { credit } : {}),
+      ...(sent ? { sent } : {}),
       ...(typeof item.sourceIndex === "number" ? { sourceIndex: item.sourceIndex } : {}),
     });
   }
@@ -342,6 +351,7 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
     imageUrl: resolve(item.imageUrl, item.pictureId),
     tierIndex: item.tierIndex,
     ...(item.credit ? { credit: item.credit } : {}),
+    ...(item.attribution ? { attribution: item.attribution } : {}),
   }));
 
   return {
@@ -360,6 +370,15 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
         .slice(0, MAX_PREVIEW_IMAGES),
     tierColors: draft.tierColors,
   };
+}
+
+/** The two parts of a card's `attribution` the server reads back; it works out the rest itself. */
+function sentAttribution(raw: unknown): DraftItem["sent"] | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const { link, originalUrl } = raw as Record<string, unknown>;
+  const short = (value: unknown) => (typeof value === "string" && value.length > 0 && value.length <= MAX_LINK_LENGTH ? value : null);
+  const sent = { ...(short(link) ? { link: link as string } : {}), ...(short(originalUrl) ? { originalUrl: originalUrl as string } : {}) };
+  return Object.keys(sent).length > 0 ? sent : null;
 }
 
 /** The wire and Firestore limits are bytes, including multibyte names and credits. */

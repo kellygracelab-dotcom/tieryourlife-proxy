@@ -4,36 +4,19 @@
  * fetched once, looked at by SafeSearch and shown from a copy of ours, so a
  * reader's browser never asks a stranger's server for it.
  */
-import { createHash } from "node:crypto";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { storageMediaUrl } from "./publicMedia";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
 import { isAnimated, pictureTypeOf } from "./pictureBytes";
+import { CATALOGUE_HOSTS, outsideName } from "./pictureAttribution";
 import { downloadPicture } from "./pictureSearch";
 import { addressOf, foreignCopyOf, safeSearchOrNothing } from "./publishedPictures";
 import { dayKey } from "./quota";
 import { decideSafe, type SafeSearchVerdict, type SafetyRefusal } from "./safety";
 
-/**
- * Where the catalogues the app and the site search keep their art
- * (`pictureSources.ts`, the app's TMDB and Wikidata, the site's share cards).
- * Exact hosts: a lookalike or another subdomain is copied like any other site.
- */
-export const CATALOGUE_HOSTS: ReadonlySet<string> = new Set([
-  "image.tmdb.org",
-  "s4.anilist.co",
-  "images.igdb.com",
-  "shared.akamai.steamstatic.com",
-  // Deezer is no longer searched, but lists published before keep its covers as they are.
-  "cdn-images.dzcdn.net",
-  "e-cdns-images.dzcdn.net",
-  "covers.openlibrary.org",
-  "inaturalist-open-data.s3.amazonaws.com",
-  "static.inaturalist.org",
-  "commons.wikimedia.org",
-  "upload.wikimedia.org",
-]);
+// Kept beside each catalogue's attribution; still exported from here.
+export { CATALOGUE_HOSTS, outsideName };
 
 /** A Google account's photo: on this host Drive, Photos and Blogger serve other paths, anybody's pictures. */
 export function isAccountPhoto(url: string): boolean {
@@ -74,11 +57,6 @@ export function isOurCopy(url: string, bucket: string, folder: string): boolean 
   const prefix = `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodeURIComponent(folder)}`;
   if (!url.startsWith(prefix)) return false;
   return /^[A-Za-z0-9_-]+$/.test(url.slice(prefix.length).split(/[?#]/)[0] ?? "");
-}
-
-/** The file a picture from [url] is kept under: the same address always lands on the same copy. */
-export function outsideName(url: string): string {
-  return `w-${createHash("sha256").update(url).digest("hex").slice(0, 32)}`;
 }
 
 interface PictureAddresses {

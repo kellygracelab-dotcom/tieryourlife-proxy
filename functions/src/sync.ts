@@ -9,6 +9,7 @@
  * Firestore's ceiling is a megabyte per document. A count of cards cannot
  * express weight: two hundred cards with long addresses outweigh a thousand short ones.
  */
+import { readAttribution, type PictureAttribution } from "./pictureAttribution";
 import { chosenPictures } from "./publishing";
 import { createHash } from "node:crypto";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
@@ -74,6 +75,8 @@ export interface StoredItem {
   /** Who the picture's license asks to be named; absent when nobody, so a board without one is stored as it always was. */
   credit?: string;
   sourceIndex?: number;
+  /** The picture's source and whom it names, as a search gave it (`pictureAttribution.ts`); absent when the client sent none. */
+  attribution?: PictureAttribution;
 }
 
 export interface StoredBoard extends OriginMetadata {
@@ -493,6 +496,7 @@ export function decideStore({
     }
     itemUids.add(itemUid);
     const credit = cleanText(item.credit, MAX_CREDIT_LENGTH);
+    const attribution = itemImageUrl === null ? null : readAttribution(item.attribution);
     const sourceIndex = sourceIndexAfterWrite(item, sameOriginVersion ? storedSourceIndexes.get(itemUid) : undefined);
     if (sourceIndex === "invalid") return { ok: false, reason: "invalid", detail: "Invalid sourceIndex" };
     items.push({
@@ -506,6 +510,7 @@ export function decideStore({
       deletedAt: timestamp(item.deletedAt),
       ...(credit ? { credit } : {}),
       ...(sourceIndex === null ? {} : { sourceIndex }),
+      ...(attribution ? { attribution } : {}),
     });
   }
   const trashed = items.filter((item) => item.deletedAt !== null).length;

@@ -64,6 +64,44 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((mine.body.lists as { boardUid?: string }[])[0].boardUid, board);
   });
 
+  it("credits each card's picture, copies an open photo and keeps its catalogue address, and leaves a poster where it is", async () => {
+    const photo = "https://inaturalist-open-data.s3.amazonaws.com/photos/82354387/large.jpeg";
+    const poster = "https://image.tmdb.org/t/p/w500/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg";
+    const body = {
+      title: "End to end attribution",
+      category: "film_tv",
+      tiers: [TIER],
+      items: [
+        { title: "Lion", imageUrl: photo, credit: "(c) Douglas Goldman, some rights reserved (CC BY-SA)", tierIndex: 0 },
+        { title: "The Matrix", imageUrl: poster, attribution: { source: "tmdb", link: "https://www.themoviedb.org/movie/603", author: "ignored" }, tierIndex: 0 },
+      ],
+    };
+    const published = await call(token, "POST", "/lists", body);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const list = await call(token, "GET", `/lists/${published.body.id}`);
+    const [lion, matrix] = list.body.items as { imageUrl: string; credit?: string; attribution?: Record<string, string> }[];
+    assert.match(lion.imageUrl, new RegExp(`published%2F${published.body.id}%2Fw-[0-9a-f]{32}`));
+    assert.equal(lion.credit, "(c) Douglas Goldman, some rights reserved (CC BY-SA)");
+    assert.deepEqual(lion.attribution, {
+      source: "inaturalist",
+      author: "Douglas Goldman",
+      license: "CC BY-SA 4.0",
+      licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/",
+      link: "https://www.inaturalist.org/photos/82354387",
+      originalUrl: photo,
+    });
+    assert.equal(matrix.imageUrl, poster);
+    assert.deepEqual(matrix.attribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603" });
+
+    // Published again as the client got it back, the copy and its attribution stay; nothing is copied anew.
+    const again = await call(token, "POST", `/lists/${published.body.id}`, { ...body, items: list.body.items });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    const after = (await call(token, "GET", `/lists/${published.body.id}`)).body.items as { imageUrl: string; attribution?: Record<string, string> }[];
+    assert.equal(after[0].attribution?.originalUrl, photo);
+    assert.equal(after[0].attribution?.author, "Douglas Goldman");
+    assert.match(after[0].imageUrl, /w-[0-9a-f]{32}/);
+  });
+
   it("keeps a board and hands it back", async () => {
     const id = `b${Date.now().toString(36)}`;
     const board = {
