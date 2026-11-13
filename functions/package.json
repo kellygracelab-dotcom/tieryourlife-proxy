@@ -22,6 +22,7 @@
     "recount-takes": "tsc -p tsconfig.test.json && node lib-test/scripts/recount-takes.js",
     "check-outside-pictures": "tsc -p tsconfig.test.json && node lib-test/scripts/check-outside-pictures.js",
     "catalogue-pictures": "tsc -p tsconfig.test.json && node lib-test/scripts/catalogue-pictures.js",
+    "remove-picture-copies": "tsc -p tsconfig.test.json && node lib-test/scripts/remove-picture-copies.js",
     "count-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/count-deezer-covers.js",
     "remove-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/remove-deezer-covers.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",

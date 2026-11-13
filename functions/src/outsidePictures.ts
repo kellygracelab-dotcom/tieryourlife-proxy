@@ -113,7 +113,8 @@ export type FetchedPicture = { bytes: Buffer; type: string } | { error: string }
 export interface OutsideTools {
   bucket: string;
   namesIn(folder: string): Promise<Set<string>>;
-  save(path: string, bytes: Buffer, type: string): Promise<void>;
+  /** [meta]: the file's custom metadata, what it was copied from and when (`copyMetaFor`). */
+  save(path: string, bytes: Buffer, type: string, meta?: Record<string, string>): Promise<void>;
   remove(path: string): Promise<void>;
   fetch(url: string, stop: AbortSignal): Promise<FetchedPicture>;
   lookAt(bytes: Buffer): Promise<SafeSearchVerdict | null>;
@@ -137,6 +138,11 @@ export type OutsideCopies =
  * when [until] or [withinMs] runs out: the answer never waits past it. One
  * Vision refuses refuses them all, and whatever this call saved is removed.
  */
+/** The custom metadata a copy of [url] is saved with: what it was copied from, and when (`pictureCopyUpkeep.ts`). */
+export function copyMetaFor(url: string, nowMs: number): Record<string, string> {
+  return { originalUrl: url, source: catalogueSourceOf(url) ?? "web", copiedAt: String(nowMs) };
+}
+
 export async function copyOutside(
   folder: string,
   urls: readonly string[],
@@ -216,7 +222,7 @@ async function copyWithin(
     }
     const path = folder + outsideName(url) + run.nameSuffix;
     try {
-      await tools.save(path, fetched.bytes, type);
+      await tools.save(path, fetched.bytes, type, copyMetaFor(url, Date.now()));
     } catch {
       return null;
     }
@@ -303,8 +309,8 @@ export function realOutsideTools(uid: string): OutsideTools {
       const [files] = await bucket.getFiles({ prefix: folder });
       return new Set(files.map((file) => file.name.slice(folder.length)));
     },
-    save: async (path, bytes, type) => {
-      await bucket.file(path).save(bytes, { contentType: type, resumable: false });
+    save: async (path, bytes, type, meta) => {
+      await bucket.file(path).save(bytes, { contentType: type, resumable: false, ...(meta ? { metadata: { metadata: meta } } : {}) });
     },
     remove: async (path) => {
       await bucket.file(path).delete();
