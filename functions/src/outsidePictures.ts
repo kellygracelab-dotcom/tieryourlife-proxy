@@ -269,9 +269,12 @@ export async function removeUnlessWritten<T>(
 }
 
 /**
- * The face an author is shown with: a Google account photo or a copy in their
- * own `avatars/` stays as it is; any other picture is copied there and looked
- * at, and one that cannot be is no face at all.
+ * The face an author is shown with: a copy in their own `avatars/` stays as it
+ * is; any other picture, a Google account photo too (since 14.11.2026), is
+ * copied there and looked at. A new photo is a new address and so a new copy.
+ * One refused is no face at all; one that cannot be copied now is no face
+ * either, except a Google account photo, which then stays Google's until the
+ * next time.
  */
 export async function checkedFace(
   uid: string,
@@ -284,9 +287,11 @@ export async function checkedFace(
   const host = hostOf(url);
   if (host === null) return null;
   const folder = `avatars/${uid}/`;
-  if (isAccountPhoto(url) || isOurCopy(url, tools.bucket, folder)) return url;
+  if (isOurCopy(url, tools.bucket, folder)) return url;
   const done = await copyOutside(folder, [url], tools, { atOnce: 1, withinMs: FACE_WINDOW_MS, until });
-  return done.ok ? done.copies.get(url) ?? null : null;
+  const copy = done.ok ? done.copies.get(url) ?? null : null;
+  if (copy !== null) return copy;
+  return isAccountPhoto(url) && !("refused" in done) ? url : null;
 }
 
 async function fetchOutside(url: string, stop: AbortSignal): Promise<FetchedPicture> {

@@ -100,11 +100,11 @@ describe("one picture through copyOutside", () => {
 describe("a face through checkedFace", () => {
   const until = AbortSignal.timeout(60_000);
 
-  it("keeps a Google account photo by the /a/ and /a-/ rule, and copies any other", async () => {
+  it("copies a Google account photo, as any other", async () => {
     const account = "https://lh3.googleusercontent.com/a/ACg8ocK=s96-c";
     const photos = "https://lh3.googleusercontent.com/pw/AP1Gcz=w800";
-    const made = tools({ [photos]: still() });
-    assert.deepEqual(decidePicture({ url: account, address: await checkedFace("u1", account, made.fake, { until }), ...made.seen, dryRun: false }), { kind: "kept" });
+    const made = tools({ [photos]: still(), [account]: still() });
+    assert.deepEqual(decidePicture({ url: account, address: await checkedFace("u1", account, made.fake, { until }), ...made.seen, dryRun: false }), { kind: "copied", address: copyOf("avatars/u1/", account) });
     const address = await checkedFace("u1", photos, made.fake, { until });
     assert.deepEqual(decidePicture({ url: photos, address, ...made.seen, dryRun: false }), { kind: "copied", address: copyOf("avatars/u1/", photos) });
   });
