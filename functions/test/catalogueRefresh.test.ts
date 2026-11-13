@@ -21,7 +21,8 @@ import { attributionOf, catalogueIdOf, cleanAttribution, idFromAddress, MAX_FORM
 import { steamHits, tmdbHits } from "../src/pictureSources";
 import { decidePublish } from "../src/publishing";
 import { currentAddresses } from "../src/rankings";
-import { cardsOf, changedFields, idsFromJobs, sameJson, withAttributions, type ListPictures } from "../scripts/catalogue-pictures";
+import { cardsOf, changedFields, idsFromJobs, sameJson, switchesFor, withAttributions, type ListPictures } from "../scripts/catalogue-pictures";
+import { DEFAULT_COPY_SWITCHES } from "../src/pictureCopies";
 
 const POSTER = "https://image.tmdb.org/t/p/w500/abc.jpg";
 const NEW_POSTER = "https://image.tmdb.org/t/p/w500/xyz.jpg";
@@ -215,5 +216,16 @@ describe("the backfill run again after a picture moved", () => {
     assert.deepEqual(Object.keys(changedFields(before, after).fields), ["items"]);
     assert.equal(sameJson({ b: 1, a: { d: [{ y: 1, x: 2 }], c: null } }), sameJson({ a: { c: null, d: [{ x: 2, y: 1 }] }, b: 1 }));
     assert.notEqual(sameJson([1, 2]), sameJson([2, 1]));
+  });
+});
+
+describe("the catalogues the backfill copies", () => {
+  const on = (switches: Record<string, boolean>) => Object.keys(switches).filter((source) => switches[source]).sort();
+
+  it("are those switched on, of the ones named; a dry run counts the named as if switched on", () => {
+    assert.deepEqual(on(switchesFor(DEFAULT_COPY_SWITCHES, null, false)), ["inaturalist", "wikimedia"]);
+    assert.deepEqual(on(switchesFor(DEFAULT_COPY_SWITCHES, new Set(["tmdb", "wikimedia"]), false)), ["wikimedia"]);
+    assert.deepEqual(on(switchesFor(DEFAULT_COPY_SWITCHES, new Set(["tmdb", "igdb"]), true)), ["igdb", "tmdb"]);
+    assert.deepEqual(on(switchesFor(DEFAULT_COPY_SWITCHES, null, true)), ["inaturalist", "wikimedia"]);
   });
 });
