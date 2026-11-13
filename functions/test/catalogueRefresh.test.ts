@@ -21,7 +21,7 @@ import { attributionOf, catalogueIdOf, cleanAttribution, idFromAddress, MAX_FORM
 import { steamHits, tmdbHits } from "../src/pictureSources";
 import { decidePublish } from "../src/publishing";
 import { currentAddresses } from "../src/rankings";
-import { idsFromJobs } from "../scripts/catalogue-pictures";
+import { cardsOf, changedFields, idsFromJobs, sameJson, withAttributions, type ListPictures } from "../scripts/catalogue-pictures";
 
 const POSTER = "https://image.tmdb.org/t/p/w500/abc.jpg";
 const NEW_POSTER = "https://image.tmdb.org/t/p/w500/xyz.jpg";
@@ -188,5 +188,32 @@ describe("a refresh run", () => {
   it("leaves a board showing an old address the same card as the list's moved one", () => {
     const moved = currentAddresses([{ imageUrl: NEW_POSTER, attribution: { formerUrls: [POSTER] } }, { imageUrl: STEAM }, null]);
     assert.deepEqual([...moved], [[POSTER, NEW_POSTER]]);
+  });
+});
+
+/** [value] with every object's keys the other way round, as Firestore may hand a map back. */
+function reversed(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reversed);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).reverse().map(([key, inner]) => [key, reversed(inner)]));
+}
+
+describe("the backfill run again after a picture moved", () => {
+  it("finds nothing to change, whatever order the stored card's keys come back in", () => {
+    const card = { title: "Matrix", imageUrl: POSTER, attribution: { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" } };
+    const items = movedItems([card], new Map([[POSTER, NEW_POSTER]])) as ListPictures["items"];
+    assert.deepEqual(items[0].attribution?.formerUrls, [POSTER]);
+    const stored = reversed({ items, coverImageUrl: NEW_POSTER, previewImages: [NEW_POSTER] }) as ListPictures;
+    const again = withAttributions(stored, attributionsOf(cardsOf(stored.items, new Map([[NEW_POSTER, "tmdb:movie:603"]])), new Map()));
+    assert.notEqual(JSON.stringify(stored.items), JSON.stringify(again.items));
+    assert.deepEqual(changedFields(stored, again).fields, {});
+  });
+
+  it("still sees a real change", () => {
+    const before = { items: [{ title: "A", imageUrl: POSTER }], coverImageUrl: POSTER, previewImages: [POSTER] };
+    const after = { ...before, items: [{ title: "A", imageUrl: POSTER, attribution: { source: "tmdb" as const } }] };
+    assert.deepEqual(Object.keys(changedFields(before, after).fields), ["items"]);
+    assert.equal(sameJson({ b: 1, a: { d: [{ y: 1, x: 2 }], c: null } }), sameJson({ a: { c: null, d: [{ x: 2, y: 1 }] }, b: 1 }));
+    assert.notEqual(sameJson([1, 2]), sameJson([2, 1]));
   });
 });

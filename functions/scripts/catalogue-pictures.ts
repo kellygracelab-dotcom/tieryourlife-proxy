@@ -101,11 +101,24 @@ export function withAttributions(list: ListPictures, attributions: readonly (Pic
   };
 }
 
+/**
+ * [value] as JSON with every object's keys in one order: Firestore keeps no
+ * order of a map's keys, so a card read back may list its fields otherwise
+ * than they were written, and is still the same card.
+ */
+export function sameJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) =>
+    inner !== null && typeof inner === "object" && !Array.isArray(inner)
+      ? Object.fromEntries(Object.entries(inner as Record<string, unknown>).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)))
+      : inner,
+  );
+}
+
 /** The fields that change, as they will be written, and as they were. */
 export function changedFields(before: ListPictures, after: ListPictures): { fields: Record<string, unknown>; old: Record<string, unknown> } {
   const fields: Record<string, unknown> = {};
   for (const key of ["items", "coverImageUrl", "previewImages"] as const) {
-    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) fields[key] = after[key];
+    if (sameJson(before[key]) !== sameJson(after[key])) fields[key] = after[key];
   }
   return { fields, old: Object.fromEntries(Object.keys(fields).map((key) => [key, before[key as keyof ListPictures]])) };
 }
