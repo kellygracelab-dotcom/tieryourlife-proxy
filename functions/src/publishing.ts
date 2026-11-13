@@ -73,7 +73,7 @@ export interface DraftItem {
   credit?: string;
   sourceIndex?: number;
   /** What the client sent back of the card's attribution: only its page link and original address are read, and both are checked. */
-  sent?: { link?: string; originalUrl?: string; web?: true };
+  sent?: { link?: string; originalUrl?: string; web?: true; id?: string };
   /** Set by the publisher once it knows; `settle` stores it. */
   attribution?: PictureAttribution;
 }
@@ -379,12 +379,13 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
  */
 function sentAttribution(raw: unknown): DraftItem["sent"] | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const { link, originalUrl, source } = raw as Record<string, unknown>;
+  const { link, originalUrl, source, id } = raw as Record<string, unknown>;
   const short = (value: unknown) => (typeof value === "string" && value.length > 0 && value.length <= MAX_LINK_LENGTH ? value : null);
   const sent = {
     ...(short(link) ? { link: link as string } : {}),
     ...(short(originalUrl) ? { originalUrl: originalUrl as string } : {}),
     ...(source === "web" ? { web: true as const } : {}),
+    ...(typeof id === "string" && id.length > 0 && id.length <= 100 ? { id } : {}),
   };
   return Object.keys(sent).length > 0 ? sent : null;
 }

@@ -32,7 +32,7 @@ export interface CardPicture {
   imageUrl: string | null;
   credit?: string;
   /** What the client sent back of the card's attribution; `web` on a picture of its own folder that it says came from another site. */
-  sent?: { link?: string; originalUrl?: string; web?: true };
+  sent?: { link?: string; originalUrl?: string; web?: true; id?: string };
   /** The attribution the same picture had in the list's previous snapshot, if any. */
   previous?: PictureAttribution;
 }
@@ -66,9 +66,11 @@ export function attributionsOf(cards: readonly CardPicture[], commons: ReadonlyM
     if (card.imageUrl === null) return card.sent?.web ? webAttribution(card) : null;
     const original = originalOf(card);
     if (original !== null) {
-      const found = attributionOf(original, { credit: card.credit, sentLink: card.sent?.link ?? card.previous?.link, commons });
+      const found = attributionOf(original, { credit: card.credit, sentLink: card.sent?.link ?? card.previous?.link, sentId: card.sent?.id ?? card.previous?.id, commons });
       if (found === null) return null;
-      return cleanAttribution(original === card.imageUrl ? found : { ...found, originalUrl: original });
+      // Only the server moves a card to a catalogue's new address, and the snapshot remembers where it was.
+      const formerUrls = card.previous?.formerUrls;
+      return cleanAttribution({ ...found, ...(original === card.imageUrl ? {} : { originalUrl: original }), ...(formerUrls ? { formerUrls } : {}) });
     }
     const stored = storageMediaUrl(card.imageUrl);
     if (copyNameOf(stored) !== null || !stored.startsWith("https://firebasestorage.googleapis.com/")) return webAttribution(card);

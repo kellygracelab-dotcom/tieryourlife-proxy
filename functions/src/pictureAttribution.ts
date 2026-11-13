@@ -26,11 +26,56 @@ export interface PictureAttribution {
   link?: string;
   /** Set only while `imageUrl` is our copy: the catalogue address it was copied from. */
   originalUrl?: string;
+  /**
+   * The catalogue's own id for what the picture shows, as its search hit names
+   * it (`catalogueIdOf`): how a dead address is looked up again, and how
+   * TMDB's and IGDB's data are refreshed.
+   */
+  id?: string;
+  /** Addresses the card showed before the catalogue moved its picture, oldest first; set only by the server. */
+  formerUrls?: string[];
 }
 
 export const MAX_AUTHOR_LENGTH = 300;
 export const MAX_LICENSE_LENGTH = 100;
 export const MAX_LINK_LENGTH = 500;
+export const MAX_FORMER_URLS = 5;
+
+/** The ids each catalogue's hits carry, in the one shape kept. */
+const IDS: Partial<Record<AttributionSource, RegExp>> = {
+  tmdb: /^tmdb:(movie|tv|person):\d{1,10}$/,
+  anilist: /^anilist:c?\d{1,10}$/,
+  igdb: /^igdb:\d{1,10}$/,
+  steam: /^steam:\d{1,10}$/,
+  openlibrary: /^openlibrary:OL\d{1,12}[WM]$/,
+};
+
+/** [raw] as an id of [source], or null. */
+export function catalogueIdOf(source: AttributionSource, raw: unknown): string | null {
+  const shape = IDS[source];
+  return shape !== undefined && typeof raw === "string" && shape.test(raw) ? raw : null;
+}
+
+/** The id an address or a catalogue page says itself, where it does: then a client's cannot differ. */
+export function idFromAddress(url: string, link: string | null | undefined): string | null {
+  const source = catalogueSourceOf(url);
+  if (source === null) return null;
+  for (const page of [linkFromAddress(url), link ?? null]) {
+    const one = page === null ? null : parsed(page);
+    if (one === null) continue;
+    const path = one.pathname;
+    let id: string | null = null;
+    if (source === "tmdb" && one.hostname === "www.themoviedb.org") id = /^\/(movie|tv|person)\/(\d{1,10})$/.exec(path)?.slice(1).join(":") ?? null;
+    if (source === "anilist" && one.hostname === "anilist.co") {
+      const match = /^\/(anime|manga|character)\/(\d{1,10})$/.exec(path);
+      id = match ? `${match[1] === "character" ? "c" : ""}${match[2]}` : null;
+    }
+    if (source === "steam" && one.hostname === "store.steampowered.com") id = /^\/app\/(\d{1,10})$/.exec(path)?.[1] ?? null;
+    if (source === "openlibrary" && one.hostname === "openlibrary.org") id = /^\/(?:works|books)\/(OL\d{1,12}[WM])$/.exec(path)?.[1] ?? null;
+    if (id !== null) return catalogueIdOf(source, `${source}:${id}`);
+  }
+  return null;
+}
 
 /**
  * Where the catalogues the app and the site search keep their art, and whose
@@ -208,7 +253,10 @@ export interface CommonsDetails {
  * server knows: the address itself, the iNaturalist credit the card carries,
  * what Commons says about its file, and a page link the client sent back.
  */
-export function attributionOf(original: string, { credit, sentLink, commons }: { credit?: string; sentLink?: unknown; commons?: ReadonlyMap<string, CommonsDetails> }): PictureAttribution | null {
+export function attributionOf(
+  original: string,
+  { credit, sentLink, sentId, commons }: { credit?: string; sentLink?: unknown; sentId?: unknown; commons?: ReadonlyMap<string, CommonsDetails> },
+): PictureAttribution | null {
   const source = catalogueSourceOf(original);
   if (source === null) return null;
   if (source === "wikimedia") {
@@ -219,7 +267,9 @@ export function attributionOf(original: string, { credit, sentLink, commons }: {
   }
   const link = linkFromAddress(original) ?? sourceLink(source, sentLink);
   const licence = source === "inaturalist" ? inaturalistLicence(credit) : null;
-  return { source, ...(licence ?? {}), ...(link ? { link } : {}) };
+  // What the address or its page says wins; a client's id is kept only where they say nothing.
+  const id = idFromAddress(original, link) ?? catalogueIdOf(source, sentId);
+  return { source, ...(licence ?? {}), ...(link ? { link } : {}), ...(id ? { id } : {}) };
 }
 
 /**
@@ -275,6 +325,7 @@ export function cleanAttribution(value: PictureAttribution): PictureAttribution 
   const license = short(value.license, MAX_LICENSE_LENGTH);
   const licenseUrl = value.licenseUrl && value.licenseUrl.length <= MAX_LINK_LENGTH && parsed(value.licenseUrl) ? value.licenseUrl : "";
   const link = value.link && value.link.length <= MAX_LINK_LENGTH && parsed(value.link) ? value.link : "";
+  const formerUrls = cleanFormerUrls(value.formerUrls);
   return {
     source: value.source,
     ...(author ? { author } : {}),
@@ -282,7 +333,16 @@ export function cleanAttribution(value: PictureAttribution): PictureAttribution 
     ...(licenseUrl ? { licenseUrl } : {}),
     ...(link ? { link } : {}),
     ...(value.originalUrl ? { originalUrl: value.originalUrl } : {}),
+    ...(catalogueIdOf(value.source, value.id) ? { id: value.id } : {}),
+    ...(formerUrls.length > 0 ? { formerUrls } : {}),
   };
+}
+
+/** Earlier catalogue addresses of one card, as kept: distinct, short, newest kept. */
+function cleanFormerUrls(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const kept = raw.filter((one): one is string => typeof one === "string" && one.length <= MAX_LINK_LENGTH && catalogueSourceOf(one) !== null);
+  return [...new Set(kept)].slice(-MAX_FORMER_URLS);
 }
 
 const SOURCES: readonly AttributionSource[] = ["tmdb", "anilist", "igdb", "steam", "deezer", "openlibrary", "inaturalist", "wikimedia", "web"];
@@ -305,5 +365,7 @@ export function readAttribution(raw: unknown): PictureAttribution | null {
     licenseUrl: text("licenseUrl"),
     link: text("link"),
     originalUrl: original && original.length <= MAX_LINK_LENGTH && catalogueSourceOf(original) !== null ? original : undefined,
+    id: text("id"),
+    formerUrls: Array.isArray(value.formerUrls) ? (value.formerUrls as string[]) : undefined,
   });
 }

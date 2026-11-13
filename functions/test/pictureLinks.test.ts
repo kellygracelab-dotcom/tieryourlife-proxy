@@ -58,9 +58,9 @@ describe("a request for a picture by its link", () => {
 
   it("answers a catalogue address with its own page, and takes a sent page only on that catalogue's site", () => {
     const steam = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/70/header.jpg";
-    assert.deepEqual(catalogueAnswer(steam, PAGE, null), { source: "steam", link: "https://store.steampowered.com/app/70" });
+    assert.deepEqual(catalogueAnswer(steam, PAGE, null), { source: "steam", link: "https://store.steampowered.com/app/70", id: "steam:70" });
     const poster = "https://image.tmdb.org/t/p/w500/a.jpg";
-    assert.deepEqual(catalogueAnswer(poster, "https://www.themoviedb.org/movie/603", null), { source: "tmdb", link: "https://www.themoviedb.org/movie/603" });
+    assert.deepEqual(catalogueAnswer(poster, "https://www.themoviedb.org/movie/603", null), { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" });
     assert.deepEqual(catalogueAnswer(poster, PAGE, null), { source: "tmdb" });
   });
 });

@@ -134,7 +134,7 @@ describe("the proxy under the demo emulators", () => {
       originalUrl: photo,
     });
     assert.equal(matrix.imageUrl, poster);
-    assert.deepEqual(matrix.attribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603" });
+    assert.deepEqual(matrix.attribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" });
 
     // Published again as the client got it back, the copy and its attribution stay; nothing is copied anew.
     const again = await call(token, "POST", `/lists/${published.body.id}`, { ...body, items: list.body.items });

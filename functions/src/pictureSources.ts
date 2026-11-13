@@ -214,7 +214,7 @@ function rows(value: unknown): Json[] {
   return Array.isArray(value) ? value.filter((row): row is Json => typeof row === "object" && row !== null) : [];
 }
 
-const TMDB_IMAGES = "https://image.tmdb.org/t/p/";
+export const TMDB_IMAGES = "https://image.tmdb.org/t/p/";
 
 export function tmdbHits(body: unknown): PictureHit[] {
   return rows((body as Json | null)?.results).flatMap((row): PictureHit[] => {
@@ -225,7 +225,7 @@ export function tmdbHits(body: unknown): PictureHit[] {
     if (!kind || !path || !title || typeof row.id !== "number") return [];
     const date = text(row.release_date) ?? text(row.first_air_date);
     const subtitle = kind === "person" ? text(row.known_for_department) : date?.slice(0, 4) ?? null;
-    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}` } }];
+    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}`, id: `tmdb:${kind}:${row.id}` } }];
   });
 }
 
@@ -239,7 +239,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number" || row.isAdult === true) return [];
     const kind: PictureKind = row.type === "MANGA" ? "manga" : "anime";
     const year = typeof row.seasonYear === "number" ? String(row.seasonYear) : typeof (row.startDate as Json | undefined)?.year === "number" ? String((row.startDate as Json).year) : null;
-    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}` } }];
+    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}`, id: `anilist:${row.id}` } }];
   });
   const characters = rows((data.characters as Json | undefined)?.characters).flatMap((row): PictureHit[] => {
     const title = text((row.name as Json | undefined)?.full);
@@ -248,7 +248,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number") return [];
     const from = rows((row.media as Json | undefined)?.nodes)[0];
     const subtitle = from ? text((from.title as Json | undefined)?.english) ?? text((from.title as Json | undefined)?.romaji) : null;
-    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: null, source: "anilist", kind: "character", attribution: { source: "anilist", link: `https://anilist.co/character/${row.id}` } }];
+    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: null, source: "anilist", kind: "character", attribution: { source: "anilist", link: `https://anilist.co/character/${row.id}`, id: `anilist:c${row.id}` } }];
   });
   return [...media, ...characters];
 }
@@ -260,7 +260,7 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
     id name { full } image { large } media(perPage: 1) { nodes { title { english romaji } } } } }
 }`;
 
-const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
+export const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
 
 /** IGDB's games: its cover is always upright, and a game without one is not asked for. */
 export const IGDB_QUERY_FIELDS = "name,url,first_release_date,cover.image_id,cover.width,cover.height";
@@ -275,7 +275,7 @@ export function igdbHits(body: unknown): PictureHit[] {
     const year = typeof row.first_release_date === "number" ? String(new Date(row.first_release_date * 1000).getUTCFullYear()) : null;
     const page = text(row.url);
     const link = page !== null && /^https:\/\/www\.igdb\.com\/games\/[a-z0-9-]{1,200}$/.test(page) ? page : null;
-    return [{ id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game", attribution: { source: "igdb", ...(link ? { link } : {}) } }];
+    return [{ id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game", attribution: { source: "igdb", ...(link ? { link } : {}), id: `igdb:${row.id}` } }];
   });
 }
 
@@ -307,7 +307,7 @@ export function steamHits(ids: readonly number[], body: unknown): PictureHit[] {
       thumbUrl: null,
       source: "steam",
       kind: "game",
-      attribution: { source: "steam", link: `https://store.steampowered.com/app/${id}` },
+      attribution: { source: "steam", link: `https://store.steampowered.com/app/${id}`, id: `steam:${id}` },
     }];
   });
 }
@@ -366,7 +366,7 @@ export function openLibraryHits(body: unknown): PictureHit[] {
       thumbUrl: null,
       source: "openlibrary",
       kind: "book",
-      ...(/^\/works\/OL\d{1,12}W$/.test(key) ? { attribution: { source: "openlibrary" as const, link: `https://openlibrary.org${key}` } } : {}),
+      ...(/^\/works\/OL\d{1,12}W$/.test(key) ? { attribution: { source: "openlibrary" as const, link: `https://openlibrary.org${key}`, id: `openlibrary:${key.slice("/works/".length)}` } } : {}),
     }];
   });
 }

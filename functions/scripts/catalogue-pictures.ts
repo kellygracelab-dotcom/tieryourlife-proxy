@@ -33,7 +33,8 @@ import {
 } from "../src/cataloguePictures";
 import { EDITORIAL_UID } from "../src/editorial";
 import { realOutsideTools } from "../src/outsidePictures";
-import type { PictureAttribution } from "../src/pictureAttribution";
+import { HOUSE_FILL_JOBS } from "../src/houseFill";
+import { catalogueIdOf, catalogueSourceOf, type PictureAttribution } from "../src/pictureAttribution";
 import { readBackfillOptions, Samples, writeGuarded, type GuardedUpdate } from "./backfillOptions";
 
 const DEFAULT_BACKUPS = "D:\\MyProjects\\TierYourLife\\backups";
@@ -48,13 +49,45 @@ export interface ListPictures {
   previewImages: string[];
 }
 
-/** The stored list's cards as publishing reads them. */
-export function cardsOf(items: readonly Item[]): CardPicture[] {
-  return items.map((item) => ({
-    imageUrl: typeof item.imageUrl === "string" ? item.imageUrl : null,
-    ...(typeof item.credit === "string" ? { credit: item.credit } : {}),
-    ...(item.attribution ? { previous: item.attribution } : {}),
-  }));
+/**
+ * The stored list's cards as publishing reads them, each with the catalogue id
+ * [ids] knows for its address, as if the client had sent it back.
+ */
+export function cardsOf(items: readonly Item[], ids: ReadonlyMap<string, string> = new Map()): CardPicture[] {
+  return items.map((item) => {
+    const id = typeof item.imageUrl === "string" ? ids.get(item.imageUrl) : undefined;
+    return {
+      imageUrl: typeof item.imageUrl === "string" ? item.imageUrl : null,
+      ...(typeof item.credit === "string" ? { credit: item.credit } : {}),
+      ...(item.attribution ? { previous: item.attribution } : {}),
+      ...(id ? { sent: { id } } : {}),
+    };
+  });
+}
+
+/**
+ * Each catalogue address the house fill's searches answered with, to the id of
+ * the hit that showed it, in the shape cards keep (`tmdb:movie:603`). An address
+ * two different hits showed is left out: no id is better than a guessed one.
+ */
+export function idsFromJobs(jobs: readonly unknown[]): Map<string, string> {
+  const seen = new Map<string, Set<string>>();
+  for (const job of jobs) {
+    const answers = ((job ?? {}) as { answers?: unknown }).answers;
+    for (const answer of Array.isArray(answers) ? answers : []) {
+      const hits = ((answer ?? {}) as { hits?: unknown }).hits;
+      for (const hit of Array.isArray(hits) ? hits : []) {
+        const { id, kind, imageUrl } = (hit ?? {}) as { id?: unknown; kind?: unknown; imageUrl?: unknown };
+        if (typeof imageUrl !== "string" || typeof id !== "string") continue;
+        const source = catalogueSourceOf(imageUrl);
+        if (source === null) continue;
+        const shaped = source === "tmdb" && typeof kind === "string" ? id.replace(/^tmdb:/, `tmdb:${kind}:`) : id;
+        if (catalogueIdOf(source, shaped) === null) continue;
+        seen.set(imageUrl, (seen.get(imageUrl) ?? new Set()).add(shaped));
+      }
+    }
+  }
+  return new Map([...seen].flatMap(([url, ids]) => (ids.size === 1 ? [[url, [...ids][0]] as [string, string]] : [])));
 }
 
 /** The list with each card's attribution in place; a card that has none keeps whatever it had. */
@@ -109,11 +142,15 @@ async function main(): Promise<number> {
     .sort((left, right) => Number(right.get("authorUid") === EDITORIAL_UID) - Number(left.get("authorUid") === EDITORIAL_UID));
   if (lists !== null && docs.length < lists.size) console.log(`Not found: ${[...lists].filter((id) => !docs.some((doc) => doc.id === id)).join(" ")}`);
 
+  const ids = idsFromJobs((await db.collection(HOUSE_FILL_JOBS).get()).docs.map((doc) => doc.data()));
+  console.log(`House fill searches name the catalogue id of ${ids.size} addresses.`);
+
   const updates: GuardedUpdate[] = [];
   const saved: Record<string, Record<string, unknown>> = {};
   const samples = new Samples(40);
-  const totals = { cards: 0, attributed: 0, wanted: 0, copied: 0 };
+  const totals = { cards: 0, attributed: 0, withId: 0, wanted: 0, copied: 0 };
   const bySource = new Map<string, number>();
+  const idsBySource = new Map<string, number>();
   for (const doc of docs) {
     const data = doc.data();
     const list: ListPictures = {
@@ -122,7 +159,7 @@ async function main(): Promise<number> {
       coverImageUrl: typeof data.coverImageUrl === "string" ? data.coverImageUrl : null,
       previewImages: Array.isArray(data.previewImages) ? data.previewImages.filter((url): url is string => typeof url === "string") : [],
     };
-    const cards = cardsOf(list.items);
+    const cards = cardsOf(list.items, ids);
     const files = commonsFilesOf(cards);
     const attributions = attributionsOf(cards, files.length > 0 ? await askCommons(files) : new Map());
     const wanted = copiesWanted(cards, attributions);
@@ -134,16 +171,18 @@ async function main(): Promise<number> {
 
     totals.cards += list.items.length;
     totals.attributed += attributions.filter(Boolean).length;
+    totals.withId += attributions.filter((one) => one?.id).length;
     totals.wanted += wanted.length;
     totals.copied += copied.copies.size;
     attributions.forEach((one) => one && bySource.set(one.source, (bySource.get(one.source) ?? 0) + 1));
+    attributions.forEach((one) => one?.id && idsBySource.set(one.source, (idsBySource.get(one.source) ?? 0) + 1));
     const house = data.authorUid === EDITORIAL_UID ? "house" : "user";
     samples.add(`${doc.id} (${house}) ${String(data.title ?? "").slice(0, 40)}: ${list.items.length} cards, ${attributions.filter(Boolean).length} attributed, ${wanted.length} to copy${dryRun ? "" : `, ${copied.copies.size} copied`}; ${Object.keys(fields).join(", ") || "nothing to change"}`);
     if (Object.keys(fields).length === 0) continue;
     saved[doc.ref.path] = old;
     updates.push({ ref: doc.ref, fields, readAt: doc.updateTime });
   }
-  console.log(`publishedLists: ${docs.length} lists, ${totals.cards} cards, ${totals.attributed} attributed (${[...bySource].map(([source, n]) => `${source} ${n}`).join(", ")}), ${totals.wanted} pictures we may copy${dryRun ? "" : `, ${totals.copied} copied`}.`);
+  console.log(`publishedLists: ${docs.length} lists, ${totals.cards} cards, ${totals.attributed} attributed, ${totals.withId} with a catalogue id (${[...bySource].map(([source, n]) => `${source} ${n}, ${idsBySource.get(source) ?? 0} with id`).join("; ")}), ${totals.wanted} pictures we may copy${dryRun ? "" : `, ${totals.copied} copied`}.`);
   samples.lines.forEach((line) => console.log(`  ${line}`));
 
   if (updates.length === 0) {
