@@ -2,10 +2,11 @@
  * Undoes the copies of one catalogue, of several, or of all of them, in one
  * command: switches them off in `config/pictureCopies`, shows each catalogue's
  * own address again (the card's `attribution.originalUrl`, or what the copy's
- * file says it was copied from) on every list card, cover and collage and in
- * every ranking snapshot, and deletes those copies once no list or ranking
- * shows them. Credits stay as they are. The old values of every document it
- * changes are saved first under `--backup`; a list's `revision` moves.
+ * file says it was copied from) on every list card, cover and collage, in
+ * every ranking snapshot and on every board accounts keep, and deletes those
+ * copies once nothing shows them. Credits stay as they are. The old values of
+ * every document it changes are saved first under `--backup`; a list's
+ * `revision` moves, a board's revision and fingerprint do not.
  * Pictures from other sites are not a catalogue's and are never undone here.
  *
  * A dry run unless `--apply`.
@@ -21,7 +22,7 @@ import { applicationDefault, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { COPY_SOURCES, PICTURE_COPIES } from "../src/pictureCopies";
-import { copiesToUndo, pictureFields, readCopyMeta, shownPaths, shownPictures, withoutCopies, type CopyMeta } from "../src/pictureCopyUpkeep";
+import { copiesToUndo, pictureDocOf, picturedDocs, pictureFields, readCopyMeta, shownPaths, shownPictures, withoutCopies, type CopyMeta } from "../src/pictureCopyUpkeep";
 import { readBackfillOptions, Samples, writeGuarded, type GuardedUpdate } from "./backfillOptions";
 
 const DEFAULT_BACKUPS = "D:\\MyProjects\\TierYourLife\\backups";
@@ -69,8 +70,7 @@ async function main(): Promise<number> {
 
   const [files] = await bucket.getFiles({ prefix: "published/" });
   const metas = new Map<string, CopyMeta>(files.map((file) => [file.name, readCopyMeta(file.metadata.metadata as Record<string, unknown> | undefined, file.metadata.timeCreated as string | undefined)]));
-  const [lists, rankings] = await Promise.all([db.collection("publishedLists").get(), db.collection("rankings").get()]);
-  const docs = [...lists.docs, ...rankings.docs];
+  const docs = await picturedDocs();
 
   const updates: GuardedUpdate[] = [];
   const saved: Record<string, Record<string, unknown>> = {};
@@ -78,18 +78,18 @@ async function main(): Promise<number> {
   const samples = new Samples(40);
   let shown = 0;
   for (const doc of docs) {
-    const ranking = doc.ref.parent.id === "rankings";
-    const before = shownPictures(doc.data(), ranking);
+    const kind = pictureDocOf(doc.ref);
+    const before = shownPictures(doc.data(), kind);
     const originals = copiesToUndo(before, metas, sources);
     if (originals.size === 0) continue;
     const after = withoutCopies(before, originals);
     if (after === null) continue;
-    const fields = pictureFields(before, after, ranking);
+    const fields = pictureFields(before, after, kind);
     if (Object.keys(fields).length === 0) continue;
     originals.forEach((_original, path) => undone.add(path));
     shown += originals.size;
-    saved[doc.ref.path] = pictureFields(after, before, ranking);
-    updates.push({ ref: doc.ref, fields, readAt: doc.updateTime, revise: !ranking });
+    saved[doc.ref.path] = pictureFields(after, before, kind);
+    updates.push({ ref: doc.ref, fields, readAt: doc.updateTime, revise: kind === "list" });
     samples.add(`${doc.ref.path} ${String(doc.get("title") ?? doc.get("snapshot.title") ?? "").slice(0, 40)}: ${originals.size} copies back to the catalogue's address`);
   }
   const ofSources = files.filter((file) => sources.has(metas.get(file.name)?.source ?? "") || undone.has(file.name));
@@ -98,7 +98,7 @@ async function main(): Promise<number> {
     const name = metas.get(file.name)?.source ?? "(said by its card)";
     bySource.set(name, (bySource.get(name) ?? 0) + 1);
   }
-  console.log(`${docs.length} lists and rankings; ${updates.length} show ${shown} copies of these catalogues; ${ofSources.length} copy files (${[...bySource].map(([name, n]) => `${name} ${n}`).join(", ") || "none"}).`);
+  console.log(`${docs.length} lists, rankings and boards; ${updates.length} show ${shown} copies of these catalogues; ${ofSources.length} copy files (${[...bySource].map(([name, n]) => `${name} ${n}`).join(", ") || "none"}).`);
   samples.lines.forEach((line) => console.log(`  ${line}`));
 
   if (updates.length > 0) {
@@ -128,7 +128,7 @@ async function main(): Promise<number> {
     }
     await file.delete().then(() => deleted++, (error: unknown) => console.log(`  not deleted: ${file.name}: ${String(error)}`));
   }
-  console.log(`Deleted ${deleted} copy files; ${kept} kept because a list or ranking still shows them (run it again).`);
+  console.log(`Deleted ${deleted} copy files; ${kept} kept because a list, ranking or board still shows them (run it again).`);
   return 0;
 }
 

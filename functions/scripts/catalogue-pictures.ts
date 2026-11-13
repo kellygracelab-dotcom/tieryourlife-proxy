@@ -16,7 +16,10 @@
  * before a switch is turned on. The cover and
  * the collage are copied as the cards are. Ranking snapshots too: each into its
  * own folder, `published/ranking-{id}/`, as a website ranking outlives its list;
- * their credits are kept as they are.
+ * their credits are kept as they are. Boards accounts keep too, into the one
+ * shared folder `published/catalogue/` (`src/boardPictures.ts`), in place: a
+ * board's revision and fingerprint do not move, and a board that would not
+ * fit with its pictures moved is left as it is.
  *
  * A dry run unless `--apply`; a dry run copies nothing. `--list a,b` limits it
  * to those lists and their rankings; the house's go first anyway.
@@ -42,6 +45,8 @@ import {
   type CardPicture,
 } from "../src/cataloguePictures";
 import { COPY_SOURCES, copySwitches, type CopySwitches } from "../src/pictureCopies";
+import { copyToShared, fitsWithCopies } from "../src/boardPictures";
+import { pictureFields, shownPictures, stillToCopy } from "../src/pictureCopyUpkeep";
 import { EDITORIAL_UID } from "../src/editorial";
 import { realOutsideTools } from "../src/outsidePictures";
 import { HOUSE_FILL_JOBS } from "../src/houseFill";
@@ -262,6 +267,33 @@ async function main(): Promise<number> {
   }
   console.log(`rankings: ${rankingDocs.length} snapshots, ${rankingWanted} pictures to copy (${bySourceText(rankingBySource)})${dryRun ? "" : `, ${rankingCopied} copied`}.`);
   rankingSamples.lines.forEach((line) => console.log(`  ${line}`));
+
+  // Boards kept in accounts: one shared copy per catalogue address, written in place.
+  const boardDocs = lists === null ? (await db.collectionGroup("boards").get()).docs.filter((doc) => doc.get("deleted") !== true) : [];
+  const boardSamples = new Samples(40);
+  const boardBySource = new Map<string, number>();
+  let boardWanted = 0;
+  let boardCopied = 0;
+  let boardsTooLarge = 0;
+  for (const doc of boardDocs) {
+    const before = shownPictures(doc.data(), "board");
+    const wanted = stillToCopy(before, switches);
+    if (wanted.length === 0) continue;
+    boardWanted += wanted.length;
+    countBySource(boardBySource, wanted);
+    const copies = dryRun ? new Map<string, string>() : await copyToShared(wanted, tools, LIST_COPY_WINDOW_MS);
+    boardCopied += copies.size;
+    const after = withCatalogueCopies(before as ListPictures, copies);
+    const fields = pictureFields(before, after, "board");
+    const fits = fitsWithCopies({ ...doc.data(), ...fields });
+    if (!fits) boardsTooLarge++;
+    boardSamples.add(`${doc.ref.parent.parent?.id.slice(0, 6)}…/boards/${doc.id}: ${before.items.length} cards, ${wanted.length} to copy${dryRun ? "" : `, ${copies.size} copied`}${fits ? "" : ", too large to move: left as it is"}`);
+    if (Object.keys(fields).length === 0 || !fits) continue;
+    saved[doc.ref.path] = pictureFields(after, before, "board");
+    updates.push({ ref: doc.ref, fields, readAt: doc.updateTime });
+  }
+  console.log(`boards: ${boardDocs.length} kept, ${boardWanted} pictures to copy (${bySourceText(boardBySource)})${dryRun ? "" : `, ${boardCopied} copied`}${boardsTooLarge > 0 ? `; ${boardsTooLarge} too large to move` : ""}.`);
+  boardSamples.lines.forEach((line) => console.log(`  ${line}`));
 
   if (updates.length === 0) {
     console.log("Nothing to change.");

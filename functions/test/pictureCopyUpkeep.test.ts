@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { copyMetaFor } from "../src/outsidePictures";
 import { DEFAULT_COPY_SWITCHES } from "../src/pictureCopies";
-import { copiesToUndo, copyAgeDue, pictureFields, readCopyMeta, stillToCopy, storedPathOf, withoutCopies, type ShownPictures } from "../src/pictureCopyUpkeep";
+import { copiesToUndo, copyAgeDue, pictureFields, readCopyMeta, shownPictures, stillToCopy, storedPathOf, withoutCopies, type ShownPictures } from "../src/pictureCopyUpkeep";
 import { addressOf } from "../src/publishedPictures";
 import { outsideName } from "../src/outsidePictures";
 import { readSources } from "../scripts/remove-picture-copies";
+import { BOARD_COPY_MARGIN_BYTES, SHARED_COPIES, copiesOnBoard, copiesShown, fitsWithCopies, withBoardCopies } from "../src/boardPictures";
+import { MAX_BOARD_BYTES } from "../src/sync";
 
 const BUCKET = "tieryourlife.firebasestorage.app";
 const DAY = 24 * 60 * 60 * 1000;
@@ -63,9 +65,9 @@ describe("undoing a catalogue's copies", () => {
     assert.deepEqual(after.items[1], shown.items[1]);
     assert.equal(after.coverImageUrl, COVER);
     assert.deepEqual(after.previewImages, [POSTER, copy(COMMONS)]);
-    assert.deepEqual(Object.keys(pictureFields(shown, after, false)), ["items", "coverImageUrl", "previewImages"]);
-    assert.deepEqual(pictureFields(after, shown, false).coverImageUrl, copy(COVER));
-    assert.deepEqual(Object.keys(pictureFields(shown, after, true)), ["snapshot.items"]);
+    assert.deepEqual(Object.keys(pictureFields(shown, after, "list")), ["items", "coverImageUrl", "previewImages"]);
+    assert.deepEqual(pictureFields(after, shown, "list").coverImageUrl, copy(COVER));
+    assert.deepEqual(Object.keys(pictureFields(shown, after, "ranking")), ["snapshot.items"]);
     assert.equal(withoutCopies(shown, new Map()), null);
   });
 
@@ -84,5 +86,54 @@ describe("what the daily upkeep still copies", () => {
     const shown: ShownPictures = { items: [{ imageUrl: POSTER }, { imageUrl: copy(COVER) }], coverImageUrl: COVER, previewImages: [POSTER] };
     assert.deepEqual(stillToCopy(shown, DEFAULT_COPY_SWITCHES), []);
     assert.deepEqual(stillToCopy(shown, { ...DEFAULT_COPY_SWITCHES, tmdb: true }), [POSTER, COVER]);
+  });
+});
+
+describe("a board's catalogue pictures", () => {
+  const shared = (url: string) => addressOf(BUCKET, SHARED_COPIES + outsideName(url));
+  const credit = { source: "tmdb" as const, id: "tmdb:movie:603" };
+  const board = {
+    title: "Mine",
+    items: [
+      { uid: "a", imageUrl: POSTER, attribution: credit },
+      { uid: "b", imageUrl: COMMONS, attribution: { source: "wikimedia" as const, license: "CC BY-SA 4.0" } },
+      { uid: "c", imageUrl: null },
+    ],
+    coverImageUrl: POSTER,
+    coverImageUrls: [POSTER, COMMONS],
+  };
+  const copies = new Map([[POSTER, shared(POSTER)]]);
+
+  it("show one shared copy per catalogue address, credit kept with the address, cover and collage too", () => {
+    const after = withBoardCopies(board, copies);
+    assert.deepEqual(after.items[0], { uid: "a", imageUrl: shared(POSTER), attribution: { ...credit, originalUrl: POSTER } });
+    assert.deepEqual(after.items.slice(1), board.items.slice(1));
+    assert.equal(after.coverImageUrl, shared(POSTER));
+    assert.deepEqual(after.coverImageUrls, [shared(POSTER), COMMONS]);
+    assert.equal(after.title, "Mine");
+    assert.deepEqual(copiesShown(board, after, copies), copies);
+    assert.equal(withBoardCopies(board, new Map()), board);
+    assert.match(shared(POSTER), /published%2Fcatalogue%2Fw-[0-9a-f]{32}/);
+  });
+
+  it("are found again on the stored board by the address each was copied from; a list's own copies are not shared", () => {
+    const stored = withBoardCopies(board, copies).items;
+    assert.deepEqual(copiesOnBoard(stored), copies);
+    assert.deepEqual(copiesOnBoard([{ imageUrl: copy(POSTER), attribution: { ...credit, originalUrl: POSTER } }]), new Map());
+    assert.deepEqual(copiesOnBoard(undefined), new Map());
+  });
+
+  it("move only while the board leaves room under its limit", () => {
+    assert.equal(fitsWithCopies(board), true);
+    assert.equal(fitsWithCopies({ items: "x".repeat(MAX_BOARD_BYTES - BOARD_COPY_MARGIN_BYTES) }), false);
+  });
+
+  it("are read from a board's collage, written back to it, and undone by catalogue", () => {
+    const after = withBoardCopies(board, copies);
+    const shown = shownPictures(after as unknown as Record<string, unknown>, "board");
+    assert.deepEqual(shown.previewImages, [shared(POSTER), COMMONS]);
+    const files = new Map([[SHARED_COPIES + outsideName(POSTER), { originalUrl: POSTER, source: "tmdb", copiedAt: NOW }]]);
+    const back = withoutCopies(shown, copiesToUndo(shown, files, new Set(["tmdb"])))!;
+    assert.deepEqual(pictureFields(shown, back, "board"), { items: board.items, coverImageUrl: POSTER, coverImageUrls: [POSTER, COMMONS] });
   });
 });

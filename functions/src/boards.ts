@@ -5,6 +5,11 @@ import { requireAppCheck } from "./appCheck";
 import { ERASED_ACCOUNTS, requireUser, type Identity } from "./auth";
 import { eraseAccount } from "./erase";
 import { originState } from "./boardOrigin";
+import { copiesOnBoard, copiesShown, copyToShared, fitsWithCopies, withBoardCopies } from "./boardPictures";
+import { catalogueCopyTools } from "./cataloguePictures";
+import { realOutsideTools } from "./outsidePictures";
+import { copySwitches } from "./pictureCopies";
+import { stillToCopy, type ShownPictures } from "./pictureCopyUpkeep";
 import {
   BOARD_PAGE_SIZE,
   MAX_BOARDS_PER_ACCOUNT,
@@ -268,6 +273,35 @@ async function storedGame(transaction: FirebaseFirestore.Transaction, ref: Fireb
   return game.get("play") as StoredPlay;
 }
 
+/** New catalogue pictures a write may copy, and how long it may spend on them; the daily upkeep copies the rest. */
+const BOARD_COPIES_PER_WRITE = 40;
+const BOARD_COPY_WINDOW_MS = 6_000;
+
+/**
+ * The shared copies of the catalogue pictures a board's body shows
+ * (`boardPictures.ts`), by catalogue address: those the stored board already
+ * shows, then new ones within this write's allowance. Never fails a write.
+ */
+async function copiesFor(uid: string, source: Record<string, unknown>, ref: FirebaseFirestore.DocumentReference): Promise<Map<string, string>> {
+  try {
+    const switches = await copySwitches();
+    const pictures = {
+      items: Array.isArray(source.items) ? source.items : [],
+      coverImageUrl: typeof source.coverImageUrl === "string" ? source.coverImageUrl : null,
+      previewImages: Array.isArray(source.coverImageUrls) ? source.coverImageUrls.filter((url): url is string => typeof url === "string") : [],
+    } as ShownPictures;
+    const wanted = stillToCopy(pictures, switches);
+    if (wanted.length === 0) return new Map();
+    const known = copiesOnBoard((await ref.get()).get("items"));
+    const fresh = wanted.filter((url) => !known.has(url)).slice(0, BOARD_COPIES_PER_WRITE);
+    const made = await copyToShared(fresh, catalogueCopyTools(realOutsideTools(uid)), BOARD_COPY_WINDOW_MS);
+    return new Map([...known, ...made]);
+  } catch (error) {
+    console.warn(`Board pictures not copied: ${(error as Error).message}`);
+    return new Map();
+  }
+}
+
 async function write(
   response: Response,
   identity: Identity,
@@ -283,6 +317,7 @@ async function write(
   const kept = identity.isAnonymous
     ? 0
     : (await boardsOf(identity.uid).where("deleted", "==", false).count().get()).data().count;
+  const copies = identity.isAnonymous ? new Map<string, string>() : await copiesFor(identity.uid, source, ref);
   const now = Date.now();
   type Answer = { rejection: StoreRejection } | { status: number; body: object };
   const answer: Answer = await getFirestore().runTransaction(async (transaction): Promise<Answer> => {
@@ -296,6 +331,10 @@ async function write(
       storedSourceIndexes: new Map((stored?.items ?? []).filter((item) => item.sourceIndex !== undefined).map((item) => [item.uid, item.sourceIndex!])),
       isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });
     if (!decision.ok) return { rejection: decision };
+    // Catalogue pictures shown from our shared copies, when the board still fits; revision and fingerprint stay the device's.
+    const pictured = withBoardCopies(decision.board, copies);
+    const moved = pictured !== decision.board && fitsWithCopies(pictured) ? copiesShown(decision.board, pictured, copies) : new Map<string, string>();
+    if (moved.size > 0) decision.board = pictured;
     if (source.play !== undefined && source.play !== null && decision.board.play === undefined) {
       return { rejection: { reason: "invalid", detail: "The saved game is invalid" } };
     }
@@ -324,7 +363,7 @@ async function write(
     const gameRef = ref.parent.parent!.collection("plays").doc(id);
     if (separate) transaction.set(gameRef, { revision, play: game });
     else if (stored?.separatePlay) transaction.delete(gameRef);
-    return { status: 200, body: { uid: id, revision } };
+    return { status: 200, body: { uid: id, revision, ...(moved.size > 0 ? { copies: Object.fromEntries(moved) } : {}) } };
   });
   if ("rejection" in answer) refuse(response, answer.rejection);
   else response.status(answer.status).json(answer.body);

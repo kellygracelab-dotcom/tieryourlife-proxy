@@ -56,7 +56,10 @@ rules still apply. This does not add a Proxy route or relax Storage rules.
 Old Firebase `alt=media` addresses and these site addresses are accepted on
 republish and refer to the same stored picture, copy source, cleanup name and
 ranking card identity. Stored snapshots keep canonical Storage addresses; reads
-do not migrate documents. IDs, titles, credits and private boards are unchanged.
+do not migrate documents. IDs, titles and credits are unchanged. Boards answer
+canonical Storage addresses, their shared catalogue copies included
+(`published/catalogue/{picture}`, which the site serves as
+`/img/original/published/catalogue/{picture}`).
 
 ## Limits
 
@@ -372,7 +375,7 @@ The copy of a person's boards their account keeps. Not the published list: the b
 **`GET /boards/{uid}`**: `200 Board`. `404 NOT_FOUND`.
 
 **`PUT /boards/{uid}`**: account. Body: the board (below) plus `basedOn` (the revision the device worked from; the key is left out on a first write) and `deviceName?`. Answers:
-- `200 {uid, revision}`: stored, `revision` one higher.
+- `200 {uid, revision, copies?}`: stored, `revision` one higher. `copies` (absent when none): `{[catalogueAddress]: ourAddress}`, the catalogue pictures this board now shows from our shared copies (below).
 - `200 {uid, revision}` with the stored revision unchanged: the same board again (its `fingerprint` equals the stored one). This makes a retried PUT idempotent.
 - `409 {code: "CONFLICT", board: Board}`: the account moved on since `basedOn` and the content differs. Nothing is merged: the device keeps both.
 
@@ -393,6 +396,8 @@ When a legacy omission preserves a large game, `fingerprint` is `game-v1:<SHA-25
 - **`displayMode`**: `WRAP` (default, also for anything unknown), `HORIZONTAL_SCROLL`, `FLAT_RANKED`. The first builds' `RANKED` is read as `FLAT_RANKED`.
 
 When a legacy writer omits retained origin/choice/source-index metadata, the combined fingerprint uses `state-v1:<SHA-256>` of normalized content and game. A retained large game keeps the existing `game-v1:` prefix and includes that metadata in its hash. Changes to metadata cannot hide behind an unchanged opaque client hash. Clients track the downloaded remote fingerprint separately; an unseen `state-v1:` (like `game-v1:`) requires restoration even at an acknowledged revision, while an already-learned marker must not cause a download loop. Sending the complete current metadata uses the client's ordinary full-content fingerprint.
+
+**Catalogue pictures on a board.** A card picture (and the cover and collage) from a catalogue switched on for copies (**One switch per catalogue**) is shown from one copy shared by every board, `published/catalogue/w-{32 hex}`, named by the catalogue address, so the same poster on many boards is one file. The stored board names our address, and the card's `attribution` keeps its credit with the catalogue address in `originalUrl`; up to 40 new pictures are copied per write within 6 s, the others by the daily upkeep, and a catalogue that does not answer leaves its address. A board whose pictures would not fit 50 KB under its limit keeps the catalogue's addresses. **The board's `revision` and `fingerprint` stay the device's**: the move is not an edit, so the PUT answers `{uid, revision}` as before plus `copies`, and the upkeep and `remove-picture-copies` change a stored board's pictures in place without moving either. Example: `PUT` with `items[0].imageUrl: "https://image.tmdb.org/t/p/w500/x.jpg"` answers `{uid, revision: 4, copies: {"https://image.tmdb.org/t/p/w500/x.jpg": "https://firebasestorage.googleapis.com/v0/b/tieryourlife.firebasestorage.app/o/published%2Fcatalogue%2Fw-…?alt=media"}}`, and `GET` gives that card the second address with `attribution.originalUrl` the first. A client may put each `copies` address in place of its catalogue one (and set `originalUrl`) and send the board again as an ordinary edit; a client that ignores `copies` keeps working with the catalogue's address, which the server swaps on every write. Such a picture is published like any picture of another list's folder (its list takes a copy of its own). A shared copy no board shows for seven days is removed.
 
 **`DELETE /boards/{uid}`**: account. Leaves a marker `{deleted: true}` with a new revision so other phones drop it too: `204`, also for none.
 

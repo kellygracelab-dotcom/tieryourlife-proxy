@@ -7,10 +7,14 @@
  * again the copies of a catalogue whose terms limit how long a copy is kept
  * (TMDB, six months: again after 90 days; a copy not fetched again within 150
  * days goes, and its cards show the catalogue's own address again). The same
- * undoing, for a whole catalogue, is `npm run remove-picture-copies`.
+ * undoing, for a whole catalogue, is `npm run remove-picture-copies`. Boards
+ * kept in accounts are looked after too, from their shared copies
+ * (`boardPictures.ts`), always in place: a board's revision and fingerprint
+ * never move for its pictures.
  */
-import { getFirestore, type DocumentReference, type DocumentSnapshot } from "firebase-admin/firestore";
+import { getFirestore, type DocumentReference, type DocumentSnapshot, type QueryDocumentSnapshot } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
+import { SHARED_COPIES, copyToShared, fitsWithCopies } from "./boardPictures";
 import { catalogueCopyTools, copyCataloguePictures, coverCopiesWanted, withCatalogueCopies } from "./cataloguePictures";
 import { nextRevision } from "./listRevision";
 import { copyMetaFor, realOutsideTools } from "./outsidePictures";
@@ -107,47 +111,59 @@ export function withoutCopies<T extends ShownPictures>(pictures: T, originals: R
   return changed ? { ...pictures, items, coverImageUrl, previewImages } : null;
 }
 
-/** The pictures of a list document, or of a ranking's snapshot. */
-export function shownPictures(data: Record<string, unknown> | undefined, ranking: boolean): ShownPictures {
-  const from = (ranking ? (data?.snapshot as Record<string, unknown> | undefined) : data) ?? {};
+/** What holds pictures: a published list, a ranking's snapshot, or a board kept in an account. */
+export type PictureDoc = "list" | "ranking" | "board";
+
+export function pictureDocOf(ref: DocumentReference): PictureDoc {
+  return ref.parent.id === "rankings" ? "ranking" : ref.parent.id === "boards" ? "board" : "list";
+}
+
+/** The pictures of a list, of a ranking's snapshot, or of a board (its collage as `previewImages`). */
+export function shownPictures(data: Record<string, unknown> | undefined, kind: PictureDoc): ShownPictures {
+  const from = (kind === "ranking" ? (data?.snapshot as Record<string, unknown> | undefined) : data) ?? {};
+  const collage = kind === "board" ? from.coverImageUrls : from.previewImages;
   return {
     items: Array.isArray(from.items) ? (from.items as Card[]) : [],
-    coverImageUrl: ranking || typeof from.coverImageUrl !== "string" ? null : from.coverImageUrl,
-    previewImages: ranking || !Array.isArray(from.previewImages) ? [] : from.previewImages.filter((url): url is string => typeof url === "string"),
+    coverImageUrl: kind === "ranking" || typeof from.coverImageUrl !== "string" ? null : from.coverImageUrl,
+    previewImages: kind === "ranking" || !Array.isArray(collage) ? [] : collage.filter((url): url is string => typeof url === "string"),
   };
 }
 
-/** The fields of a list, or of a ranking's snapshot, that hold [after]'s pictures where they differ from [before]. */
-export function pictureFields(before: ShownPictures, after: ShownPictures, ranking: boolean): Record<string, unknown> {
+/** The fields of a list, a ranking's snapshot or a board that hold [after]'s pictures where they differ from [before]. */
+export function pictureFields(before: ShownPictures, after: ShownPictures, kind: PictureDoc): Record<string, unknown> {
   const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
-  if (ranking) return same(before.items, after.items) ? {} : { "snapshot.items": after.items };
+  if (kind === "ranking") return same(before.items, after.items) ? {} : { "snapshot.items": after.items };
   const fields: Record<string, unknown> = {};
   if (!same(before.items, after.items)) fields.items = after.items;
   if (before.coverImageUrl !== after.coverImageUrl) fields.coverImageUrl = after.coverImageUrl;
-  if (!same(before.previewImages, after.previewImages)) fields.previewImages = after.previewImages;
+  if (!same(before.previewImages, after.previewImages)) fields[kind === "board" ? "coverImageUrls" : "previewImages"] = after.previewImages;
   return fields;
 }
 
-/** A list's or a ranking's folder of copies. */
+/** A list's or a ranking's folder of copies; boards share one. */
 export function copyFolderOf(ref: DocumentReference): string {
-  return ref.parent.id === "rankings" ? `published/ranking-${ref.id}/` : `published/${ref.id}/`;
+  const kind = pictureDocOf(ref);
+  return kind === "ranking" ? `published/ranking-${ref.id}/` : kind === "board" ? SHARED_COPIES : `published/${ref.id}/`;
 }
 
 /**
- * Applies [change] to a list or a ranking as it is now, in a transaction of its
- * own: a list's revision moves; nothing is written when nothing changes.
+ * Applies [change] to a list, a ranking or a board as it is now, in a
+ * transaction of its own: a list's revision moves; a board's never does (nor
+ * its fingerprint), and a board that would not fit with the change, or that
+ * was thrown away, is left as it is. Nothing is written when nothing changes.
  */
 export async function rewritePictures(ref: DocumentReference, change: (pictures: ShownPictures) => ShownPictures | null): Promise<boolean> {
-  const ranking = ref.parent.id === "rankings";
+  const kind = pictureDocOf(ref);
   return getFirestore().runTransaction(async (transaction) => {
     const fresh = await transaction.get(ref);
-    if (!fresh.exists) return false;
-    const before = shownPictures(fresh.data(), ranking);
+    if (!fresh.exists || (kind === "board" && fresh.get("deleted") === true)) return false;
+    const before = shownPictures(fresh.data(), kind);
     const after = change(before);
     if (after === null) return false;
-    const fields = pictureFields(before, after, ranking);
+    const fields = pictureFields(before, after, kind);
     if (Object.keys(fields).length === 0) return false;
-    transaction.update(ref, ranking ? fields : { ...fields, ...nextRevision() });
+    if (kind === "board" && !fitsWithCopies({ ...fresh.data(), ...fields })) return false;
+    transaction.update(ref, kind === "list" ? { ...fields, ...nextRevision() } : fields);
     return true;
   });
 }
@@ -156,7 +172,7 @@ export async function rewritePictures(ref: DocumentReference, change: (pictures:
 export function shownPaths(docs: readonly DocumentSnapshot[]): Set<string> {
   const paths = new Set<string>();
   for (const doc of docs) {
-    const pictures = shownPictures(doc.data(), doc.ref.parent.id === "rankings");
+    const pictures = shownPictures(doc.data(), pictureDocOf(doc.ref));
     for (const url of [...pictures.items.map((item) => item.imageUrl), pictures.coverImageUrl, ...pictures.previewImages]) {
       const path = storedPathOf(url);
       if (path !== null) paths.add(path);
@@ -174,32 +190,43 @@ export function stillToCopy(pictures: ShownPictures, switches: CopySwitches): st
 const COPY_WINDOW_MS = 60_000;
 const MAX_COPIES_PER_RUN = 2000;
 const MAX_REFRESHES_PER_RUN = 2000;
+/** A shared copy no board shows any more goes after this long: time enough for a board on its way to name it. */
+const SHARED_UNSHOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Every document that shows pictures: published lists, ranking snapshots, and the boards accounts keep (not thrown away). */
+export async function picturedDocs(): Promise<QueryDocumentSnapshot[]> {
+  const db = getFirestore();
+  const [lists, rankings, boards] = await Promise.all([db.collection("publishedLists").get(), db.collection("rankings").get(), db.collectionGroup("boards").get()]);
+  return [...lists.docs, ...rankings.docs, ...boards.docs.filter((doc) => doc.get("deleted") !== true)];
+}
 
 /**
  * The daily upkeep, stopping at [untilMs]: copies still to make, copies due
- * to be fetched again, and copies past their time undone.
+ * to be fetched again, copies past their time undone, and shared copies no
+ * board shows any more removed.
  */
 export async function keepPictureCopies(nowMs: number, untilMs: number): Promise<Record<string, number>> {
-  const db = getFirestore();
   const bucket = getStorage().bucket();
   const switches = await copySwitches();
   const tools = catalogueCopyTools(realOutsideTools("catalogue-upkeep"));
-  const summary = { copied: 0, docsCopied: 0, refreshed: 0, refreshFailed: 0, dropped: 0, docsUndone: 0 };
+  const summary = { copied: 0, docsCopied: 0, boardsCopied: 0, refreshed: 0, refreshFailed: 0, dropped: 0, docsUndone: 0, sharedRemoved: 0 };
 
-  const [lists, rankings] = await Promise.all([db.collection("publishedLists").get(), db.collection("rankings").get()]);
-  const docs = [...lists.docs, ...rankings.docs];
+  const docs = await picturedDocs();
   for (const doc of docs) {
     if (Date.now() > untilMs || summary.copied >= MAX_COPIES_PER_RUN) break;
-    const wanted = stillToCopy(shownPictures(doc.data(), doc.ref.parent.id === "rankings"), switches);
+    const board = pictureDocOf(doc.ref) === "board";
+    const wanted = stillToCopy(shownPictures(doc.data(), pictureDocOf(doc.ref)), switches);
     if (wanted.length === 0) continue;
-    const { copies } = await copyCataloguePictures(copyFolderOf(doc.ref), wanted, tools, { withinMs: COPY_WINDOW_MS });
+    const copies = board
+      ? await copyToShared(wanted, tools, COPY_WINDOW_MS)
+      : (await copyCataloguePictures(copyFolderOf(doc.ref), wanted, tools, { withinMs: COPY_WINDOW_MS })).copies;
     if (copies.size === 0) continue;
     summary.copied += copies.size;
     const written = await rewritePictures(doc.ref, (pictures) => withCatalogueCopies(pictures as ShownPictures & Parameters<typeof withCatalogueCopies>[0], copies)).catch((error) => {
       console.error(`Picture copies: ${doc.ref.path} not written: ${(error as Error).message}`);
       return false;
     });
-    if (written) summary.docsCopied++;
+    if (written) summary[board ? "boardsCopied" : "docsCopied"]++;
   }
 
   // Copies whose catalogue limits how long they are kept: fetched again, or undone.
@@ -220,17 +247,23 @@ export async function keepPictureCopies(nowMs: number, untilMs: number): Promise
     summary.refreshFailed++;
     if (due === "refresh-or-drop") undo.set(file.name, meta.originalUrl!);
   }
-  if (undo.size > 0) {
-    for (const doc of docs) {
-      const written = await rewritePictures(doc.ref, (pictures) => withoutCopies(pictures, undo)).catch(() => false);
-      if (written) summary.docsUndone++;
-    }
-    const still = shownPaths(await Promise.all(docs.map((doc) => doc.ref.get())));
-    for (const path of undo.keys()) {
-      if (still.has(path)) continue;
-      await bucket.file(path).delete().catch(() => undefined);
-      summary.dropped++;
-    }
+  for (const doc of undo.size > 0 ? docs : []) {
+    const written = await rewritePictures(doc.ref, (pictures) => withoutCopies(pictures, undo)).catch(() => false);
+    if (written) summary.docsUndone++;
+  }
+  if (Date.now() > untilMs) return summary;
+  const still = shownPaths(await Promise.all(docs.map((doc) => doc.ref.get())));
+  // Undone copies nothing shows now, and shared copies that no board has shown for a week.
+  const sharedUnshown = files.filter((file) => file.name.startsWith(SHARED_COPIES) && !still.has(file.name) &&
+    nowMs - (readCopyMeta(file.metadata.metadata as Record<string, unknown> | undefined, file.metadata.timeCreated as string | undefined).copiedAt ?? nowMs) > SHARED_UNSHOWN_MS);
+  for (const path of undo.keys()) {
+    if (still.has(path)) continue;
+    await bucket.file(path).delete().catch(() => undefined);
+    summary.dropped++;
+  }
+  for (const file of sharedUnshown) {
+    if (undo.has(file.name)) continue;
+    await file.delete().then(() => summary.sharedRemoved++, () => undefined);
   }
   return summary;
 }
