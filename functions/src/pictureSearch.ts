@@ -47,11 +47,13 @@ import {
   PictureSource,
   quickSourcesFor,
   restUntil,
+  retryAfterMs,
   sourcesFor,
   steamAppIds,
   steamHits,
   tmdbHits,
   tmdbKeyOf,
+  USER_AGENT,
   webHits,
   WikidataCandidate,
   wantsCovers,
@@ -82,8 +84,6 @@ const RESTS = "config/pictureSources";
 /** How long an instance trusts what it last read of [RESTS]. */
 const RESTS_READ_MS = 30_000;
 const SEARCHES = "pictureSearches";
-// Wikimedia and Open Library allow more to a client that names a way to reach it: the address on the privacy page.
-const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app; kellygracelab@gmail.com; server)";
 /** Open Library's search often takes six or seven seconds, and a books search has nothing else to wait for. */
 const OPEN_LIBRARY_TIMEOUT_MS = 9_000;
 /** Taxa whose open photo is looked for among their best-liked observations, one request each. */
@@ -648,6 +648,37 @@ const KEEP_MAX_REDIRECTS = 3;
 const KEEP_DAILY_PER_USER = 300;
 
 type Kept = { pictureId: string } | { error: string };
+type Downloaded = { bytes: Buffer; type: string } | { error: string; retryAtMs?: number };
+
+/** The longest a download waits in place for a busy source before it tries once more. */
+export const BUSY_WAIT_MS = 3_000;
+/** A busy source that says nothing of when is tried again after this long, once. */
+const BUSY_PAUSE_MS = 1_000;
+
+/**
+ * What a download does about a source's answer [status]: nothing (null), wait
+ * [waitMs] and try once more, or give up until [retryAtMs]. Only 429 and 5xx
+ * are a source being busy; [restHost] when it asked us to slow down (429, 503).
+ */
+export function sourceBusy(
+  status: number,
+  retryAfter: string | null,
+  nowMs: number,
+  triedAgain: boolean,
+): null | { waitMs: number } | { retryAtMs: number; restHost: boolean } {
+  if (status !== 429 && status < 500) return null;
+  const said = retryAfterMs(retryAfter, nowMs);
+  if (!triedAgain && (said ?? BUSY_PAUSE_MS) <= BUSY_WAIT_MS) return { waitMs: Math.max(BUSY_PAUSE_MS, said ?? 0) };
+  return { retryAtMs: restUntil(status, retryAfter, nowMs) ?? nowMs + BUSY_PAUSE_MS, restHost: status === 429 || status === 503 };
+}
+
+/** Hosts that told this instance to slow down, until when: nothing is fetched from them before. */
+const busyHosts = new Map<string, number>();
+
+/** Forgets the hosts this instance leaves alone; for tests. */
+export function forgetBusyHosts(): void {
+  busyHosts.clear();
+}
 
 /** Loopback, private, link-local and the like: an address the server must never be talked into fetching. */
 export function isPrivateAddress(address: string): boolean {
@@ -687,19 +718,30 @@ async function keepPicture(raw: string, uid: string): Promise<Kept> {
   await usage.set({ count: FieldValue.increment(1) }, { merge: true });
 
   const fetched = isDemoEmulator() ? { bytes: STUB_PICTURE, type: "image/png" } : await downloadPicture(url);
-  if ("error" in fetched) return fetched;
+  // This route's answers stay as they were: a busy source is UNREACHABLE here.
+  if ("error" in fetched) return { error: fetched.error === "SOURCE_BUSY" ? "UNREACHABLE" : fetched.error };
   const pictureId = randomUUID();
   await getStorage().bucket().file(`users/${uid}/pictures/${pictureId}`).save(fetched.bytes, { contentType: fetched.type, resumable: false });
   return { pictureId };
 }
 
-/** Also how publishing fetches a picture from another site: the same rules, and [stop] to give up sooner. */
-export async function downloadPicture(start: URL, stop?: AbortSignal): Promise<{ bytes: Buffer; type: string } | { error: string }> {
+/**
+ * Also how publishing fetches a picture from another site: the same rules, and
+ * [stop] to give up sooner. A source that is busy (429, 5xx) is waited for once
+ * when it asks for no more than [BUSY_WAIT_MS]; otherwise the answer is
+ * `SOURCE_BUSY` with when to try again, and a host that asked us to slow down
+ * is left alone by this instance until then.
+ */
+export async function downloadPicture(start: URL, stop?: AbortSignal): Promise<Downloaded> {
   let url = start;
-  let reply: globalThis.Response | null = null;
+  let reply: globalThis.Response;
+  let hops = 0;
+  let waited = false;
   const timeout = () => AbortSignal.timeout(8_000);
-  for (let hop = 0; hop <= KEEP_MAX_REDIRECTS; hop++) {
+  for (;;) {
     if (!(await safeToFetch(url))) return { error: "NOT_ALLOWED" };
+    const resting = busyHosts.get(url.hostname) ?? 0;
+    if (resting > Date.now()) return { error: "SOURCE_BUSY", retryAtMs: resting };
     try {
       reply = await fetch(url, {
         redirect: "manual",
@@ -709,12 +751,24 @@ export async function downloadPicture(start: URL, stop?: AbortSignal): Promise<{
     } catch {
       return { error: "UNREACHABLE" };
     }
+    const busy = sourceBusy(reply.status, reply.headers.get("retry-after"), Date.now(), waited);
+    if (busy !== null) {
+      await reply.body?.cancel().catch(() => undefined);
+      if ("retryAtMs" in busy) {
+        if (busy.restHost) busyHosts.set(url.hostname, busy.retryAtMs);
+        return { error: "SOURCE_BUSY", retryAtMs: busy.retryAtMs };
+      }
+      if (stop?.aborted) return { error: "SOURCE_BUSY", retryAtMs: Date.now() + busy.waitMs };
+      waited = true;
+      await new Promise((resolve) => setTimeout(resolve, busy.waitMs));
+      continue;
+    }
     const next = reply.status >= 300 && reply.status < 400 ? reply.headers.get("location") : null;
     if (!next) break;
+    if (hops++ >= KEEP_MAX_REDIRECTS) return { error: "UNREACHABLE" };
     url = new URL(next, url);
-    reply = null;
   }
-  if (!reply || !reply.ok) return { error: "UNREACHABLE" };
+  if (!reply.ok) return { error: "UNREACHABLE" };
   const type = (reply.headers.get("content-type") ?? "").split(";")[0]?.trim() ?? "";
   if (!/^image\/(jpeg|png|webp|gif)$/.test(type)) return { error: "NOT_A_PICTURE" };
   if (Number(reply.headers.get("content-length") ?? "0") > KEEP_MAX_BYTES) return { error: "TOO_BIG" };

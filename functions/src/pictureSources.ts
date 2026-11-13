@@ -95,6 +95,13 @@ export function hasSlowSources(scope: PictureScope): boolean {
   return quickSourcesFor(scope).length < sourcesFor(scope).length;
 }
 
+/**
+ * How every request of ours to a catalogue or another site names itself.
+ * Wikimedia and Open Library allow more to a client that says how to reach it:
+ * the privacy page gives the contact address, so none is sent here.
+ */
+export const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app/privacy)";
+
 /** A catalogue that answered 429 or 5xx without saying for how long is left alone this long. */
 export const CATALOGUE_REST_MS = 5 * 60 * 1000;
 const LONGEST_REST_MS = 60 * 60 * 1000;
@@ -106,7 +113,7 @@ export function restUntil(status: number, retryAfter: string | null, nowMs: numb
 }
 
 /** Retry-After as seconds or as an HTTP date. */
-function retryAfterMs(value: string | null, nowMs: number): number | null {
+export function retryAfterMs(value: string | null, nowMs: number): number | null {
   const raw = value?.trim() ?? "";
   if (/^\d+$/.test(raw)) return Number(raw) * 1000;
   const at = raw.length > 0 ? Date.parse(raw) : Number.NaN;

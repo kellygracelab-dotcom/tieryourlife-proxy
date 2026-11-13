@@ -40,7 +40,7 @@ import {
   rest,
   restingUntil,
 } from "./pictureSearch";
-import type { PictureSource } from "./pictureSources";
+import { USER_AGENT, type PictureSource } from "./pictureSources";
 
 const LISTS = "publishedLists";
 const RANKINGS = "rankings";
@@ -48,7 +48,6 @@ const PROBE_TIMEOUT_MS = 10_000;
 const AT_ONCE = 4;
 /** Probes of one host that may fail without an answer before that host is left for the next run. */
 const UNSURE_PER_HOST = 3;
-const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app; server)";
 
 export const refreshPictures = onSchedule(
   {

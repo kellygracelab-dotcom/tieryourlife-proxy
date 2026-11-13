@@ -94,7 +94,15 @@ export const HOST_SOURCES: Readonly<Record<string, AttributionSource>> = {
   "static.inaturalist.org": "inaturalist",
   "commons.wikimedia.org": "wikimedia",
   "upload.wikimedia.org": "wikimedia",
+  "thumb.wikimedia.org": "wikimedia",
 };
+
+/**
+ * Wikimedia's file hosts: `upload` and `thumb` (its thumbnail host) answer the
+ * same paths with the same bytes, Commons' files under `/wikipedia/commons/`
+ * and each local Wikipedia's own under `/wikipedia/{wiki}/`.
+ */
+const WIKIMEDIA_FILE_HOSTS: ReadonlySet<string> = new Set(["upload.wikimedia.org", "thumb.wikimedia.org"]);
 
 /** The hosts a published list may show pictures from as they are (`outsidePictures.ts`). */
 export const CATALOGUE_HOSTS: ReadonlySet<string> = new Set(Object.keys(HOST_SOURCES));
@@ -119,7 +127,7 @@ export function catalogueSourceOf(url: string | null | undefined): AttributionSo
   const one = parsed(url);
   if (one === null || !CATALOGUE_HOSTS.has(one.hostname)) return null;
   // A local Wikipedia's own uploads (fair use under /wikipedia/en/ and the like) carry no free licence: a picture from another site.
-  if (one.hostname === "upload.wikimedia.org" && !one.pathname.startsWith("/wikipedia/commons/")) return null;
+  if (WIKIMEDIA_FILE_HOSTS.has(one.hostname) && !one.pathname.startsWith("/wikipedia/commons/")) return null;
   return HOST_SOURCES[one.hostname] ?? null;
 }
 
@@ -228,7 +236,7 @@ export function commonsFileOf(url: string): string | null {
   try {
     if (one.hostname === "commons.wikimedia.org") {
       name = /^\/wiki\/Special:FilePath\/([^/]+)$/.exec(one.pathname)?.[1] ?? null;
-    } else if (one.hostname === "upload.wikimedia.org") {
+    } else if (WIKIMEDIA_FILE_HOSTS.has(one.hostname)) {
       const match = /^\/wikipedia\/commons\/(?:thumb\/)?[0-9a-f]\/[0-9a-f]{2}\/([^/]+)(?:\/[^/]+)?$/.exec(one.pathname);
       name = match?.[1] ?? null;
     }

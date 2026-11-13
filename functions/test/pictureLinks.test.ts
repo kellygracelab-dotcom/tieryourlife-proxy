@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { attributionsByPicture, attributionsOf, firstWithoutPage, type CardPicture } from "../src/cataloguePictures";
 import { isCatalogueAddress } from "../src/outsidePictures";
-import { catalogueSourceOf, pageLink } from "../src/pictureAttribution";
+import { attributionOf, catalogueSourceOf, commonsFileOf, pageLink } from "../src/pictureAttribution";
 import { catalogueAnswer, readLinkRequest } from "../src/pictureLinks";
-import { chargeLink, linkQuota, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR } from "../src/pictureSearchLimit";
+import { BUSY_WAIT_MS, sourceBusy } from "../src/pictureSearch";
+import { chargeLink, linkQuota, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR, unchargeLink } from "../src/pictureSearchLimit";
+import { USER_AGENT } from "../src/pictureSources";
 import { decidePublish } from "../src/publishing";
 
 const FOUND = "https://example.com/pictures/cat.jpg";
@@ -131,5 +133,52 @@ describe("a picture from another site at publication", () => {
     if (!decision.ok) return;
     assert.deepEqual(decision.draft.items[0].sent, { link: PAGE, web: true });
     assert.equal(decision.draft.items[1].sent, undefined);
+  });
+});
+
+describe("Wikimedia's thumbnail host", () => {
+  it("is Commons for Commons' files and another site for a local Wikipedia's", () => {
+    const commons = "https://thumb.wikimedia.org/wikipedia/commons/thumb/a/ab/Logo_of_the_KitKat.svg/500px-Logo_of_the_KitKat.svg.png";
+    const local = "https://thumb.wikimedia.org/wikipedia/en/thumb/4/48/Jelly_Belly_Logo.svg/500px-Jelly_Belly_Logo.svg.png";
+    assert.equal(catalogueSourceOf(commons), "wikimedia");
+    assert.equal(isCatalogueAddress(commons), true);
+    assert.equal(commonsFileOf(commons), "Logo of the KitKat.svg");
+    assert.deepEqual(attributionOf(commons, {}), { source: "wikimedia", link: "https://commons.wikimedia.org/wiki/File:Logo_of_the_KitKat.svg" });
+    assert.equal(catalogueSourceOf(local), null);
+    assert.equal(isCatalogueAddress(local), false);
+    assert.equal(commonsFileOf(local), null);
+    assert.deepEqual(readLinkRequest({ url: local }), { url: local, catalogue: null, link: null, credit: null });
+  });
+});
+
+describe("a picture's own site that is busy", () => {
+  const now = Date.parse("2026-11-13T18:00:00Z");
+
+  it("is waited for once when it asks for a moment, and then left until the time it gives", () => {
+    assert.deepEqual(sourceBusy(429, null, now, false), { waitMs: 1000 });
+    assert.deepEqual(sourceBusy(429, "2", now, false), { waitMs: 2000 });
+    assert.deepEqual(sourceBusy(503, String(BUSY_WAIT_MS / 1000), now, false), { waitMs: BUSY_WAIT_MS });
+    assert.deepEqual(sourceBusy(429, null, now, true), { retryAtMs: now + 5 * 60 * 1000, restHost: true });
+    assert.deepEqual(sourceBusy(429, "120", now, false), { retryAtMs: now + 120_000, restHost: true });
+    assert.deepEqual(sourceBusy(429, "Thu, 13 Nov 2026 18:10:00 GMT", now, false), { retryAtMs: now + 600_000, restHost: true });
+    assert.deepEqual(sourceBusy(429, "86400", now, false), { retryAtMs: now + 60 * 60 * 1000, restHost: true });
+    assert.deepEqual(sourceBusy(502, null, now, true), { retryAtMs: now + 5 * 60 * 1000, restHost: false });
+  });
+
+  it("is only 429 and 5xx: a missing picture stays unreachable", () => {
+    for (const status of [200, 301, 400, 403, 404, 410]) assert.equal(sourceBusy(status, "1", now, false), null);
+  });
+
+  it("costs the person nothing: the fetch is given back in the hour it was charged", () => {
+    const hour = Math.floor(now / 3_600_000);
+    assert.deepEqual(unchargeLink({ count: 5, hour, hourCount: 3 }, hour), { count: 4, hourCount: 2 });
+    assert.deepEqual(unchargeLink({ count: 5, hour: hour + 1, hourCount: 1 }, hour), { count: 4 });
+    assert.equal(unchargeLink({ count: 0, hour, hourCount: 0 }, hour), null);
+    assert.equal(unchargeLink(undefined, hour), null);
+  });
+
+  it("is asked with a name and a way to reach us, and no address of a person", () => {
+    assert.equal(USER_AGENT, "TierYourLife/1.0 (https://tieryourlife.web.app/privacy)");
+    assert.doesNotMatch(USER_AGENT, /@/);
   });
 });
