@@ -116,12 +116,12 @@ describe("an iNaturalist photo's licence", () => {
 });
 
 describe("a Commons file", () => {
-  it("is named from Special:FilePath or Commons' own upload folder, never a local wiki's", () => {
+  it("is named from Special:FilePath, its own page or Commons' own upload folder, never a local wiki's", () => {
     assert.equal(commonsFileOf(COMMONS), "Felis catus-cat on snow.jpg");
     assert.equal(commonsFileOf("https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Some_file.jpg/500px-Some_file.jpg"), "Some file.jpg");
     assert.equal(commonsFileOf("https://upload.wikimedia.org/wikipedia/commons/a/ab/some_file.png"), "Some file.png");
     assert.equal(commonsFileOf(LOCAL_WIKI), null);
-    assert.equal(commonsFileOf("https://commons.wikimedia.org/wiki/File:Some.jpg"), null);
+    assert.equal(commonsFileOf("https://commons.wikimedia.org/wiki/File:Some.jpg"), "Some.jpg");
   });
 
   it("is described by Commons' own metadata, licence first", () => {
