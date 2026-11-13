@@ -239,6 +239,7 @@ import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search"
 import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
 import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import { manualCredits } from "./manualAttribution";
+import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
 import { manualOf, type ManualAttribution } from "./pictureAttribution";
 import {
   cleanTopicName,
@@ -458,6 +459,8 @@ interface StoredList {
   /** The author's own proposed section, which the list moves into once approved; meanwhile it sits in `category`. */
   proposedSection?: string | null;
   updatedAt?: FirebaseFirestore.Timestamp;
+  /** Moves with every write to what the list shows, by anyone (src/listRevision.ts). */
+  revision?: number;
   /**
    * Out of the feed while somebody looks at it. Set by enough complaints,
    * cleared by the person who reads them. Absent on every list published
@@ -2474,8 +2477,10 @@ async function rewriteWhere(
   value: string,
   change: Record<string, unknown>,
 ): Promise<void> {
+  // A list's section or topic is what it shows too: an editor's older copy must not put it back.
+  const write = collection === PUBLISHED ? { ...change, ...nextRevision() } : change;
   await inPages(collection, field, value, [], WRITES_PER_BATCH, (batch, doc) => {
-    batch.update(doc.ref, change);
+    batch.update(doc.ref, write);
   });
 }
 
@@ -2836,6 +2841,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     translations: data.translations ?? {},
     picturesFrom: Array.isArray(data.picturesFrom) ? data.picturesFrom : [],
     underReview: data.underReview === true,
+    revision: revisionOf(data),
     ...(data.coverAttribution ? { coverAttribution: data.coverAttribution } : {}),
   });
 }
@@ -2904,6 +2910,14 @@ async function publish(
       return;
     }
   }
+  // The revision the client's copy was read at: a list written since (by the
+  // house, staff or a script) is not written over with the older copy.
+  const baseRevision = readBaseRevision(body);
+  if (baseRevision === "invalid") {
+    response.status(400).json({ error: "Which revision was this list read at?", code: "INVALID", detail: "baseRevision" });
+    return;
+  }
+  if (previous !== null && staleBase(baseRevision, previous)) return listChanged(response, revisionOf(previous));
 
   const decision = decidePublish({
     body,
@@ -3184,6 +3198,7 @@ async function publish(
     // moderator's is, and two claims to one name meet in one document. A name
     // somebody else's topic already holds stays theirs; this one waits beside
     // it, as waiting twins always have, for a moderator to merge.
+    let revision = 0;
     const earlier = await db.runTransaction(async (transaction) => {
       // The same board's first request got here first: its list stands, and this one writes nothing.
       if (fromBoard !== null) {
@@ -3192,7 +3207,9 @@ async function publish(
       }
       // The house's translations stay with a replaced list, as far as it still shows what they translate.
       const current = existingId ? (await transaction.get(collection.doc(existingId))).data() : null;
+      if (existingId && staleBase(baseRevision, current)) return { changed: revisionOf(current) };
       if (existingId && JSON.stringify(current?.updatedAt ?? null) !== JSON.stringify(previous?.updatedAt ?? null)) return PUBLICATION_CHANGED;
+      if (existingId && revisionOf(current) !== revisionOf(previous)) return PUBLICATION_CHANGED;
       if (resolved.boardUid) {
         const privateBoard = await transaction.get(db.collection("accounts").doc(identity.uid).collection("boards").doc(resolved.boardUid));
         const known = boardLineage(privateBoard.data());
@@ -3207,7 +3224,8 @@ async function publish(
       const keptTranslations = existingId && byline.speaker !== null
         ? pruneTranslations(current?.translations, translatableStrings(list)).translations
         : null;
-      const fields = keptTranslations === null ? document : { ...document, translations: keptTranslations };
+      revision = revisionOf(current) + 1;
+      const fields = { ...(keptTranslations === null ? document : { ...document, translations: keptTranslations }), revision };
       const write = existingId ? fields : { ...fields, publishedAt: FieldValue.serverTimestamp(), takeCount: 0, rankingCount: 0 };
       if (!snapshotFits({ ...current, ...write })) return PUBLISHED_TOO_HEAVY;
       const reserve = topicRef !== null && attachment.kind === "create"
@@ -3286,6 +3304,10 @@ async function publish(
       publicationRefused(response, { code: "LIST_CHANGED" });
       return null;
     }
+    if (earlier !== null && typeof earlier === "object" && "changed" in earlier) {
+      listChanged(response, (earlier as { changed: number }).changed);
+      return null;
+    }
     if (earlier === PUBLISHED_TOO_HEAVY) {
       refuse(response, { ok: false, reason: "too_large", detail: "The list is too heavy to store" });
       return null;
@@ -3304,10 +3326,10 @@ async function publish(
       answerRepeat(response, earlier);
       return null;
     }
-    return { document, topicId, addresses };
+    return { document, topicId, addresses, revision };
   });
   if (stored === null) return;
-  const { document, topicId, addresses } = stored;
+  const { document, topicId, addresses, revision } = stored;
   const dropped = outside.dropped > 0 ? { droppedPictures: outside.dropped } : {};
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
   if (held) await noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined);
@@ -3328,10 +3350,15 @@ async function publish(
       previous?.coverImageUrl,
       ...(previous?.previewImages ?? []),
     ]));
-    response.status(200).json({ id: existingId, topicId, underReview: document.underReview, ...dropped });
+    response.status(200).json({ id: existingId, topicId, underReview: document.underReview, revision, ...dropped });
     return;
   }
-  response.status(201).json({ id: target, topicId, underReview: document.underReview, ...dropped });
+  response.status(201).json({ id: target, topicId, underReview: document.underReview, revision, ...dropped });
+}
+
+/** A replacement read at an older revision than the list now has: nothing was written. */
+function listChanged(response: Response, revision: number): void {
+  response.status(409).json({ error: "The list changed since it was opened. Load it again.", code: "LIST_CHANGED", revision });
 }
 
 const TOO_MANY_LISTS = "too_many_lists";
@@ -3349,7 +3376,7 @@ function refusePublicListQuota(response: Response, quota: Extract<PublicListQuot
 }
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
-  response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true });
+  response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true, revision: revisionOf(earlier.data()) });
 }
 
 /**
@@ -4675,7 +4702,7 @@ async function moveList(response: Response, identity: Identity, listId: string, 
       { category: stored.category, topicId: from },
       { category: update.category, topicId: update.topicId },
     );
-    transaction.update(ref, { ...update, movedByStaff: movedByStaff ?? FieldValue.delete() });
+    transaction.update(ref, { ...update, movedByStaff: movedByStaff ?? FieldValue.delete(), revision: revisionOf(stored) + 1 });
     const change = changedFields(stored as unknown as Record<string, unknown>, update);
     auditInTransaction(transaction, auditEntry(identity.uid, role, "list.move", `${PUBLISHED}/${listId}`, change.before, change.after));
     if (from !== null && from !== update.topicId) {
@@ -5321,6 +5348,7 @@ async function putTranslations(response: Response, identity: Identity, id: strin
     transaction.update(ref, {
       translations: decision.translations,
       updatedAt: FieldValue.serverTimestamp(),
+      revision: revisionOf(doc.data()) + 1,
       ...searchAfterTranslations(list.title, titleNames(list.title, decision.translations)),
     });
     const counts = Object.fromEntries(Object.entries(decision.translations).map(([locale, entries]) => [locale, Object.keys(entries).length]));

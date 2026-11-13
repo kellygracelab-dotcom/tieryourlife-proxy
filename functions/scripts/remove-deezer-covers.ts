@@ -113,7 +113,7 @@ async function main(): Promise<number> {
       changing.push(doc.id);
       saved[doc.ref.path] = removal.before;
       samples.add(`${doc.ref.path}  ${removal.cards} cards; ${Object.keys(removal.fields).join(", ")}`);
-      updates.push({ ref: doc.ref, fields: removal.fields, readAt: doc.updateTime });
+      updates.push({ ref: doc.ref, fields: removal.fields, readAt: doc.updateTime, revise: doc.ref.parent.id === "publishedLists" });
     }
     console.log(`${name}: ${docs.length} documents, ${here} to change.`);
   }

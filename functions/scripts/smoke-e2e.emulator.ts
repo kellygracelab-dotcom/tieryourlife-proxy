@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { STUB_PICTURE } from "../src/emulator";
 import { decideStore, MAX_BOARD_BYTES, MAX_PLAY_HISTORY } from "../src/sync";
@@ -55,7 +55,7 @@ describe("the proxy under the demo emulators", () => {
     const first = await call(token, "POST", "/lists", body);
     assert.equal(first.status, 201, JSON.stringify(first.body));
     const again = await call(token, "POST", "/lists/lists", body);
-    assert.deepEqual(again, { status: 200, body: { id: first.body.id, topicId: null, existing: true } });
+    assert.deepEqual(again, { status: 200, body: { id: first.body.id, topicId: null, existing: true, revision: 1 } });
 
     const list = await call(token, "GET", `/lists/${first.body.id}`);
     assert.equal(list.status, 200);
@@ -327,16 +327,54 @@ describe("the proxy under the demo emulators", () => {
       topicId: { from: null, to: topic.id },
     });
 
-    assert.deepEqual(await call(author, "POST", `/lists/${id}`, body), { status: 200, body: { id, topicId: topic.id, underReview: false } });
+    // The move moved the list's revision: the author's copy from before it is refused, and nothing is written.
+    const stale = await call(author, "POST", `/lists/${id}`, { ...body, category: "games", baseRevision: 1 });
+    assert.deepEqual([stale.status, stale.body.code, stale.body.revision], [409, "LIST_CHANGED", 2]);
+    assert.equal((await lists.doc(id).get()).get("category"), topic.section);
+    assert.deepEqual(await call(author, "POST", `/lists/${id}`, { ...body, baseRevision: 2 }), { status: 200, body: { id, topicId: topic.id, underReview: false, revision: 3 } });
     const kept = await lists.doc(id).get();
     assert.equal(kept.get("category"), topic.section);
     assert.equal(kept.get("topicId"), topic.id);
 
-    assert.deepEqual(await call(author, "POST", `/lists/${id}`, { ...body, category: "games" }), { status: 200, body: { id, topicId: null, underReview: false } });
+    assert.deepEqual(await call(author, "POST", `/lists/${id}`, { ...body, category: "games" }), { status: 200, body: { id, topicId: null, underReview: false, revision: 4 } });
     const chosen = await lists.doc(id).get();
     assert.equal(chosen.get("category"), "games");
     assert.equal(chosen.get("topicId"), null);
     assert.equal(chosen.get("movedByStaff"), undefined);
+  });
+
+  it("refuses a house edit read at an older revision than the list now has, and writes nothing", async () => {
+    const owner = await ownerToken();
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-revision")).collection("publishedLists");
+    const body = { title: "Revision house smoke", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
+    const published = await call(owner, "POST", "/lists/editorial", body);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    assert.equal(published.body.revision, 1);
+    const id = String(published.body.id);
+    assert.equal((await call(owner, "GET", `/lists/${id}`)).body.revision, 1);
+
+    // A maintenance script fixes the cards: the revision moves, updatedAt (the feed's order) does not.
+    const updatedAt = ((await lists.doc(id).get()).get("updatedAt") as { toMillis(): number }).toMillis();
+    await lists.doc(id).update({ items: [{ title: "Card", tierIndex: 0, credit: "Fixed" }], revision: FieldValue.increment(1) });
+    const opened = (await call(owner, "GET", `/lists/${id}`)).body;
+    assert.deepEqual([opened.revision, opened.updatedAt], [2, updatedAt]);
+
+    const stale = await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, title: "Revision house smoke, old copy", baseRevision: 1 });
+    assert.deepEqual([stale.status, stale.body.code, stale.body.revision], [409, "LIST_CHANGED", 2]);
+    const untouched = await lists.doc(id).get();
+    assert.deepEqual([untouched.get("title"), (untouched.get("items") as { credit?: string }[])[0]!.credit, untouched.get("revision")], ["Revision house smoke", "Fixed", 2]);
+    const wrong = await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, baseRevision: "2" });
+    assert.deepEqual([wrong.status, wrong.body.code, wrong.body.detail], [400, "INVALID", "baseRevision"]);
+
+    const saved = await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, title: "Revision house smoke, edited", baseRevision: 2 });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.revision, 3);
+    // New translations move it as well; a client that does not say what it read is written as before.
+    assert.equal((await call(owner, "PUT", `/lists/editorial/${id}/translations`, { translations: { ru: { Card: "Карточка" } } })).status, 200);
+    assert.equal((await call(owner, "GET", `/lists/${id}`)).body.revision, 4);
+    assert.equal((await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, baseRevision: 3 })).body.code, "LIST_CHANGED");
+    const legacy = await call(owner, "PUT", `/lists/editorial/${id}`, body);
+    assert.deepEqual([legacy.status, legacy.body.revision], [200, 5]);
   });
 
   it("answers every catalogue empty, with no keys", async () => {

@@ -22,6 +22,7 @@ import { applicationDefault, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, type Firestore } from "firebase-admin/firestore";
 import { auditEntry } from "../src/audit";
 import { EDITORIAL_UID } from "../src/editorial";
+import { nextRevision } from "../src/listRevision";
 import { cardOf, extendList, HOUSE_FILL_JOBS, HOUSE_FILL_UID, MAX_JOB_QUERIES, pickHit, type PlannedCard } from "../src/houseFill";
 import type { PictureHit } from "../src/pictureSources";
 import type { PublishedItem } from "../src/publishing";
@@ -113,7 +114,7 @@ async function write(db: Firestore, found: Found[], execute: boolean): Promise<v
       if (!extension.ok) return `refused: ${extension.detail}`;
       const before = list.items.length;
       if (execute && extension.added.length > 0) {
-        transaction.update(ref, { ...extension.fields, updatedAt: FieldValue.serverTimestamp(), underReview: false, reviewed: false });
+        transaction.update(ref, { ...extension.fields, updatedAt: FieldValue.serverTimestamp(), ...nextRevision(), underReview: false, reviewed: false });
         transaction.set(db.collection("auditLog").doc(), {
           ...auditEntry(HOUSE_FILL_UID, "owner", "list.editorial_edit", `publishedLists/${entry.id}`, { itemCount: before }, {
             title: list.title,
