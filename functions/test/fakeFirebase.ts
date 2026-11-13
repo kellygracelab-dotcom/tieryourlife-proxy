@@ -66,8 +66,10 @@ export class FakeDoc {
   async get(): Promise<FakeSnapshot> {
     return this.db.snapshot(this);
   }
-  async set(data: Data): Promise<void> {
-    this.db.write("set", this.path, Object.entries(data).reduce<Data>((at, [key, value]) => withField(at, key, value), {}));
+  /** With `merge`, each top-level field sent replaces only that field, as Firestore merges a map it is sent whole. */
+  async set(data: Data, options?: { merge?: boolean }): Promise<void> {
+    const start = options?.merge ? { ...(this.db.docs.get(this.path) ?? {}) } : {};
+    this.db.write("set", this.path, Object.entries(data).reduce<Data>((at, [key, value]) => withField(at, key, value), start));
   }
   async update(data: Data): Promise<void> {
     const current = this.db.docs.get(this.path);

@@ -1,0 +1,43 @@
+/**
+ * How many picture searches one person may send to the catalogues. The
+ * catalogues count requests by address, and every search comes from the
+ * same few servers, so one person searching without end would use up what
+ * everybody shares. An answer already cached costs nothing, a whole search
+ * that builds on its quick answer is the same search, and a refusal is not
+ * counted, so asking again while refused does not push the moment back.
+ *
+ * No minute window: the website pastes a list as up to three searches a
+ * second, and 300 titles with a retry each stay inside an hour.
+ */
+import { dayKey } from "./quota";
+
+export const PICTURE_SEARCHES_PER_HOUR = 1000;
+export const PICTURE_SEARCHES_PER_DAY = 3000;
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** One person's searches on one UTC day, kept in `pictureSearches/{day}/users/{uid}`. */
+export interface SearchCount {
+  count: number;
+  /** Hours since the epoch, UTC, that [hourCount] is for. */
+  hour: number;
+  hourCount: number;
+}
+
+export type SearchCharge = { allowed: true; next: SearchCount } | { allowed: false; retryAtMs: number };
+
+/** Whether one more search fits, given what this day's document holds; when it does not, the moment the full window opens again. */
+export function chargeSearch(before: Partial<SearchCount> | undefined, nowMs: number): SearchCharge {
+  const hour = Math.floor(nowMs / HOUR_MS);
+  const count = typeof before?.count === "number" ? before.count : 0;
+  const hourCount = before?.hour === hour && typeof before.hourCount === "number" ? before.hourCount : 0;
+  if (count >= PICTURE_SEARCHES_PER_DAY) return { allowed: false, retryAtMs: Date.parse(`${dayKey(nowMs)}T00:00:00Z`) + DAY_MS };
+  if (hourCount >= PICTURE_SEARCHES_PER_HOUR) return { allowed: false, retryAtMs: (hour + 1) * HOUR_MS };
+  return { allowed: true, next: { count: count + 1, hour, hourCount: hourCount + 1 } };
+}
+
+/** `Retry-After` for [retryAtMs]: whole seconds, never less than one. */
+export function retryAfterSeconds(retryAtMs: number, nowMs: number): number {
+  return Math.max(1, Math.ceil((retryAtMs - nowMs) / 1000));
+}

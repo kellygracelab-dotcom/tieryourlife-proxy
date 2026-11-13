@@ -3,7 +3,11 @@
  * on its own clock, so one that is slow or down only leaves its own gap.
  * With part=quick only the fast ones are asked and the web is not; `rest`
  * says whether the whole search would add anything, so a client shows the
- * quick answer at once and the whole one's new hits below it.
+ * quick answer at once and the whole one's new hits below it. The whole
+ * search takes the quick one's answers as they are and asks only the rest.
+ * A catalogue that refuses (429, 5xx) is left alone for a while, and each
+ * person's searches that reach the catalogues are counted
+ * (src/pictureSearchLimit.ts).
  * The paid web search is asked last and only when it is worth it
  * (src/pictureSources.ts, decideWeb). POST /lists/pictures/keep copies a
  * picture from the web into the person's own folder, for a browser that
@@ -14,7 +18,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { Response } from "express";
 import { defineSecret } from "firebase-functions/params";
-import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import type { Identity } from "./auth";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
@@ -30,6 +34,7 @@ import {
   hasSlowSources,
   IGDB_QUERY_FIELDS,
   igdbHits,
+  inaturalistHasOpenPhoto,
   inaturalistHits,
   inaturalistObservationPhotos,
   inaturalistPhotos,
@@ -41,6 +46,7 @@ import {
   pictureScopeOf,
   PictureSource,
   quickSourcesFor,
+  restUntil,
   sourcesFor,
   steamAppIds,
   steamHits,
@@ -51,6 +57,7 @@ import {
   wantsCovers,
   wikidataCandidates,
 } from "./pictureSources";
+import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
 import { fold } from "./search";
 
@@ -61,14 +68,22 @@ export const igdbClientSecret = defineSecret("IGDB_CLIENT_SECRET");
 const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
-/** Raised whenever an answer holds something different, so answers kept from before are not served. */
+/**
+ * Raised whenever an answer holds something different, so answers kept from before are not served.
+ * Raising it also drops three days of answers at once and sends every search back to the catalogues.
+ */
 const CACHE_SHAPE = 9;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
 const WEB_REST_MS = 60 * 60 * 1000;
-// Wikimedia throttles a client that names no way to reach it.
-const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app; com.artiuillab.tieryourlife; server)";
+/** Until when each catalogue that refused is left alone, for every instance. */
+const RESTS = "config/pictureSources";
+/** How long an instance trusts what it last read of [RESTS]. */
+const RESTS_READ_MS = 30_000;
+const SEARCHES = "pictureSearches";
+// Wikimedia and Open Library allow more to a client that names a way to reach it: the address on the privacy page.
+const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app; kellygracelab@gmail.com; server)";
 /** Open Library's search often takes six or seven seconds, and a books search has nothing else to wait for. */
 const OPEN_LIBRARY_TIMEOUT_MS = 9_000;
 /** Taxa whose open photo is looked for among their best-liked observations, one request each. */
@@ -82,6 +97,12 @@ interface PicturesAnswer {
   notices: string[];
   /** Quick answers only: whether the whole search can find more. */
   rest?: boolean;
+}
+
+/** This person has searched the catalogues as much as an hour or a UTC day allows (src/pictureSearchLimit.ts). */
+export interface SearchLimited {
+  limited: true;
+  retryAtMs: number;
 }
 
 export async function routePictures(
@@ -99,7 +120,7 @@ export async function routePictures(
       return;
     }
     const page = Math.min(MAX_PAGE, Math.max(1, Number.parseInt(String(query.page ?? "1"), 10) || 1));
-    const answer = await searchPictures({
+    const answer = await searchPicturesCounted({
       typed,
       scope: pictureScopeOf(query.scope),
       language: typeof query.lang === "string" && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(query.lang) ? query.lang : "en",
@@ -110,6 +131,12 @@ export async function routePictures(
     });
     if (answer === null) {
       response.status(502).json({ error: "No catalogue answered", code: "SOURCES_DOWN" });
+      return;
+    }
+    if ("limited" in answer) {
+      response.setHeader("Retry-After", String(retryAfterSeconds(answer.retryAtMs, Date.now())));
+      response.setHeader("Cache-Control", "no-store");
+      response.status(429).json({ error: "Too many picture searches", code: "SEARCH_LIMIT", retryAt: answer.retryAtMs });
       return;
     }
     response.setHeader("Cache-Control", "no-store");
@@ -143,13 +170,24 @@ interface SearchInput {
   uid: string;
 }
 
-/** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. */
+/** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. Not counted: the house fill's. */
 export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | null> {
+  const answer = await search(input, false);
+  return answer !== null && "limited" in answer ? null : answer;
+}
+
+/** A person's search, counted against their hourly and daily searches. */
+export function searchPicturesCounted(input: SearchInput): Promise<PicturesAnswer | SearchLimited | null> {
+  return search(input, true);
+}
+
+async function search(input: SearchInput, metered: boolean): Promise<PicturesAnswer | SearchLimited | null> {
   if (isDemoEmulator()) return { items: [], hasMore: false, notices: [], ...(input.quick ? { rest: false } : {}) };
   const db = getFirestore();
-  const key = (web: boolean, quick = false) =>
+  // "parts": each catalogue's answer to a quick search. The merged quick answers once kept under "quick" are read no more.
+  const key = (web: boolean, part: "" | "parts" = "") =>
     createHash("sha256")
-      .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", quick ? "quick" : ""].join("|"))
+      .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", part].join("|"))
       .digest("hex");
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
     const doc = await db.collection(CACHE).doc(id).get();
@@ -163,13 +201,20 @@ export async function searchPictures(input: SearchInput): Promise<PicturesAnswer
   let catalogues = await fresh(key(false));
   const webLater = input.page === 1 && (input.scope === "all" || input.forcedWeb);
   if (input.quick && catalogues) return { ...catalogues, rest: webLater };
+  const quickParts = key(false, "parts");
+  const known = await knownParts(quickParts);
   if (input.quick) {
-    const quick = (await fresh(key(false, true))) ?? (await askCatalogues(input, quickSourcesFor(input.scope), key(false, true)));
+    const quick = await askCatalogues(input, quickSourcesFor(input.scope), known, metered, { parts: quickParts });
+    if (quick && "limited" in quick) return quick;
     const rest = hasSlowSources(input.scope) || webLater;
     return quick ? { ...quick, rest } : rest ? { items: [], hasMore: false, notices: [], rest } : null;
   }
 
-  catalogues ??= await askCatalogues(input, sourcesFor(input.scope), key(false));
+  if (!catalogues) {
+    const asked = await askCatalogues(input, sourcesFor(input.scope), known, metered, { answer: key(false) });
+    if (asked && "limited" in asked) return asked;
+    catalogues = asked;
+  }
   if (!catalogues) return null;
   if (input.page > 1) return catalogues;
   const web = await maybeAskWeb(input, goodMatches(input.typed, catalogues.items));
@@ -177,20 +222,122 @@ export async function searchPictures(input: SearchInput): Promise<PicturesAnswer
   if (!web.hits) return catalogues;
   const items = mergeHits(input.typed, [catalogues.items, web.hits]);
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
-  await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: FieldValue.serverTimestamp() }).catch(() => undefined);
+  await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
   return withWeb;
 }
 
-/** The answer of [sources] merged, kept under [cacheId] when none failed: a gap left by one that did is not kept for days. */
-async function askCatalogues(input: SearchInput, sources: PictureSource[], cacheId: string): Promise<PicturesAnswer | null> {
-  const answers = await Promise.all(sources.map((source) => askSource(source, input)));
-  if (answers.every((answer) => answer === null)) return null;
-  const hits = withoutTmdbTwins(answers.map((answer) => answer ?? { hits: [], hasMore: false }));
-  const merged = { items: mergeHits(input.typed, hits), hasMore: answers.some((answer) => answer?.hasMore === true), notices: [] };
-  if (answers.every((answer) => answer !== null)) {
-    await getFirestore().collection(CACHE).doc(cacheId).set({ ...merged, at: FieldValue.serverTimestamp() }).catch(() => undefined);
+/** A catalogue's answer as kept among a quick search's parts, with when it was heard. */
+interface KnownAnswer extends SourceAnswer {
+  atMs: number;
+}
+
+/**
+ * The answer of [sources] merged. What [known] holds is not asked again, nor
+ * is a catalogue that is resting. Each answer is kept under `parts`, with the
+ * moment it was heard, so an old one is not kept fresh by being saved again;
+ * the merged one under `answer` only when none failed: a gap left by one
+ * that did is not kept for days.
+ *
+ * A search is counted when it asks a catalogue and builds on nothing heard
+ * before: the whole search after a quick one is the same search.
+ */
+async function askCatalogues(
+  input: SearchInput,
+  sources: PictureSource[],
+  known: Map<PictureSource, KnownAnswer>,
+  metered: boolean,
+  keep: { parts?: string; answer?: string },
+): Promise<PicturesAnswer | SearchLimited | null> {
+  const resting = await restingUntil();
+  const now = Date.now();
+  const asking = sources.filter((source) => !known.has(source) && (resting.get(source) ?? 0) <= now);
+  if (metered && asking.length > 0 && known.size === 0) {
+    const charge = await chargeFor(input.uid);
+    if (!charge.allowed) return { limited: true, retryAtMs: charge.retryAtMs };
+  }
+  const answers = new Map<PictureSource, KnownAnswer>(known);
+  const asked = await Promise.all(asking.map(async (source) => [source, await askSource(source, input)] as const));
+  for (const [source, answer] of asked) if (answer) answers.set(source, { ...answer, atMs: Date.now() });
+  const found = sources.map((source) => answers.get(source) ?? null);
+  if (found.every((answer) => answer === null)) return null;
+  const hits = withoutTmdbTwins(found.map((answer) => answer ?? { hits: [], hasMore: false }));
+  const merged = { items: mergeHits(input.typed, hits), hasMore: found.some((answer) => answer?.hasMore === true), notices: [] };
+  const cache = getFirestore().collection(CACHE);
+  if (keep.parts && asked.some(([, answer]) => answer !== null)) {
+    const parts = sources.flatMap((source) => {
+      const answer = answers.get(source);
+      return answer ? [{ source, ...answer }] : [];
+    });
+    await cache.doc(keep.parts).set({ parts, at: Timestamp.now() }).catch(() => undefined);
+  }
+  if (keep.answer && found.every((answer) => answer !== null)) {
+    await cache.doc(keep.answer).set({ ...merged, at: Timestamp.now() }).catch(() => undefined);
   }
   return merged;
+}
+
+/** What a quick search already heard from each catalogue, each while it is fresh. */
+async function knownParts(id: string): Promise<Map<PictureSource, KnownAnswer>> {
+  const doc = await getFirestore().collection(CACHE).doc(id).get().catch(() => null);
+  const parts: unknown = doc?.exists ? doc.get("parts") : null;
+  const known = new Map<PictureSource, KnownAnswer>();
+  const now = Date.now();
+  for (const part of Array.isArray(parts) ? parts : []) {
+    const { source, hits, hasMore, twins, atMs } = (part ?? {}) as { source?: unknown; hits?: unknown; hasMore?: unknown; twins?: Record<string, string[]>; atMs?: unknown };
+    if (typeof source !== "string" || !Array.isArray(hits) || typeof atMs !== "number" || now - atMs >= CACHE_FRESH_MS) continue;
+    known.set(source as PictureSource, { hits: hits as PictureHit[], hasMore: hasMore === true, atMs, ...(twins ? { twins } : {}) });
+  }
+  return known;
+}
+
+/** One more search for this person, if it fits; a counter that cannot be reached lets the search through. */
+async function chargeFor(uid: string): Promise<SearchCharge> {
+  const db = getFirestore();
+  const ref = db.doc(`${SEARCHES}/${dayKey(Date.now())}/users/${uid}`);
+  try {
+    return await db.runTransaction(async (transaction) => {
+      const charge = chargeSearch((await transaction.get(ref)).data(), Date.now());
+      if (charge.allowed) transaction.set(ref, charge.next);
+      return charge;
+    });
+  } catch (error) {
+    console.warn("Picture search count failed", error instanceof Error ? error.message : error);
+    return { allowed: true, next: { count: 0, hour: 0, hourCount: 0 } };
+  }
+}
+
+/** A catalogue's answer that says to stop for a while: too many requests, or trouble on its side. */
+class CatalogueRefusal extends Error {
+  constructor(host: string, readonly status: number, readonly retryAfter: string | null) {
+    super(`${host} answered ${status}`);
+  }
+}
+
+let rests: { readAtMs: number; until: Map<PictureSource, number> } | null = null;
+
+/** Forgets what this instance remembers of resting catalogues; for tests. */
+export function forgetCatalogueRests(): void {
+  rests = null;
+}
+
+async function restingUntil(): Promise<Map<PictureSource, number>> {
+  const now = Date.now();
+  if (rests && now - rests.readAtMs < RESTS_READ_MS) return rests.until;
+  const doc = await getFirestore().doc(RESTS).get().catch(() => null);
+  const until = new Map(rests?.until ?? []);
+  for (const [source, value] of Object.entries(doc?.data() ?? {})) {
+    const ms = (value as { offUntil?: { toMillis?: () => number } } | null)?.offUntil?.toMillis?.();
+    if (typeof ms === "number") until.set(source as PictureSource, Math.max(until.get(source as PictureSource) ?? 0, ms));
+  }
+  rests = { readAtMs: now, until };
+  return until;
+}
+
+async function rest(source: PictureSource, refusal: CatalogueRefusal): Promise<void> {
+  const until = restUntil(refusal.status, refusal.retryAfter, Date.now());
+  if (until === null) return;
+  (rests ??= { readAtMs: 0, until: new Map() }).until.set(source, until);
+  await getFirestore().doc(RESTS).set({ [source]: { offUntil: Timestamp.fromMillis(until), lastStatus: refusal.status } }, { merge: true }).catch(() => undefined);
 }
 
 /** A film Wikidata knows by its TMDB id is TMDB's to show, with TMDB's poster. */
@@ -230,8 +377,17 @@ async function askSource(source: PictureSource, input: SearchInput): Promise<Sou
     }
   } catch (error) {
     console.warn(`Picture source ${source} failed`, error instanceof Error ? error.message : error);
+    if (error instanceof CatalogueRefusal) await rest(source, error);
     return null;
   }
+}
+
+/** A side request's failure leaves its part out, unless the catalogue refused: then the whole answer is a gap. */
+function unlessRefused<T>(fallback: () => T): (error: unknown) => T {
+  return (error) => {
+    if (error instanceof CatalogueRefusal) throw error;
+    return fallback();
+  };
 }
 
 async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_TIMEOUT_MS): Promise<unknown> {
@@ -240,7 +396,11 @@ async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_T
     headers: { Accept: "application/json", "User-Agent": USER_AGENT, ...(init.headers ?? {}) },
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (!reply.ok) throw new Error(`${new URL(url).host} answered ${reply.status}`);
+  if (!reply.ok) {
+    const host = new URL(url).host;
+    if (reply.status === 429 || reply.status >= 500) throw new CatalogueRefusal(host, reply.status, reply.headers.get("retry-after"));
+    throw new Error(`${host} answered ${reply.status}`);
+  }
   return reply.json();
 }
 
@@ -321,17 +481,16 @@ async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
   const found = await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`);
   // Most default photos are licensed non-commercially or not at all: such a taxon's other photos are looked through.
   const without = inaturalistWithoutPhoto(found);
+  const others = without.length === 0
+    ? new Map<number, unknown[]>()
+    : await getJson(`https://api.inaturalist.org/v1/taxa/${without.join(",")}`).then(inaturalistPhotos, unlessRefused(() => new Map<number, unknown[]>()));
   // The cat, the brown bear, the bald eagle: the best-known animals often have no open photo among their own,
-  // but thousands of openly licensed observations. Both are asked at once, the taxon's own photos coming first.
-  const [others, observed] = await Promise.all([
-    without.length === 0
-      ? new Map<number, unknown[]>()
-      : getJson(`https://api.inaturalist.org/v1/taxa/${without.join(",")}`).then(inaturalistPhotos, () => new Map<number, unknown[]>()),
-    Promise.all(without.slice(0, INATURALIST_OBSERVED).map(async (id) => {
-      const params = new URLSearchParams({ taxon_id: String(id), photo_license: "cc0,cc-by,cc-by-sa", quality_grade: "research", order_by: "votes", per_page: "10", photos: "true" });
-      return [id, await getJson(`https://api.inaturalist.org/v1/observations?${params}`).then(inaturalistObservationPhotos, () => [])] as const;
-    })),
-  ]);
+  // but thousands of openly licensed observations. Only a taxon still without one is asked for those.
+  const still = without.filter((id) => !inaturalistHasOpenPhoto(others.get(id) ?? []));
+  const observed = await Promise.all(still.slice(0, INATURALIST_OBSERVED).map(async (id) => {
+    const params = new URLSearchParams({ taxon_id: String(id), photo_license: "cc0,cc-by,cc-by-sa", quality_grade: "research", order_by: "votes", per_page: "10", photos: "true" });
+    return [id, await getJson(`https://api.inaturalist.org/v1/observations?${params}`).then(inaturalistObservationPhotos, unlessRefused(() => []))] as const;
+  }));
   for (const [id, photos] of observed) others.set(id, [...(others.get(id) ?? []), ...photos]);
   return { hits: inaturalistHits(found, others), hasMore: false };
 }
