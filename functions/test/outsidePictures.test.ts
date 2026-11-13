@@ -375,28 +375,39 @@ describe("copying pictures from other sites", () => {
 });
 
 describe("an author's face", () => {
-  it("keeps a Google account photo and their own checked copy as they are", async () => {
+  it("copies a Google account photo into their avatars too, a new photo as a new copy, and keeps their own copy as it is", async () => {
     const tools = fakeTools();
     const google = "https://lh3.googleusercontent.com/a/ACg8ocK=s96-c";
+    const changed = "https://lh3.googleusercontent.com/a/ACg8ocZ=s96-c";
     const own = addressOf(BUCKET, "avatars/u1/p1");
-    assert.equal(await checkedFace("u1", google, tools), google);
+    assert.equal(await checkedFace("u1", google, tools), copyAddress("avatars/u1/", google));
+    assert.equal(await checkedFace("u1", copyAddress("avatars/u1/", google), tools), copyAddress("avatars/u1/", google));
+    assert.equal(await checkedFace("u1", changed, tools), copyAddress("avatars/u1/", changed));
     assert.equal(await checkedFace("u1", own, tools), own);
     assert.equal(await checkedFace("u1", null, tools), null);
-    assert.deepEqual(tools.fetched, []);
+    assert.deepEqual(tools.fetched, [google, changed]);
   });
 
-  it("takes only an account photo's path on Google's host as one", async () => {
-    const tools = fakeTools();
+  it("keeps Google's address for an account photo that cannot be copied now, never for one refused or not an account photo", async () => {
+    const google = "https://lh3.googleusercontent.com/a/ACg8ocK=s96-c";
     const dashed = "https://lh3.googleusercontent.com/a-/AOh14Gj=s96-c";
-    assert.equal(await checkedFace("u1", dashed, tools), dashed);
+    assert.equal(await checkedFace("u1", google, fakeTools({ pictures: { [google]: { error: "UNREACHABLE" } } })), google);
+    assert.equal(await checkedFace("u1", dashed, fakeTools({ left: 0 })), dashed);
+    assert.equal(await checkedFace("u1", google, fakeTools({ verdicts: { [google]: ADULT } })), null);
+    assert.equal(await checkedFace("u1", "https://lh3.googleusercontent.com/pw/AP1GczN", fakeTools({ left: 0 })), null);
+  });
+
+  it("copies an account photo and any other Google picture alike", async () => {
+    const tools = fakeTools();
     for (const url of [
+      "https://lh3.googleusercontent.com/a-/AOh14Gj=s96-c",
       "https://lh3.googleusercontent.com/d/1AbCdEf",
       "https://lh3.googleusercontent.com/pw/AP1GczN",
       "https://lh3.googleusercontent.com/blogger_img_proxy/AEn0k_s",
       "https://lh3.googleusercontent.com/ab/x",
       "https://lh3.googleusercontent.com/a",
     ]) assert.equal(await checkedFace("u1", url, tools), copyAddress("avatars/u1/", url), url);
-    assert.equal(tools.fetched.length, 5);
+    assert.equal(tools.fetched.length, 6);
   });
 
   it("copies any other picture into their avatars after a look, once", async () => {
