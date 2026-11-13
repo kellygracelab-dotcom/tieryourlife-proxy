@@ -6,9 +6,10 @@
  * list's folder under the name every copy of that address gets. The card's
  * `imageUrl` points at the copy, and its `attribution.originalUrl` keeps the
  * catalogue address. A picture not copied in time keeps its catalogue address;
- * the next publication copies it.
+ * the next publication copies it. The house's publications do not: they wait
+ * until Commons has answered and every copy is made (`community.ts`).
  */
-import { isDemoEmulator, SAFE_VERDICT } from "./emulator";
+import { E2E_NOT_COPIED_PHOTO, isDemoEmulator, SAFE_VERDICT } from "./emulator";
 import { copyOutside, type OutsideTools } from "./outsidePictures";
 import {
   attributionOf,
@@ -27,7 +28,7 @@ import {
   type PictureAttribution,
 } from "./pictureAttribution";
 import { commonsDetails } from "./pictureCredit";
-import { downloadPicture, getJson } from "./pictureSearch";
+import { CatalogueRefusal, downloadPicture, getJson } from "./pictureSearch";
 import { storageMediaUrl } from "./publicMedia";
 
 /** A card as far as its picture goes. */
@@ -126,7 +127,17 @@ const COMMONS_TITLES_PER_ASK = 50;
 
 /** What Commons says about each file, by its Commons name; a file it says nothing about, or an answer that fails, is left out. */
 export async function askCommons(files: readonly string[]): Promise<Map<string, CommonsDetails>> {
+  return (await askCommonsFully(files)).found;
+}
+
+/**
+ * As `askCommons`, and how many files could not be asked about because Commons
+ * failed or was busy (`unasked`), with how long it asked us to wait when it said.
+ */
+export async function askCommonsFully(files: readonly string[]): Promise<{ found: Map<string, CommonsDetails>; unasked: number; retryAfterMs: number | null }> {
   const found = new Map<string, CommonsDetails>();
+  let unasked = 0;
+  let retryAfterMs: number | null = null;
   for (let at = 0; at < files.length; at += COMMONS_TITLES_PER_ASK) {
     const params = new URLSearchParams({
       action: "query",
@@ -144,11 +155,16 @@ export async function askCommons(files: readonly string[]): Promise<Map<string, 
         const details = title === null ? undefined : commonsDetails(page, page.imageinfo?.[0]);
         if (title !== null && details) found.set(title.charAt(0).toUpperCase() + title.slice(1), details);
       }
-    } catch {
+    } catch (error) {
       // Without Commons' word a file is credited by its page alone and not copied.
+      const asked = files.slice(at, at + COMMONS_TITLES_PER_ASK).length;
+      unasked += asked;
+      const seconds = error instanceof CatalogueRefusal ? Number(error.retryAfter) : NaN;
+      if (Number.isFinite(seconds) && seconds > 0) retryAfterMs = Math.max(retryAfterMs ?? 0, seconds * 1000);
+      console.warn(`Commons not asked about ${asked} files: ${(error as Error).message}`);
     }
   }
-  return found;
+  return { found, unasked, retryAfterMs };
 }
 
 /**
@@ -160,7 +176,7 @@ export function catalogueCopyTools(base: OutsideTools): OutsideTools {
   return {
     ...base,
     fetch: async (url, stop) => {
-      if (isDemoEmulator()) return base.fetch(url, stop);
+      if (isDemoEmulator()) return url === E2E_NOT_COPIED_PHOTO ? { error: "UNREACHABLE" } : base.fetch(url, stop);
       const from = copySourceOf(url);
       return from === null ? { error: "NOT_ALLOWED" } : downloadPicture(new URL(from), stop);
     },

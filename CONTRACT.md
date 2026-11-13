@@ -308,7 +308,7 @@ Lists the house publishes, stored under author `tyl-editorial`, always anonymous
 
 **`GET /lists/editorial?after=`**: staff. `200 {lists: ListSummary[], nextCursor}`; cursor is the last id; `409 CURSOR_GONE`.
 
-**`POST /lists/editorial`**: staff. Publish body as `POST /lists`: `201 {id, topicId, revision}`. No count limit; no classifier. The same 19 ranked tiers, `400 TOO_MANY_TIERS`.
+**`POST /lists/editorial`**: staff. Publish body as `POST /lists`: `201 {id, topicId, revision}`. No count limit; no classifier. **Our copies first** (since 14.11.2026): a house publication (and its edit, `PUT /lists/editorial/{id}`) is written only when every catalogue picture whose licence lets us keep a copy (a Commons file, an open iNaturalist photo, **Picture attribution** below) has become our copy; a direct Wikimedia address is refused by Wikimedia to some apps. Otherwise nothing is written and the answer is `503` with `Retry-After` and `retryAt` (epoch ms): `{code: "SOURCE_BUSY", busy: ["wikimedia"], retryAt}` when Commons could not be asked about the licences, `{code: "PICTURES_NOT_COPIED", imageUrls, retryAt}` when those pictures could not be copied in time. Send the same body again at `retryAt`; a picture that keeps failing is best replaced. Anybody else's publication is as before: a picture not copied keeps its catalogue address. The same 19 ranked tiers, `400 TOO_MANY_TIERS`.
 
 **`PUT /lists/editorial/{id}`**: staff. Replace: `200 {id, topicId, revision}`; `baseRevision` and `409 LIST_CHANGED` as for `POST /lists/{id}`. Its translations stay, pruned to the texts it still shows. Tiers and staff moves as for `POST /lists/{id}`.
 
