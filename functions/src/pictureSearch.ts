@@ -72,7 +72,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 10;
+const CACHE_SHAPE = 11;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -307,7 +307,7 @@ async function chargeFor(uid: string): Promise<SearchCharge> {
 }
 
 /** A catalogue's answer that says to stop for a while: too many requests, or trouble on its side. */
-class CatalogueRefusal extends Error {
+export class CatalogueRefusal extends Error {
   constructor(host: string, readonly status: number, readonly retryAfter: string | null) {
     super(`${host} answered ${status}`);
   }
@@ -320,7 +320,7 @@ export function forgetCatalogueRests(): void {
   rests = null;
 }
 
-async function restingUntil(): Promise<Map<PictureSource, number>> {
+export async function restingUntil(): Promise<Map<PictureSource, number>> {
   const now = Date.now();
   if (rests && now - rests.readAtMs < RESTS_READ_MS) return rests.until;
   const doc = await getFirestore().doc(RESTS).get().catch(() => null);
@@ -333,7 +333,7 @@ async function restingUntil(): Promise<Map<PictureSource, number>> {
   return until;
 }
 
-async function rest(source: PictureSource, refusal: CatalogueRefusal): Promise<void> {
+export async function rest(source: PictureSource, refusal: CatalogueRefusal): Promise<void> {
   const until = restUntil(refusal.status, refusal.retryAfter, Date.now());
   if (until === null) return;
   (rests ??= { readAtMs: 0, until: new Map() }).until.set(source, until);
@@ -431,7 +431,7 @@ const IGDB_PAGE = 15;
 let igdbToken: { value: string; untilMs: number } | null = null;
 
 /** Twitch's app token for IGDB, kept for the instance's life and asked again a day before it ends. */
-async function igdbAccess(id: string, secret: string): Promise<string> {
+export async function igdbAccess(id: string, secret: string): Promise<string> {
   if (igdbToken && igdbToken.untilMs > Date.now()) return igdbToken.value;
   const params = new URLSearchParams({ client_id: id, client_secret: secret, grant_type: "client_credentials" });
   const body = (await getJson("https://id.twitch.tv/oauth2/token", {

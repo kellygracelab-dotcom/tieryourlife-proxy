@@ -10,6 +10,7 @@ export { boards } from "./boards";
 export { tmdb } from "./tmdb";
 export { sweepGuests } from "./sweep";
 export { sweepPictures } from "./sweepPictures";
+export { refreshPictures } from "./refreshPictures";
 export { sweepSearch } from "./sweepSearch";
 export { houseFill } from "./houseFillJobs";
 export { checkUpload } from "./checkUpload";

@@ -119,6 +119,7 @@ import {
   rowsFromDocument,
   rowsToDocument,
   readTakenFrom,
+  currentAddresses,
   shownCredit,
   type BasedOn,
   type Card,
@@ -2983,6 +2984,13 @@ async function publish(
   };
   const committed = previousPictures === null ? new Map<string, string>() : committedOutsideCopies(previousPictures, outsideUrls, `published/${target}/`, pictureTools.bucket);
 
+  // A board from before the list's pictures moved still shows their old addresses: the same cards, at the new ones.
+  const moved = currentAddresses(previous?.items ?? []);
+  for (const item of decision.draft.items) {
+    const now = item.imageUrl === null ? undefined : moved.get(item.imageUrl);
+    if (now !== undefined) item.imageUrl = now;
+  }
+
   // Each card's attribution, and copies of the catalogue pictures we may keep.
   const before = attributionsByPicture(previous?.items);
   const cards: CardPicture[] = decision.draft.items.map((item) => {
@@ -3347,6 +3355,12 @@ async function resolvePublication(identity: Identity, body: Record<string, unkno
   if (data?.underReview === true && data.authorUid !== identity.uid) return { code: "LIST_CHANGED" };
   if (version !== undefined && version !== null && (data === null || version !== currentVersion)) return { code: "LIST_CHANGED", version: currentVersion };
   const original = data === null ? null : sourceList(doc.id, data);
+  // A board made before the list's pictures moved shows their old addresses: the same cards.
+  const moved = original === null ? new Map<string, string>() : currentAddresses(original.items);
+  for (const item of draft.items) {
+    const now = item.imageUrl === null ? undefined : moved.get(item.imageUrl);
+    if (now !== undefined) item.imageUrl = now;
+  }
   const publication = decidePublication({ takenFrom, source: original, callerUid: identity.uid, ...draft });
   if (publication.kind === "ranking" && rankingRowsOver(publicationBaseline(original!, draft)!.items, draft.items, draft.tiers.length) === null) return { code: "INVALID", detail: "sourceIndex" };
   return { publication, ...lineage, ...(data === null ? {} : { sourceId: doc.id, version: currentVersion, sourceState: JSON.stringify(original) }) };

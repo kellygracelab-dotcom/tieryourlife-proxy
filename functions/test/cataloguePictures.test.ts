@@ -171,10 +171,10 @@ describe("what may be copied", () => {
 
 describe("each catalogue's attribution", () => {
   it("names TMDB, AniList and IGDB with the page the client brought back, and nobody", () => {
-    assert.deepEqual(attributionOf(POSTER, { sentLink: "https://www.themoviedb.org/movie/603" }), { source: "tmdb", link: "https://www.themoviedb.org/movie/603" });
+    assert.deepEqual(attributionOf(POSTER, { sentLink: "https://www.themoviedb.org/movie/603" }), { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" });
     assert.deepEqual(attributionOf(POSTER, { sentLink: "https://evil.example/" }), { source: "tmdb" });
-    assert.deepEqual(attributionOf(CHARACTER, {}), { source: "anilist", link: "https://anilist.co/character/17" });
-    assert.deepEqual(attributionOf(CAPSULE, { sentLink: "https://store.steampowered.com/app/1" }), { source: "steam", link: "https://store.steampowered.com/app/1245620" });
+    assert.deepEqual(attributionOf(CHARACTER, {}), { source: "anilist", link: "https://anilist.co/character/17", id: "anilist:c17" });
+    assert.deepEqual(attributionOf(CAPSULE, { sentLink: "https://store.steampowered.com/app/1" }), { source: "steam", link: "https://store.steampowered.com/app/1245620", id: "steam:1245620" });
   });
 
   it("names an iNaturalist observer and licence, and a Commons author, licence and page", () => {
@@ -324,13 +324,13 @@ describe("copying catalogue pictures", () => {
 describe("search hits", () => {
   it("carry each catalogue's attribution and page", () => {
     const [movie] = tmdbHits({ results: [{ media_type: "movie", id: 603, title: "The Matrix", poster_path: "/a.jpg", release_date: "1999-03-30" }] });
-    assert.deepEqual(movie.attribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603" });
+    assert.deepEqual(movie.attribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" });
     const anime = anilistHits({ data: { media: { media: [{ id: 21, type: "ANIME", title: { english: "One Piece" }, coverImage: { large: "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21-a.jpg" } }] }, characters: { characters: [{ id: 17, name: { full: "Naruto Uzumaki" }, image: { large: CHARACTER } }] } } });
     assert.deepEqual(anime.map((hit) => hit.attribution?.link), ["https://anilist.co/anime/21", "https://anilist.co/character/17"]);
     const [game] = igdbHits([{ id: 1, name: "Elden Ring", url: "https://www.igdb.com/games/elden-ring", cover: { image_id: "co4jni", width: 600, height: 800 } }]);
     assert.equal(game.attribution?.link, "https://www.igdb.com/games/elden-ring");
     const [wrong] = igdbHits([{ id: 1, name: "Elden Ring", url: "https://evil.example/", cover: { image_id: "co4jni" } }]);
-    assert.deepEqual(wrong.attribution, { source: "igdb" });
+    assert.deepEqual(wrong.attribution, { source: "igdb", id: "igdb:1" });
     const [steam] = steamHits([1245620], { response: { store_items: [{ appid: 1245620, name: "Elden Ring", assets: { asset_url_format: "steam/apps/1245620/${FILENAME}", library_capsule_2x: "library_600x900_2x.jpg" } }] } });
     assert.equal(steam.attribution?.link, "https://store.steampowered.com/app/1245620");
     const [book] = openLibraryHits({ docs: [{ title: "Dune", key: "/works/OL893415W", cover_i: 1 }] });

@@ -56,6 +56,22 @@ export type Publication =
   | { kind: "ranking"; listId: string };
 
 /**
+ * Each catalogue address a list's cards were moved from, to the address the
+ * card shows now (`attribution.formerUrls`, written by `refreshPictures`): a
+ * client that still shows the old one is still showing the same card.
+ */
+export function currentAddresses(source: readonly unknown[]): Map<string, string> {
+  const moved = new Map<string, string>();
+  for (const raw of source) {
+    const card = (raw ?? {}) as { imageUrl?: unknown; attribution?: { formerUrls?: unknown } };
+    const former = card.attribution?.formerUrls;
+    if (typeof card.imageUrl !== "string" || !Array.isArray(former)) continue;
+    for (const url of former) if (typeof url === "string" && url !== card.imageUrl) moved.set(url, card.imageUrl);
+  }
+  return moved;
+}
+
+/**
  * Both its normalized title and canonical public picture identify a card:
  * a catalogue or outside address and any copy of it count as one picture.
  * Renaming a picture card changes the content. Deezer art counts as absent,
