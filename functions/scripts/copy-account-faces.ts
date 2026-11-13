@@ -20,7 +20,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { checkedFace, realOutsideTools } from "../src/outsidePictures";
 import { readBackfillOptions, writeGuarded, type GuardedUpdate } from "./backfillOptions";
 
-const DEFAULT_BACKUPS = "D:\MyProjects\TierYourLife\backups";
+const DEFAULT_BACKUPS = "D:/MyProjects/TierYourLife/backups";
 
 /** Whether [url] is a picture Google keeps for an account, not one of ours. */
 export function onGoogle(url: unknown): url is string {
