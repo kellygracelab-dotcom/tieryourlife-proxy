@@ -74,7 +74,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 11;
+const CACHE_SHAPE = 12;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -551,7 +551,8 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     action: "wbgetentities",
     ids: ids.join("|"),
     props: "labels|descriptions|claims",
-    languages: [...new Set([input.language, language, "en"])].join("|"),
+    // `mul`: Wikidata keeps a name that is the same in every language (Michael Jordan, PlayStation 5) there, and nowhere else.
+    languages: [...new Set([input.language, language, "en", "mul"])].join("|"),
     format: "json",
   });
   const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language, input.scope === "music");
