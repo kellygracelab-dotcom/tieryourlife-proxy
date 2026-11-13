@@ -43,6 +43,17 @@ export function chargeLink(before: Partial<SearchCount> | undefined, nowMs: numb
   return charge(before, nowMs, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR);
 }
 
+/**
+ * The counts with one fetch charged in hour [chargedHour] given back: a source
+ * that was only busy (`SOURCE_BUSY`) costs nothing. Null when nothing was counted.
+ */
+export function unchargeLink(before: Partial<SearchCount> | undefined, chargedHour: number): Partial<SearchCount> | null {
+  const count = typeof before?.count === "number" ? before.count : 0;
+  if (count <= 0) return null;
+  const hourCount = before?.hour === chargedHour && typeof before.hourCount === "number" ? before.hourCount : 0;
+  return { count: count - 1, ...(hourCount > 0 ? { hourCount: hourCount - 1 } : {}) };
+}
+
 /** What a person has left of today's pictures by link, and when the day starts again (UTC midnight). */
 export interface LinkQuota {
   left: number;

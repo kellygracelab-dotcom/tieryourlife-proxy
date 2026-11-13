@@ -28,7 +28,7 @@ import {
 } from "./pictureAttribution";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
 import { downloadPicture } from "./pictureSearch";
-import { chargeLink, linkQuota, retryAfterSeconds, type SearchCount } from "./pictureSearchLimit";
+import { chargeLink, linkQuota, retryAfterSeconds, unchargeLink, type SearchCount } from "./pictureSearchLimit";
 import { safeSearchOrNothing } from "./publishedPictures";
 import { dayKey } from "./quota";
 import { decideSafe } from "./safety";
@@ -119,6 +119,8 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
 
   const attribution: PictureAttribution = asked.link ? { source: "web", link: asked.link } : { source: "web" };
   const key = outsideName(asked.url);
+  // The hour the fetch was charged in, to give it back to.
+  let chargedHour = 0;
   // What this address got today, or a charge for fetching it.
   const count = (again: boolean) => db.runTransaction(async (transaction): Promise<{ before: string } | { retryAtMs: number } | null> => {
     const data = (await transaction.get(usage)).data() as (Partial<SearchCount> & { seen?: Record<string, unknown> }) | undefined;
@@ -129,6 +131,7 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
     if (!charge.allowed) return { retryAtMs: charge.retryAtMs };
     transaction.set(usage, charge.next, { merge: true });
     used = charge.next.count;
+    chargedHour = charge.next.hour;
     return null;
   });
   const bucket = getStorage().bucket();
@@ -154,6 +157,19 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
   const remember = (value: string) => usage.set({ seen: { [key]: value } }, { merge: true }).catch(() => undefined);
 
   const fetched = isDemoEmulator() ? { bytes: STUB_PICTURE, type: "image/png" } : await downloadPicture(new URL(asked.url));
+  if ("error" in fetched && fetched.error === "SOURCE_BUSY") {
+    // Only busy for now (429, 5xx): the fetch is given back and nothing is remembered, so the same address may come again.
+    await db.runTransaction(async (transaction) => {
+      const next = unchargeLink((await transaction.get(usage)).data() as Partial<SearchCount> | undefined, chargedHour);
+      if (next === null) return;
+      transaction.set(usage, next, { merge: true });
+      used = next.count;
+    }).catch(() => undefined);
+    const retryAt = fetched.retryAtMs ?? Date.now() + 60_000;
+    response.setHeader("Retry-After", String(retryAfterSeconds(retryAt, Date.now())));
+    refuse(response, 503, "SOURCE_BUSY", { retryAt, ...quota() });
+    return;
+  }
   if ("error" in fetched) {
     refuse(response, 422, fetched.error, quota());
     return;
