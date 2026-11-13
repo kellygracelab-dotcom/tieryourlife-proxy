@@ -543,10 +543,15 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
   });
 }
 
+/**
+ * A Wikidata label or description in [language], its base language, English,
+ * then `mul` (a name the same in every language, kept there alone), then any.
+ */
 function labelIn(labels: unknown, language: string): string | null {
   const byLanguage = (labels ?? {}) as Record<string, Json>;
   const base = language.split("-")[0] ?? language;
-  return text(byLanguage[language]?.value) ?? text(byLanguage[base]?.value) ?? text(byLanguage.en?.value) ?? text(Object.values(byLanguage)[0]?.value);
+  return text(byLanguage[language]?.value) ?? text(byLanguage[base]?.value) ?? text(byLanguage.en?.value) ?? text(byLanguage.mul?.value) ??
+    text(Object.values(byLanguage)[0]?.value);
 }
 
 function firstStringClaim(claim: unknown): string | null {

@@ -310,6 +310,19 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(candidates[0]?.tmdbIds, ["movie:77"]);
   });
 
+  it("Wikidata: a name kept only in `mul`, the same in every language, is the title", () => {
+    const P18 = { P18: [{ mainsnak: { datavalue: { value: "Michael Jordan in 2014.jpg" } } }] };
+    const entities = {
+      Q41421: { labels: { mul: { value: "Michael Jordan" } }, descriptions: { en: { value: "American basketball player" } }, claims: P18 },
+      Q7: { labels: { mul: { value: "PlayStation 5" }, de: { value: "PS5" } }, descriptions: { mul: { value: "console" } }, claims: P18 },
+    };
+    const english = wikidataCandidates(["Q41421", "Q7"], { entities }, "en");
+    assert.deepEqual(english.map(({ hit }) => [hit.title, hit.subtitle]), [["Michael Jordan", "American basketball player"], ["PlayStation 5", "console"]]);
+    // The reader's own language still comes first.
+    assert.deepEqual(wikidataCandidates(["Q7"], { entities }, "de").map(({ hit }) => hit.title), ["PS5"]);
+    assert.deepEqual(wikidataCandidates(["Q41421"], { entities }, "pt-BR").map(({ hit }) => hit.title), ["Michael Jordan"]);
+  });
+
   it("the web: https pictures big enough for a tile, the picture itself in the grid, long page titles cut", () => {
     const hits = webHits({ images: [
       { title: "x".repeat(100), imageUrl: "https://site/a.jpg", imageWidth: 800, imageHeight: 1000, thumbnailUrl: "https://t/a", source: "site" },
