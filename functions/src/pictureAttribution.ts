@@ -71,8 +71,19 @@ function parsed(url: string | null | undefined): URL | null {
 
 /** The catalogue a picture's own address is on, or null for any other address. */
 export function catalogueSourceOf(url: string | null | undefined): AttributionSource | null {
-  const host = parsed(url)?.hostname;
-  return host !== undefined && CATALOGUE_HOSTS.has(host) ? HOST_SOURCES[host] ?? null : null;
+  const one = parsed(url);
+  if (one === null || !CATALOGUE_HOSTS.has(one.hostname)) return null;
+  // A local Wikipedia's own uploads (fair use under /wikipedia/en/ and the like) carry no free licence: a picture from another site.
+  if (one.hostname === "upload.wikimedia.org" && !one.pathname.startsWith("/wikipedia/commons/")) return null;
+  return HOST_SOURCES[one.hostname] ?? null;
+}
+
+/** The page a picture from another site was found on, as a person gives it: any https page, in one short shape. */
+export function pageLink(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length > MAX_LINK_LENGTH) return null;
+  const one = parsed(raw.trim());
+  if (one === null || !one.hostname.includes(".")) return null;
+  return one.href.length <= MAX_LINK_LENGTH ? one.href : null;
 }
 
 // Each catalogue's pages, in the one shape a link to them is kept in. A client

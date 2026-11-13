@@ -9,7 +9,7 @@ import { getStorage } from "firebase-admin/storage";
 import { storageMediaUrl } from "./publicMedia";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
 import { isAnimated, pictureTypeOf } from "./pictureBytes";
-import { CATALOGUE_HOSTS, outsideName } from "./pictureAttribution";
+import { CATALOGUE_HOSTS, catalogueSourceOf, outsideName } from "./pictureAttribution";
 import { downloadPicture } from "./pictureSearch";
 import { addressOf, foreignCopyOf, safeSearchOrNothing } from "./publishedPictures";
 import { dayKey } from "./quota";
@@ -46,9 +46,9 @@ function hostOf(url: string): string | null {
   }
 }
 
+/** A catalogue's own address, kept as it is; Wikipedia's local uploads are not one (`catalogueSourceOf`). */
 export function isCatalogueAddress(url: string): boolean {
-  const host = hostOf(url);
-  return host !== null && CATALOGUE_HOSTS.has(host);
+  return catalogueSourceOf(url) !== null;
 }
 
 /** A file directly in [folder] of our own bucket, by the address `addressOf` gives it. */
