@@ -238,6 +238,8 @@ import { holdStaffMoves, readMovedByStaff, recordStaffMove, stillMoved, type Mov
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
 import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
 import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
+import { manualCredits } from "./manualAttribution";
+import { manualOf, type ManualAttribution } from "./pictureAttribution";
 import {
   cleanTopicName,
   decideAttachment,
@@ -446,6 +448,8 @@ interface StoredList {
   items: unknown[];
   itemCount: number;
   coverImageUrl: string | null;
+  /** The house editor's credit for [coverImageUrl] (`manualAttribution.ts`); a house list's only. */
+  coverAttribution?: ManualAttribution;
   previewImages: string[];
   tierColors: string[];
   /** The topic this list carries, if any; the name is copied so a card needs no second read. */
@@ -2832,7 +2836,24 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     translations: data.translations ?? {},
     picturesFrom: Array.isArray(data.picturesFrom) ? data.picturesFrom : [],
     underReview: data.underReview === true,
+    ...(data.coverAttribution ? { coverAttribution: data.coverAttribution } : {}),
   });
+}
+
+/**
+ * The cover's credit as written: the editor's new one, the one it had while
+ * the cover is the same picture, or none (deleted when there was one).
+ */
+export function coverCreditFields(
+  manual: ManualAttribution | "cleared" | undefined,
+  coverImageUrl: string | null,
+  previous: Pick<StoredList, "coverImageUrl" | "coverAttribution"> | null,
+): { coverAttribution?: ManualAttribution | FieldValue } {
+  const kept = coverImageUrl === null || manual === "cleared"
+    ? null
+    : manual ?? (previous?.coverAttribution && previous.coverImageUrl === coverImageUrl ? previous.coverAttribution : null);
+  if (kept !== null) return { coverAttribution: kept };
+  return previous?.coverAttribution ? { coverAttribution: FieldValue.delete() } : {};
 }
 
 async function publish(
@@ -2995,15 +3016,41 @@ async function publish(
   const before = attributionsByPicture(previous?.items);
   const cards: CardPicture[] = decision.draft.items.map((item) => {
     // Only a picture of the person's own folder can say it came from another site.
-    const { web, ...sent } = item.sent ?? {};
+    const { web, manual: _manual, ...sent } = item.sent ?? {};
     const told = { ...sent, ...(web && item.pictureId !== null ? { web } : {}) };
+    // An editor's credit alone is not an attribution sent back.
+    const sentBack = Object.keys(item.sent ?? {}).some((key) => key !== "manual");
     return {
       imageUrl: item.imageUrl,
       ...(item.credit ? { credit: item.credit } : {}),
-      ...(item.sent ? { sent: told } : {}),
+      ...(sentBack ? { sent: told } : {}),
       ...(item.imageUrl !== null && before.has(storageMediaUrl(item.imageUrl)) ? { previous: before.get(storageMediaUrl(item.imageUrl)) } : {}),
     };
   });
+  // The house's editor may give a picture's author, licence and page; anybody else's are not read.
+  // The cover's: decided, "cleared", or undefined to keep the one it had.
+  let coverManual: ManualAttribution | "cleared" | undefined;
+  if (byline.speaker !== null) {
+    const coverRaw = source.coverAttribution === null ? { manual: false } : source.coverAttribution;
+    const credits = await manualCredits(
+      [...decision.draft.items.map((item) => item.sent?.manual), coverRaw],
+      [...cards.map((card) => manualOf(card.previous)), previous?.coverAttribution],
+    );
+    const wrong = credits.findIndex((one) => one !== null && typeof one === "object" && "error" in one);
+    if (wrong >= 0) {
+      const reason = (credits[wrong] as { error: string }).error;
+      const where = wrong === decision.draft.items.length ? { cover: true } : { itemIndex: wrong };
+      response.status(400).json({ error: "That credit cannot be kept: it needs a known licence and the page it stands on", code: "BAD_ATTRIBUTION", reason, ...where });
+      return;
+    }
+    credits.slice(0, -1).forEach((one, at) => {
+      const item = decision.draft.items[at]!;
+      // A card without a picture has nothing to credit.
+      if (one !== null && (item.imageUrl !== null || item.pictureId !== null)) cards[at]!.manual = one as ManualAttribution | "cleared";
+    });
+    const cover = credits[credits.length - 1];
+    coverManual = cover === null ? undefined : (cover as ManualAttribution | "cleared");
+  }
   const files = commonsFilesOf(cards);
   const attributions = attributionsOf(cards, files.length > 0 && !isDemoEmulator() ? await askCommons(files) : new Map());
   // The house names where each new picture from another site was found.
@@ -3109,6 +3156,7 @@ async function publish(
       items: list.items,
       itemCount: list.items.length,
       coverImageUrl: list.coverImageUrl,
+      ...coverCreditFields(coverManual, list.coverImageUrl, previous),
       previewImages: list.previewImages,
       // Whose published pictures this list holds copies of, so taking that list
       // down for its pictures takes them out of the copies too.

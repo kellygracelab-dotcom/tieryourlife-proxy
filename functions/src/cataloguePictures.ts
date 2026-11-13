@@ -18,9 +18,12 @@ import {
   copyNameOf,
   copySourceOf,
   isCopyOf,
+  manualOf,
   mayCopy,
   pageLink,
+  withManual,
   type CommonsDetails,
+  type ManualAttribution,
   type PictureAttribution,
 } from "./pictureAttribution";
 import { commonsDetails } from "./pictureCredit";
@@ -35,6 +38,11 @@ export interface CardPicture {
   sent?: { link?: string; originalUrl?: string; web?: true; id?: string };
   /** The attribution the same picture had in the list's previous snapshot, if any. */
   previous?: PictureAttribution;
+  /**
+   * The house editor's credit for this card, decided (`manualAttribution.ts`), or
+   * "cleared" when the editor took theirs off. Absent: the previous one stays.
+   */
+  manual?: ManualAttribution | "cleared";
 }
 
 /** The catalogue address a card's picture stands for: its own, or the one its copy was made from. */
@@ -63,19 +71,28 @@ export function commonsFilesOf(cards: readonly CardPicture[]): string[] {
  */
 export function attributionsOf(cards: readonly CardPicture[], commons: ReadonlyMap<string, CommonsDetails>): (PictureAttribution | null)[] {
   return cards.map((card) => {
-    if (card.imageUrl === null) return card.sent?.web ? webAttribution(card) : null;
-    const original = originalOf(card);
-    if (original !== null) {
-      const found = attributionOf(original, { credit: card.credit, sentLink: card.sent?.link ?? card.previous?.link, sentId: card.sent?.id ?? card.previous?.id, commons });
-      if (found === null) return null;
-      // Only the server moves a card to a catalogue's new address, and the snapshot remembers where it was.
-      const formerUrls = card.previous?.formerUrls;
-      return cleanAttribution({ ...found, ...(original === card.imageUrl ? {} : { originalUrl: original }), ...(formerUrls ? { formerUrls } : {}) });
-    }
-    const stored = storageMediaUrl(card.imageUrl);
-    if (copyNameOf(stored) !== null || !stored.startsWith("https://firebasestorage.googleapis.com/")) return webAttribution(card);
-    return card.sent?.web ? webAttribution(card) : null;
+    const derived = derivedAttribution(card, commons);
+    // The house editor's credit: the one sent now (also for an own photo, which has no address
+    // until it is copied), or the one this picture had.
+    const manual = card.manual === "cleared" ? null : card.manual ?? (card.imageUrl === null ? null : manualOf(card.previous));
+    return manual === null ? derived : cleanAttribution(withManual(derived, manual));
   });
+}
+
+/** What the server works out itself for a card's picture. */
+function derivedAttribution(card: CardPicture, commons: ReadonlyMap<string, CommonsDetails>): PictureAttribution | null {
+  if (card.imageUrl === null) return card.sent?.web ? webAttribution(card) : null;
+  const original = originalOf(card);
+  if (original !== null) {
+    const found = attributionOf(original, { credit: card.credit, sentLink: card.sent?.link ?? card.previous?.link, sentId: card.sent?.id ?? card.previous?.id, commons });
+    if (found === null) return null;
+    // Only the server moves a card to a catalogue's new address, and the snapshot remembers where it was.
+    const formerUrls = card.previous?.formerUrls;
+    return cleanAttribution({ ...found, ...(original === card.imageUrl ? {} : { originalUrl: original }), ...(formerUrls ? { formerUrls } : {}) });
+  }
+  const stored = storageMediaUrl(card.imageUrl);
+  if (copyNameOf(stored) !== null || !stored.startsWith("https://firebasestorage.googleapis.com/")) return webAttribution(card);
+  return card.sent?.web ? webAttribution(card) : null;
 }
 
 /**

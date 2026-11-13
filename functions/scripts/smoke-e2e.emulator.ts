@@ -105,6 +105,35 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await house()).body.itemIndex, 1);
     const named = await house(page);
     assert.equal(named.status, 201, JSON.stringify(named.body));
+
+    // The house's editor may credit a picture and the cover themself; a credit needs a licence we know.
+    const credit = { source: "web", manual: true, author: "Jane Doe", license: "cc by-sa 4.0", link: page };
+    const credited = (items: unknown[], coverAttribution?: unknown) => call(owner, "POST", "/lists/editorial", {
+      title: "Credited house smoke", category: "film_tv", tiers: [TIER], coverImageUrl: poster, ...(coverAttribution ? { coverAttribution } : {}), items,
+    });
+    const refused = await credited([{ title: "Found", pictureId: houseLinked.body.pictureId, tierIndex: 0, attribution: { ...credit, license: undefined } }]);
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual([refused.body.code, refused.body.reason, refused.body.itemIndex], ["BAD_ATTRIBUTION", "NO_LICENSE", 0]);
+    const badCover = await credited([{ title: "Poster", imageUrl: poster, tierIndex: 0 }], { manual: true, license: "All Rights Reserved", link: page });
+    assert.deepEqual([badCover.body.code, badCover.body.reason, badCover.body.cover], ["BAD_ATTRIBUTION", "UNKNOWN_LICENSE", true]);
+    const kept = await credited(
+      [{ title: "Found", pictureId: houseLinked.body.pictureId, tierIndex: 0, attribution: credit }, { title: "Poster", imageUrl: poster, tierIndex: 0 }],
+      { manual: true, license: "Used with permission", link: "https://www.themoviedb.org/movie/603" },
+    );
+    assert.equal(kept.status, 201, JSON.stringify(kept.body));
+    const shown = (await call(owner, "GET", `/lists/${kept.body.id}`)).body;
+    const [found, plain] = shown.items as { imageUrl: string; attribution?: unknown }[];
+    assert.match(found!.imageUrl, /published%2F/);
+    assert.deepEqual(found!.attribution, { source: "web", author: "Jane Doe", license: "CC BY-SA 4.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", link: page, manual: true });
+    assert.deepEqual(plain!.attribution, { source: "tmdb" });
+    assert.deepEqual(shown.coverAttribution, { license: "Used with permission", link: "https://www.themoviedb.org/movie/603", manual: true });
+
+    // Anybody else's credit is not read: their picture carries only the page it was found on.
+    const ordinary = await call(author, "POST", "/lists", { title: "Credited by a person", category: "film_tv", tiers: [TIER], items: [{ ...card, attribution: credit }], coverAttribution: credit });
+    assert.equal(ordinary.status, 201, JSON.stringify(ordinary.body));
+    const theirs = (await call(author, "GET", `/lists/${ordinary.body.id}`)).body;
+    assert.deepEqual((theirs.items as { attribution?: unknown }[])[0]!.attribution, { source: "web", link: page });
+    assert.equal(theirs.coverAttribution, undefined);
   });
 
   it("credits each card's picture, copies an open photo and keeps its catalogue address, and leaves a poster where it is", async () => {
