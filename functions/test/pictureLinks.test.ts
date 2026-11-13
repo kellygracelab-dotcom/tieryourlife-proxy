@@ -197,6 +197,27 @@ describe("a Commons file page, as people copy it from the browser", () => {
     assert.equal(commonsPictureOf("https://commons.wikimedia.org/wiki/File:"), "https://commons.wikimedia.org/wiki/File:");
   });
 
+  it("is kept at a width Wikimedia makes, never the uploaded original", () => {
+    const cat = (width: string) => `https://commons.wikimedia.org/wiki/Special:FilePath/Felis_catus-cat_on_snow.jpg${width}`;
+    const shown = cat("?width=600");
+    // Without a width, or wider than a card needs, FilePath answers with the whole file (5472 px for some).
+    assert.equal(commonsPictureOf(cat("")), shown);
+    assert.equal(commonsPictureOf(cat("?width=5000")), shown);
+    assert.equal(commonsPictureOf(cat("?width=wide")), shown);
+    // FilePath rounds any other width up to one it makes: kept as sent.
+    for (const width of ["250", "500", "600", "640", "960", "1280"]) assert.equal(commonsPictureOf(cat(`?width=${width}`)), cat(`?width=${width}`));
+    for (const host of ["upload", "thumb"]) {
+      const folder = `https://${host}.wikimedia.org/wikipedia/commons`;
+      assert.equal(commonsPictureOf(`${folder}/b/b6/Felis_catus-cat_on_snow.jpg`), shown, "the original");
+      assert.equal(commonsPictureOf(`${folder}/thumb/b/b6/Felis_catus-cat_on_snow.jpg/640px-Felis_catus-cat_on_snow.jpg`), shown, "a width Wikimedia answers 400 to");
+      assert.equal(commonsPictureOf(`${folder}/thumb/b/b6/Felis_catus-cat_on_snow.jpg/1920px-Felis_catus-cat_on_snow.jpg`), shown, "wider than a card needs");
+      const made = `${folder}/thumb/b/b6/Felis_catus-cat_on_snow.jpg/500px-Felis_catus-cat_on_snow.jpg`;
+      assert.equal(commonsPictureOf(made), made);
+    }
+    // A local wiki's upload is no Commons file: another site's picture, as it is.
+    assert.equal(commonsPictureOf("https://upload.wikimedia.org/wikipedia/en/a/ab/Logo.png"), "https://upload.wikimedia.org/wikipedia/en/a/ab/Logo.png");
+  });
+
   it("is answered by the link route as the catalogue picture, with the file's page and, with a licence, a copy", () => {
     assert.deepEqual(readLinkRequest({ url: page }), { url: picture, catalogue: "wikimedia", link: null, credit: null });
     const found = attributionOf(picture, {});

@@ -283,16 +283,35 @@ export function commonsThumb(file: string, width: number): string {
   return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=${width}`;
 }
 
+/** The width a card asks a Commons file at, as search hits do: `Special:FilePath` serves its 960 px thumbnail. */
+export const COMMONS_CARD_WIDTH = 600;
+/** The widest `Special:FilePath` a card keeps as sent: wider is bytes nobody sees. */
+const COMMONS_WIDEST = 1280;
 /**
- * The picture a Commons file page (`https://commons.wikimedia.org/wiki/File:…`)
- * is about, 600 px wide as search hits show Commons; any other address as it is.
- * The page itself is HTML, which no card can show.
+ * The widths Wikimedia makes thumbnails at (https://w.wiki/GHai). A direct
+ * thumbnail (`…/thumb/…/{n}px-{name}`) at any other answers 400 since 2026;
+ * `Special:FilePath` rounds any width up to one of these.
+ */
+export const COMMONS_THUMB_WIDTHS: ReadonlySet<number> = new Set([20, 40, 60, 120, 250, 330, 500, 960, 1280, 1920, 3840]);
+
+/**
+ * A Commons address as a card keeps it: a file page (`/wiki/File:…`, HTML no
+ * card can show), a `Special:FilePath` without a width or wider than 1280, the
+ * uploaded original, or a direct thumbnail at a width Wikimedia does not make
+ * becomes `Special:FilePath/{name}?width=600`, as search hits are. Any other
+ * Commons address, and every other address, as it is.
  */
 export function commonsPictureOf(url: string): string {
   const one = parsed(url);
-  if (one === null || one.hostname !== "commons.wikimedia.org" || !one.pathname.startsWith("/wiki/File:")) return url;
-  const file = commonsFileOf(url);
-  return file === null ? url : commonsThumb(file, 600);
+  const file = one === null ? null : commonsFileOf(url);
+  if (one === null || file === null) return url;
+  if (one.hostname === "commons.wikimedia.org" && one.pathname.startsWith("/wiki/Special:FilePath/")) {
+    const width = one.searchParams.get("width");
+    return width !== null && /^\d{1,4}$/.test(width) && Number(width) > 0 && Number(width) <= COMMONS_WIDEST ? url : commonsThumb(file, COMMONS_CARD_WIDTH);
+  }
+  const thumb = /^\/wikipedia\/commons\/thumb\/.+\/(\d{1,4})px-[^/]+$/.exec(one.pathname);
+  if (thumb && COMMONS_THUMB_WIDTHS.has(Number(thumb[1])) && Number(thumb[1]) <= COMMONS_WIDEST) return url;
+  return commonsThumb(file, COMMONS_CARD_WIDTH);
 }
 
 /** What Commons says about a file, as `commonsDetails` reads it. */
