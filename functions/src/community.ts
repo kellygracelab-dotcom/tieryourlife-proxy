@@ -253,6 +253,7 @@ import {
   impliedTopic,
   MAX_TOPIC_HOPS,
   topicHop,
+  readTopicNames,
   readTopicPictureId,
   isTopicId,
   mayKnowProposer,
@@ -590,6 +591,8 @@ interface StoredTopic {
   names?: Record<string, string>;
   /** Public, at topics/{id}/{pictureId}; absent or null for a topic without one. */
   picture?: SectionPicture | null;
+  /** The staff's credit for the picture, kept while the picture stays; null or absent for none. */
+  pictureAttribution?: ManualAttribution | null;
 }
 
 function knownTopic(id: string, data: StoredTopic): KnownTopic {
@@ -617,7 +620,27 @@ export function toTopic(id: string, data: StoredTopic, following: boolean, reade
     ...(mayKnowProposer(data, reader) ? { createdBy: data.createdBy } : {}),
     mergedInto: data.mergedInto ?? null,
     pictureUrl: data.picture?.url ?? null,
+    ...(data.picture?.url && data.pictureAttribution ? { pictureAttribution: data.pictureAttribution } : {}),
   };
+}
+
+/**
+ * The staff's credit for a topic's picture, as a house list's `coverAttribution`:
+ * decided (its page read for an author or licence left empty), "cleared" for
+ * `null` or `manual: false`, undefined when the body says nothing. `manual: true`
+ * may be left out. A credit sent back as [known] is kept without being read again.
+ */
+async function topicCredit(raw: unknown, known: ManualAttribution | null | undefined): Promise<ManualAttribution | "cleared" | undefined | { error: string }> {
+  if (raw === undefined) return undefined;
+  if (raw === null) return "cleared";
+  const asked = typeof raw === "object" && !Array.isArray(raw) && (raw as Record<string, unknown>).manual === undefined ? { ...(raw as object), manual: true } : raw;
+  const [credit] = await manualCredits([asked], [known]);
+  if (credit === null || credit === undefined) return { error: "NO_LINK" };
+  return credit as ManualAttribution | "cleared" | { error: string };
+}
+
+function badTopicCredit(response: Response, reason: string): void {
+  response.status(400).json({ error: "That credit cannot be kept: it needs a known licence and the page it stands on", code: "BAD_ATTRIBUTION", reason, detail: "pictureAttribution" });
 }
 
 /**
@@ -4466,8 +4489,17 @@ async function createTopic(response: Response, identity: Identity, body: unknown
         return;
     }
   }
+  // Its translations at once, as `PATCH` takes them: a hundred new topics need no second call each.
+  const names = source.names === undefined ? {} : readTopicNames(source.names);
+  if (names === null) {
+    response.status(400).json({ error: "A translation is two to forty characters, in one of the app's languages", code: "INVALID", detail: "names" });
+    return;
+  }
   const asked = readTopicPictureId(source.pictureId);
   if (!asked.ok) return refuseSection(response, { code: "BAD_PICTURE", why: "missing" });
+  const credit = typeof asked.pictureId === "string" ? await topicCredit(source.pictureAttribution, null) : undefined;
+  if (credit !== undefined && typeof credit === "object" && "error" in credit) return badTopicCredit(response, credit.error);
+  const pictureAttribution = typeof credit === "object" ? credit : null;
   // Named before it is written: its picture has to be copied into its own folder first.
   const ref = db.collection(TOPICS).doc();
   const picture = typeof asked.pictureId === "string"
@@ -4479,10 +4511,11 @@ async function createTopic(response: Response, identity: Identity, body: unknown
     if (taken !== null) return { taken };
     transaction.set(ref, {
       picture: picture?.picture ?? null,
+      ...(picture !== null && pictureAttribution !== null ? { pictureAttribution } : {}),
       name: decision.name,
       nameLower: decision.nameLower,
-      names: {},
-      ...searchFieldsFor([decision.name]),
+      names,
+      ...searchFieldsFor([decision.name, ...Object.values(names)]),
       section: decision.section,
       status: "approved",
       requestedSection: decision.section,
@@ -4498,6 +4531,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
     reserveTopicName(transaction, decision.nameLower, ref.id);
     auditInTransaction(transaction, auditEntry(identity.uid, role, "topic.create", `${TOPICS}/${ref.id}`, null, {
       name: decision.name,
+      names,
       section: decision.section,
       status: "approved",
       picture: picture?.picture ?? null,
@@ -4572,6 +4606,8 @@ async function editTopic(response: Response, identity: Identity, topicId: string
   if (edit.name !== undefined || edit.names !== undefined) {
     Object.assign(update, searchFieldsFor([edit.name ?? stored.name, ...Object.values(edit.names ?? stored.names ?? {})]));
   }
+  const credit = await topicCredit((body as Record<string, unknown> | null)?.pictureAttribution, stored.pictureAttribution);
+  if (credit !== undefined && typeof credit === "object" && "error" in credit) return badTopicCredit(response, credit.error);
   // A new picture is copied before the decision and removed again if the edit does not land.
   let copied: string | null = null;
   if (typeof edit.pictureId === "string") {
@@ -4582,6 +4618,11 @@ async function editTopic(response: Response, identity: Identity, topicId: string
   } else if (edit.pictureId === null) {
     update.picture = null;
   }
+  // The credit goes with the picture: a new one without a credit, or none, takes the old credit away.
+  const pictureAfter = "picture" in update ? (update.picture as SectionPicture | null)?.url ?? null : stored.picture?.url ?? null;
+  const pictureChanged = pictureAfter !== (stored.picture?.url ?? null);
+  if (typeof credit === "object" && pictureAfter !== null) update.pictureAttribution = credit;
+  else if (credit === "cleared" || ((pictureChanged || pictureAfter === null) && stored.pictureAttribution)) update.pictureAttribution = null;
 
   type Saved = { replaced: string | null } | "settled" | { taken: string };
   const saved = await keepingOnlyIfWritten(copied, () => db.runTransaction(async (transaction): Promise<Saved> => {
