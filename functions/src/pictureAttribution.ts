@@ -228,14 +228,18 @@ function decodeEntities(text: string): string {
   });
 }
 
-/** A Commons file's name from its address: `Special:FilePath` or Commons' own upload folder, never a local wiki's. */
+/**
+ * A Commons file's name from its address: `Special:FilePath`, the file's own
+ * page (`/wiki/File:…`, as people copy it from the browser) or Commons' own
+ * upload folder, never a local wiki's.
+ */
 export function commonsFileOf(url: string): string | null {
   const one = parsed(url);
   if (one === null) return null;
   let name: string | null = null;
   try {
     if (one.hostname === "commons.wikimedia.org") {
-      name = /^\/wiki\/Special:FilePath\/([^/]+)$/.exec(one.pathname)?.[1] ?? null;
+      name = /^\/wiki\/(?:Special:FilePath\/|File:)([^/]+)$/.exec(one.pathname)?.[1] ?? null;
     } else if (WIKIMEDIA_FILE_HOSTS.has(one.hostname)) {
       const match = /^\/wikipedia\/commons\/(?:thumb\/)?[0-9a-f]\/[0-9a-f]{2}\/([^/]+)(?:\/[^/]+)?$/.exec(one.pathname);
       name = match?.[1] ?? null;
@@ -246,6 +250,23 @@ export function commonsFileOf(url: string): string | null {
   }
   if (!name || /[|#<>[\]{}]/.test(name)) return null;
   return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** A Commons file's picture, [width] pixels wide, as a search hit shows it. */
+export function commonsThumb(file: string, width: number): string {
+  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=${width}`;
+}
+
+/**
+ * The picture a Commons file page (`https://commons.wikimedia.org/wiki/File:…`)
+ * is about, 600 px wide as search hits show Commons; any other address as it is.
+ * The page itself is HTML, which no card can show.
+ */
+export function commonsPictureOf(url: string): string {
+  const one = parsed(url);
+  if (one === null || one.hostname !== "commons.wikimedia.org" || !one.pathname.startsWith("/wiki/File:")) return url;
+  const file = commonsFileOf(url);
+  return file === null ? url : commonsThumb(file, 600);
 }
 
 /** What Commons says about a file, as `commonsDetails` reads it. */

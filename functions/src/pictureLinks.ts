@@ -21,6 +21,7 @@ import {
   catalogueSourceOf,
   cleanAttribution,
   commonsFileOf,
+  commonsPictureOf,
   outsideName,
   pageLink,
   type AttributionSource,
@@ -56,7 +57,9 @@ export function readLinkRequest(body: unknown): LinkRequest {
   const link = given === null ? null : pageLink(given);
   if (given !== null && link === null) return { error: "BAD_LINK" };
   const credit = typeof value.credit === "string" ? value.credit.replace(/\s+/g, " ").trim().slice(0, MAX_CREDIT_LENGTH) : "";
-  return { url: url.href, catalogue: catalogueSourceOf(url.href), link, credit: credit || null };
+  // A Commons file page names its picture: that is what is asked for.
+  const picture = commonsPictureOf(url.href);
+  return { url: picture, catalogue: catalogueSourceOf(picture), link, credit: credit || null };
 }
 
 /** A catalogue's own address, answered as it is: the page it names, or the one sent when it is that catalogue's. */

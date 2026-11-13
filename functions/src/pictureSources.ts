@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { inaturalistLicence, linkFromAddress, type PictureAttribution } from "./pictureAttribution";
+import { commonsThumb, inaturalistLicence, linkFromAddress, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -510,9 +510,7 @@ export function commonsPictures(body: unknown, covers: boolean): Map<string, { c
   return pictures;
 }
 
-export function commonsThumb(file: string, width: number): string {
-  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=${width}`;
-}
+export { commonsThumb };
 
 /** `wbgetentities` with labels, descriptions and claims, in the order `wbsearchentities` found the ids. */
 export function wikidataCandidates(ids: readonly string[], body: unknown, language: string, onlyMusic = false): WikidataCandidate[] {

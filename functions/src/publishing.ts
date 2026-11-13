@@ -2,7 +2,7 @@
  * Rules for what may be published and in what shape. Pure, like `quota.ts`:
  * the adapter in `community.ts` turns these decisions into Firestore writes.
  */
-import { MAX_LINK_LENGTH, type PictureAttribution } from "./pictureAttribution";
+import { commonsPictureOf, MAX_LINK_LENGTH, type PictureAttribution } from "./pictureAttribution";
 import { isPictureId, MAX_OWN_PICTURES_PER_LIST } from "./safety";
 import { isSectionId } from "./sections";
 import { readAnonymous } from "./anonymous";
@@ -132,7 +132,8 @@ function httpsUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith("https://")) return null;
-  return trimmed.length > 2000 ? null : storageMediaUrl(trimmed);
+  // A Commons file page is read as the picture it is about.
+  return trimmed.length > 2000 ? null : storageMediaUrl(commonsPictureOf(trimmed));
 }
 
 const OWN_FOLDER = /\/o\/users%2F([^/?#%]+)%2Fpictures%2F([^/?#]+)/i;

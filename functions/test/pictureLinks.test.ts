@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { attributionsByPicture, attributionsOf, firstWithoutPage, type CardPicture } from "../src/cataloguePictures";
 import { isCatalogueAddress } from "../src/outsidePictures";
-import { attributionOf, catalogueSourceOf, commonsFileOf, pageLink } from "../src/pictureAttribution";
+import { attributionOf, catalogueSourceOf, commonsFileOf, commonsPictureOf, mayCopy, pageLink } from "../src/pictureAttribution";
 import { catalogueAnswer, readLinkRequest } from "../src/pictureLinks";
 import { BUSY_WAIT_MS, sourceBusy } from "../src/pictureSearch";
 import { chargeLink, linkQuota, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR, unchargeLink } from "../src/pictureSearchLimit";
@@ -180,5 +180,41 @@ describe("a picture's own site that is busy", () => {
   it("is asked with a name and a way to reach us, and no address of a person", () => {
     assert.equal(USER_AGENT, "TierYourLife/1.0 (https://tieryourlife.web.app/privacy)");
     assert.doesNotMatch(USER_AGENT, /@/);
+  });
+});
+
+describe("a Commons file page, as people copy it from the browser", () => {
+  const page = "https://commons.wikimedia.org/wiki/File:Coconut_%28halved%29_%283330701660%29.jpg";
+  const picture = "https://commons.wikimedia.org/wiki/Special:FilePath/Coconut_(halved)_(3330701660).jpg?width=600";
+
+  it("names its file and stands for that file's picture, 600 px wide as search hits show Commons", () => {
+    assert.equal(commonsFileOf(page), "Coconut (halved) (3330701660).jpg");
+    assert.equal(commonsPictureOf(page), picture);
+    assert.equal(commonsFileOf(picture), "Coconut (halved) (3330701660).jpg");
+    assert.equal(commonsPictureOf(picture), picture);
+    assert.equal(commonsPictureOf("https://commons.wikimedia.org/wiki/Main_Page"), "https://commons.wikimedia.org/wiki/Main_Page");
+    assert.equal(commonsPictureOf("https://example.com/wiki/File:Cat.jpg"), "https://example.com/wiki/File:Cat.jpg");
+    assert.equal(commonsPictureOf("https://commons.wikimedia.org/wiki/File:"), "https://commons.wikimedia.org/wiki/File:");
+  });
+
+  it("is answered by the link route as the catalogue picture, with the file's page and, with a licence, a copy", () => {
+    assert.deepEqual(readLinkRequest({ url: page }), { url: picture, catalogue: "wikimedia", link: null, credit: null });
+    const found = attributionOf(picture, {});
+    assert.deepEqual(found, { source: "wikimedia", link: "https://commons.wikimedia.org/wiki/File:Coconut_(halved)_(3330701660).jpg" });
+    assert.equal(mayCopy(picture, { ...found!, license: "CC BY 2.0" }), true);
+  });
+
+  it("is published as that picture, on a card and as the cover", () => {
+    const decision = decidePublish({ isAnonymous: false, listsAlreadyPublished: 0, uploaderUid: "someone", body: {
+      title: "Fruit",
+      category: "food",
+      tiers: [{ label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" }],
+      coverImageUrl: "https://commons.wikimedia.org/wiki/File:Culinary_fruits_front_view.jpg",
+      items: [{ title: "Coconut", imageUrl: page }],
+    } });
+    assert.ok(decision.ok);
+    if (!decision.ok) return;
+    assert.equal(decision.draft.items[0].imageUrl, picture);
+    assert.equal(decision.draft.coverImageUrl, "https://commons.wikimedia.org/wiki/Special:FilePath/Culinary_fruits_front_view.jpg?width=600");
   });
 });
