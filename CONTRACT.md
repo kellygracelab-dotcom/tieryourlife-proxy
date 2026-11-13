@@ -93,6 +93,8 @@ do not migrate documents. IDs, titles, credits and private boards are unchanged.
 | Section or topic picture | JPEG, PNG or WebP, at least 960 px wide, 16:10 ±2 % | `imageSize.ts` |
 | House translations | 2000 per locale, 200 characters a side, the list document 1 000 000 bytes with them | `editorial.ts` |
 | Picture search query | 2–100 characters, page 1–20 | `pictureSearch.ts` |
+| Picture searches | 1000 per account per UTC hour, 3000 per UTC day; only searches that ask a catalogue count (see `GET /lists/pictures`) | `pictureSearchLimit.ts` |
+| Resting catalogue | after 429 or 5xx: its `Retry-After`, at most 1 h; else 5 minutes; for every instance | `pictureSources.ts` |
 | Web picture search | asked only when fewer than 6 good hits; 30 per account per day; 50 000 a month for everyone | `pictureSources.ts` |
 | Kept web picture | 4 MB (read no further), 3 redirects, 300 attempts per account per day, refused ones too | `pictureSearch.ts` |
 | Own picture in Storage (`users/{uid}/pictures/`) | under 4 MB, declared `image/jpeg`, `png`, `webp` or `gif` (rules); the bytes must start as JPEG, PNG, GIF or WebP; 2000 uploads per account per UTC day; otherwise `checkUpload` removes it right after it lands | `storage.rules`, `pictureBytes.ts` |
@@ -327,7 +329,15 @@ An accepted translation replacement advances the list's `updatedAt`, so an origi
 - `web=1` (or `web=true`): ask the paid web search even outside `all`.
 - `part=quick`: only the fast catalogues; the answer's `rest` says whether the whole search could add more.
 
-`200 {items: PictureHit[], hasMore, notices, rest?}`, `notices` holding `"webOff"` or `"webDailyLimit"`. `400 QUERY_TOO_SHORT`, `502 SOURCES_DOWN` (every catalogue failed). Answers are cached three days.
+`200 {items: PictureHit[], hasMore, notices, rest?}`, `notices` holding `"webOff"` or `"webDailyLimit"`. `400 QUERY_TOO_SHORT`, `502 SOURCES_DOWN` (every catalogue failed or is resting). Answers are cached three days.
+
+**The whole search builds on the quick one.** Each catalogue's answer to a `part=quick` search is kept three days on its own; the whole search with the same `q`, `scope`, `lang` and `page` takes those answers as they are and asks only the catalogues they lack (the slow ones, and any that failed). The merged hits are the same as if every catalogue had been asked at once.
+
+**A catalogue that refuses rests.** A catalogue that answers `429` or `5xx` (to its main request or a side one, such as iNaturalist's observations) is not asked by any instance until its `Retry-After` passes (seconds or an HTTP date, at most one hour), or for 5 minutes when it names none. Meanwhile it leaves a gap, as a failed one did before: the others answer as usual, and an answer with a gap is not kept. Only when every catalogue the search needs is failing or resting is the answer `502 SOURCES_DOWN`. A `4xx` about the request itself (Open Library's `422` for a short query) is no rest.
+
+**`429 SEARCH_LIMIT`**: the account (guests too, by uid) has used its searches: 1000 in this UTC hour or 3000 this UTC day. Body `{error: "Too many picture searches", code: "SEARCH_LIMIT", retryAt}`, `retryAt` the epoch milliseconds when the full window opens again (the next UTC hour, or UTC midnight), and header `Retry-After` in whole seconds to that moment. What counts: a request that has to ask at least one catalogue and builds on no quick answer already kept, so a quick search and the whole one after it count once, a next page counts, and an answer already kept (served from the cache) counts nothing and is served even past the limit. The refusal itself is not counted, so asking again while refused does not move `retryAt`. A client should not ask again before `retryAt` (a pasted list stops looking up the titles left). A client from before this limit treats it as any refused search: the app falls back to asking TMDB and Wikidata from the phone, the website says the catalogues are down.
+
+Outgoing requests carry `User-Agent: TierYourLife/1.0 (https://tieryourlife.web.app; kellygracelab@gmail.com; server)`, the contact address published on the privacy page: Wikimedia and Open Library allow more to a client that names one. iNaturalist's observations are asked only for taxa still without an open photo after their own photos (at most 6).
 
 **Deezer is not a picture source** (not in the first release: the right to show its covers publicly is unclear). No answer holds `source: "deezer"` or a `*.dzcdn.net` address, and answers cached before it was turned off are not served. A client must not expect `deezer` among the sources, but must still draw a card whose `imageUrl` is on `cdn-images.dzcdn.net` or `e-cdns-images.dzcdn.net`: boards kept in the account (`PUT /boards`) keep those covers as sent, and a published list may hold them until `scripts/remove-deezer-covers.ts` is run.
 

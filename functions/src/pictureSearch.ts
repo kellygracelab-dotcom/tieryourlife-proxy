@@ -18,7 +18,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { Response } from "express";
 import { defineSecret } from "firebase-functions/params";
-import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import type { Identity } from "./auth";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
@@ -39,7 +39,6 @@ import {
   inaturalistObservationPhotos,
   inaturalistPhotos,
   inaturalistWithoutPhoto,
-  isSlowSource,
   mergeHits,
   openLibraryHits,
   PictureHit,
@@ -58,7 +57,7 @@ import {
   wantsCovers,
   wikidataCandidates,
 } from "./pictureSources";
-import { chargeSearch, type SearchCharge } from "./pictureSearchLimit";
+import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
 import { fold } from "./search";
 
@@ -69,8 +68,11 @@ export const igdbClientSecret = defineSecret("IGDB_CLIENT_SECRET");
 const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
-/** Raised whenever an answer holds something different, so answers kept from before are not served. */
-const CACHE_SHAPE = 10;
+/**
+ * Raised whenever an answer holds something different, so answers kept from before are not served.
+ * Raising it also drops three days of answers at once and sends every search back to the catalogues.
+ */
+const CACHE_SHAPE = 9;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -97,10 +99,10 @@ interface PicturesAnswer {
   rest?: boolean;
 }
 
-/** This person has searched the catalogues as much as a minute or a day allows. */
+/** This person has searched the catalogues as much as an hour or a UTC day allows (src/pictureSearchLimit.ts). */
 export interface SearchLimited {
   limited: true;
-  retryAfterSeconds: number;
+  retryAtMs: number;
 }
 
 export async function routePictures(
@@ -118,7 +120,7 @@ export async function routePictures(
       return;
     }
     const page = Math.min(MAX_PAGE, Math.max(1, Number.parseInt(String(query.page ?? "1"), 10) || 1));
-    const answer = await searchPictures({
+    const answer = await searchPicturesCounted({
       typed,
       scope: pictureScopeOf(query.scope),
       language: typeof query.lang === "string" && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(query.lang) ? query.lang : "en",
@@ -126,15 +128,15 @@ export async function routePictures(
       forcedWeb: query.web === "1" || query.web === "true",
       quick: query.part === "quick",
       uid: identity.uid,
-      metered: true,
     });
     if (answer === null) {
       response.status(502).json({ error: "No catalogue answered", code: "SOURCES_DOWN" });
       return;
     }
     if ("limited" in answer) {
-      response.setHeader("Retry-After", String(answer.retryAfterSeconds));
-      response.status(429).json({ error: "Too many picture searches for now", code: "SEARCH_LIMIT", retryAfterSeconds: answer.retryAfterSeconds });
+      response.setHeader("Retry-After", String(retryAfterSeconds(answer.retryAtMs, Date.now())));
+      response.setHeader("Cache-Control", "no-store");
+      response.status(429).json({ error: "Too many picture searches", code: "SEARCH_LIMIT", retryAt: answer.retryAtMs });
       return;
     }
     response.setHeader("Cache-Control", "no-store");
@@ -166,17 +168,26 @@ interface SearchInput {
   forcedWeb: boolean;
   quick: boolean;
   uid: string;
-  /** A person's search, counted against their limit; the house fill is not. */
-  metered?: boolean;
 }
 
-/** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. */
-export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | SearchLimited | null> {
+/** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. Not counted: the house fill's. */
+export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | null> {
+  const answer = await search(input, false);
+  return answer !== null && "limited" in answer ? null : answer;
+}
+
+/** A person's search, counted against their hourly and daily searches. */
+export function searchPicturesCounted(input: SearchInput): Promise<PicturesAnswer | SearchLimited | null> {
+  return search(input, true);
+}
+
+async function search(input: SearchInput, metered: boolean): Promise<PicturesAnswer | SearchLimited | null> {
   if (isDemoEmulator()) return { items: [], hasMore: false, notices: [], ...(input.quick ? { rest: false } : {}) };
   const db = getFirestore();
-  const key = (web: boolean, quick = false) =>
+  // "parts": each catalogue's answer to a quick search. The merged quick answers once kept under "quick" are read no more.
+  const key = (web: boolean, part: "" | "parts" = "") =>
     createHash("sha256")
-      .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", quick ? "quick" : ""].join("|"))
+      .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", part].join("|"))
       .digest("hex");
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
     const doc = await db.collection(CACHE).doc(id).get();
@@ -190,17 +201,17 @@ export async function searchPictures(input: SearchInput): Promise<PicturesAnswer
   let catalogues = await fresh(key(false));
   const webLater = input.page === 1 && (input.scope === "all" || input.forcedWeb);
   if (input.quick && catalogues) return { ...catalogues, rest: webLater };
-  const quickParts = key(false, true);
+  const quickParts = key(false, "parts");
   const known = await knownParts(quickParts);
   if (input.quick) {
-    const quick = await askCatalogues(input, quickSourcesFor(input.scope), known, { parts: quickParts });
+    const quick = await askCatalogues(input, quickSourcesFor(input.scope), known, metered, { parts: quickParts });
     if (quick && "limited" in quick) return quick;
     const rest = hasSlowSources(input.scope) || webLater;
     return quick ? { ...quick, rest } : rest ? { items: [], hasMore: false, notices: [], rest } : null;
   }
 
   if (!catalogues) {
-    const asked = await askCatalogues(input, sourcesFor(input.scope), known, { answer: key(false) });
+    const asked = await askCatalogues(input, sourcesFor(input.scope), known, metered, { answer: key(false) });
     if (asked && "limited" in asked) return asked;
     catalogues = asked;
   }
@@ -211,33 +222,42 @@ export async function searchPictures(input: SearchInput): Promise<PicturesAnswer
   if (!web.hits) return catalogues;
   const items = mergeHits(input.typed, [catalogues.items, web.hits]);
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
-  await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: FieldValue.serverTimestamp() }).catch(() => undefined);
+  await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
   return withWeb;
+}
+
+/** A catalogue's answer as kept among a quick search's parts, with when it was heard. */
+interface KnownAnswer extends SourceAnswer {
+  atMs: number;
 }
 
 /**
  * The answer of [sources] merged. What [known] holds is not asked again, nor
- * is a catalogue that is resting. Each answer is kept under `parts`; the
- * merged one under `answer` only when none failed: a gap left by one that
- * did is not kept for days.
+ * is a catalogue that is resting. Each answer is kept under `parts`, with the
+ * moment it was heard, so an old one is not kept fresh by being saved again;
+ * the merged one under `answer` only when none failed: a gap left by one
+ * that did is not kept for days.
+ *
+ * A search is counted when it asks a catalogue and builds on nothing heard
+ * before: the whole search after a quick one is the same search.
  */
 async function askCatalogues(
   input: SearchInput,
   sources: PictureSource[],
-  known: Map<PictureSource, SourceAnswer>,
+  known: Map<PictureSource, KnownAnswer>,
+  metered: boolean,
   keep: { parts?: string; answer?: string },
 ): Promise<PicturesAnswer | SearchLimited | null> {
   const resting = await restingUntil();
   const now = Date.now();
   const asking = sources.filter((source) => !known.has(source) && (resting.get(source) ?? 0) <= now);
-  // The whole search after a quick one asks only the slow catalogues: one search, counted once.
-  if (input.metered && asking.some((source) => !isSlowSource(source))) {
+  if (metered && asking.length > 0 && known.size === 0) {
     const charge = await chargeFor(input.uid);
-    if (!charge.allowed) return { limited: true, retryAfterSeconds: charge.retryAfterSeconds };
+    if (!charge.allowed) return { limited: true, retryAtMs: charge.retryAtMs };
   }
-  const answers = new Map(known);
+  const answers = new Map<PictureSource, KnownAnswer>(known);
   const asked = await Promise.all(asking.map(async (source) => [source, await askSource(source, input)] as const));
-  for (const [source, answer] of asked) if (answer) answers.set(source, answer);
+  for (const [source, answer] of asked) if (answer) answers.set(source, { ...answer, atMs: Date.now() });
   const found = sources.map((source) => answers.get(source) ?? null);
   if (found.every((answer) => answer === null)) return null;
   const hits = withoutTmdbTwins(found.map((answer) => answer ?? { hits: [], hasMore: false }));
@@ -248,24 +268,24 @@ async function askCatalogues(
       const answer = answers.get(source);
       return answer ? [{ source, ...answer }] : [];
     });
-    await cache.doc(keep.parts).set({ parts, at: FieldValue.serverTimestamp() }).catch(() => undefined);
+    await cache.doc(keep.parts).set({ parts, at: Timestamp.now() }).catch(() => undefined);
   }
   if (keep.answer && found.every((answer) => answer !== null)) {
-    await cache.doc(keep.answer).set({ ...merged, at: FieldValue.serverTimestamp() }).catch(() => undefined);
+    await cache.doc(keep.answer).set({ ...merged, at: Timestamp.now() }).catch(() => undefined);
   }
   return merged;
 }
 
-/** What a quick search already heard from each catalogue, while it is fresh. */
-async function knownParts(id: string): Promise<Map<PictureSource, SourceAnswer>> {
+/** What a quick search already heard from each catalogue, each while it is fresh. */
+async function knownParts(id: string): Promise<Map<PictureSource, KnownAnswer>> {
   const doc = await getFirestore().collection(CACHE).doc(id).get().catch(() => null);
-  const at = doc?.get("at")?.toMillis?.() ?? 0;
-  const parts: unknown = doc?.exists && Date.now() - at < CACHE_FRESH_MS ? doc.get("parts") : null;
-  const known = new Map<PictureSource, SourceAnswer>();
+  const parts: unknown = doc?.exists ? doc.get("parts") : null;
+  const known = new Map<PictureSource, KnownAnswer>();
+  const now = Date.now();
   for (const part of Array.isArray(parts) ? parts : []) {
-    const { source, hits, hasMore, twins } = (part ?? {}) as { source?: unknown; hits?: unknown; hasMore?: unknown; twins?: Record<string, string[]> };
-    if (typeof source !== "string" || !Array.isArray(hits)) continue;
-    known.set(source as PictureSource, { hits: hits as PictureHit[], hasMore: hasMore === true, ...(twins ? { twins } : {}) });
+    const { source, hits, hasMore, twins, atMs } = (part ?? {}) as { source?: unknown; hits?: unknown; hasMore?: unknown; twins?: Record<string, string[]>; atMs?: unknown };
+    if (typeof source !== "string" || !Array.isArray(hits) || typeof atMs !== "number" || now - atMs >= CACHE_FRESH_MS) continue;
+    known.set(source as PictureSource, { hits: hits as PictureHit[], hasMore: hasMore === true, atMs, ...(twins ? { twins } : {}) });
   }
   return known;
 }
@@ -282,7 +302,7 @@ async function chargeFor(uid: string): Promise<SearchCharge> {
     });
   } catch (error) {
     console.warn("Picture search count failed", error instanceof Error ? error.message : error);
-    return { allowed: true, next: { count: 0, minute: 0, minuteCount: 0 } };
+    return { allowed: true, next: { count: 0, hour: 0, hourCount: 0 } };
   }
 }
 
@@ -317,7 +337,7 @@ async function rest(source: PictureSource, refusal: CatalogueRefusal): Promise<v
   const until = restUntil(refusal.status, refusal.retryAfter, Date.now());
   if (until === null) return;
   (rests ??= { readAtMs: 0, until: new Map() }).until.set(source, until);
-  await getFirestore().doc(RESTS).set({ [source]: { offUntil: new Date(until), lastStatus: refusal.status } }, { merge: true }).catch(() => undefined);
+  await getFirestore().doc(RESTS).set({ [source]: { offUntil: Timestamp.fromMillis(until), lastStatus: refusal.status } }, { merge: true }).catch(() => undefined);
 }
 
 /** A film Wikidata knows by its TMDB id is TMDB's to show, with TMDB's poster. */

@@ -88,10 +88,6 @@ export function quickSourcesFor(scope: PictureScope): PictureSource[] {
   return sourcesFor(scope).filter((source) => !SLOW_SOURCES.includes(source));
 }
 
-export function isSlowSource(source: PictureSource): boolean {
-  return SLOW_SOURCES.includes(source);
-}
-
 export function hasSlowSources(scope: PictureScope): boolean {
   return quickSourcesFor(scope).length < sourcesFor(scope).length;
 }
