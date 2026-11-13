@@ -129,6 +129,8 @@ async function write(db: Firestore, found: Found[], execute: boolean): Promise<v
     console.log(`${entry.id}  ${result}`);
   }
   console.log(execute ? "Done." : "Dry run: nothing was changed. Add --execute to write them.");
+  // Cards written here keep their catalogue addresses: the copies we may keep are made by the backfill.
+  if (execute) console.log(`Now copy the pictures we may keep: npm run catalogue-pictures -- --project <project> --list ${found.map((entry) => entry.id).join(",")} --apply`);
 }
 
 main().catch((error: unknown) => {

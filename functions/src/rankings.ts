@@ -5,8 +5,8 @@
  * the rest of the deciding here; `community.ts` does the reads and writes.
  */
 
+import { pictureKey } from "./pictureAttribution";
 import { isDeezerPicture } from "./pictureSources";
-import { storageMediaUrl } from "./publicMedia";
 import { cleanTierLabel, MAX_TIERS_PER_LIST, MAX_TITLE_LENGTH, MAX_CAPTION_LENGTH } from "./publishing";
 import { EDITORIAL_UID, TRANSLATION_LOCALES, type Translations } from "./editorial";
 
@@ -56,13 +56,15 @@ export type Publication =
   | { kind: "ranking"; listId: string };
 
 /**
- * Both its normalized title and canonical public picture identify a card.
+ * Both its normalized title and canonical public picture identify a card:
+ * a catalogue or outside address and any copy of it count as one picture.
  * Renaming a picture card changes the content. Deezer art counts as absent,
  * as publishing drops it. Local identifiers and picture credits do not decide.
  */
 export function cardIdentity(card: Card): string {
   // Match settle(): a kept public URL wins when both representations were sent.
-  const picture = card.imageUrl && !isDeezerPicture(card.imageUrl) ? storageMediaUrl(card.imageUrl) : card.pictureId ? "owned-picture" : null;
+  // A picture and our copy of it are one picture, whichever list the copy is in.
+  const picture = card.imageUrl && !isDeezerPicture(card.imageUrl) ? pictureKey(card.imageUrl) : card.pictureId ? "owned-picture" : null;
   return JSON.stringify([card.title.replace(/\s+/g, " ").trim(),
     picture]);
 }

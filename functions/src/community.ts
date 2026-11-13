@@ -1,12 +1,13 @@
 import { defineString } from "firebase-functions/params";
+import { askCommons, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { requireAppCheck } from "./appCheck";
-import { publicMediaResponses } from "./publicMedia";
-import { secretsOutsideDemo } from "./emulator";
+import { publicMediaResponses, storageMediaUrl } from "./publicMedia";
+import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
 import { claimListSlot } from "./publishLimit";
@@ -81,6 +82,7 @@ import {
   copyOutside,
   MAX_OUTSIDE_PICTURES_PER_LIST,
   outsideAddressesIn,
+  outsideName,
   realOutsideTools,
   removeUnlessWritten,
   withCopies,
@@ -2967,17 +2969,41 @@ async function publish(
     const url = (item as { imageUrl?: unknown } | null)?.imageUrl;
     return typeof url === "string" ? url : null;
   });
-  const committed = previous === null ? new Map<string, string>() : committedOutsideCopies({
+  const previousPictures = previous === null ? null : {
     items: previousImages.map((imageUrl) => ({ imageUrl })),
     coverImageUrl: previous.coverImageUrl ?? null,
     previewImages: previous.previewImages ?? [],
-  }, outsideUrls, `published/${target}/`, pictureTools.bucket);
+  };
+  const committed = previousPictures === null ? new Map<string, string>() : committedOutsideCopies(previousPictures, outsideUrls, `published/${target}/`, pictureTools.bucket);
 
-  const [outside, authorPhotoUrl] = await Promise.all([
+  // Each card's attribution, and copies of the catalogue pictures we may keep.
+  const before = attributionsByPicture(previous?.items);
+  const cards: CardPicture[] = decision.draft.items.map((item) => ({
+    imageUrl: item.imageUrl,
+    ...(item.credit ? { credit: item.credit } : {}),
+    ...(item.sent ? { sent: item.sent } : {}),
+    ...(item.imageUrl !== null && before.has(storageMediaUrl(item.imageUrl)) ? { previous: before.get(storageMediaUrl(item.imageUrl)) } : {}),
+  }));
+  const files = commonsFilesOf(cards);
+  const attributions = attributionsOf(cards, files.length > 0 && !isDemoEmulator() ? await askCommons(files) : new Map());
+  decision.draft.items.forEach((item, at) => {
+    const attribution = attributions[at];
+    if (attribution) item.attribution = attribution;
+  });
+  // A heavy list keeps its cards before their attribution, and their catalogue addresses before copies.
+  if (!snapshotFits(settle(decision.draft, new Map()))) decision.draft.items.forEach((item) => delete item.attribution);
+  const wantedCopies = copiesWanted(cards, attributions);
+  const asCopied = withCatalogueCopies(settle(decision.draft, new Map()), new Map(wantedCopies.map((url) => [url, addressOf(pictureTools.bucket, `published/${target}/${outsideName(url)}${nameSuffix}`)])));
+  const catalogueUrls = snapshotFits(asCopied) ? wantedCopies : [];
+  const catalogueCommitted = previousPictures === null ? new Map<string, string>() : committedOutsideCopies(previousPictures, catalogueUrls, `published/${target}/`, pictureTools.bucket);
+
+  const [outside, authorPhotoUrl, catalogue] = await Promise.all([
     copyOutside(`published/${target}/`, outsideUrls, pictureTools, { nameSuffix, committed }),
     checkedFace(byline.uid, byline.photoUrl, pictureTools),
+    copyCataloguePictures(`published/${target}/`, catalogueUrls, catalogueCopyTools(pictureTools), { nameSuffix, committed: catalogueCommitted }),
   ]);
   if (!outside.ok) {
+    await Promise.all(catalogue.saved.map((path) => pictureTools.remove(path).catch(() => undefined)));
     if ("overDailyLimit" in outside) {
       response.status(429).json({ error: "Too many pictures from other sites today", code: "WEB_PICTURES_DAILY_LIMIT" });
       return;
@@ -2993,7 +3019,7 @@ async function publish(
 
   // Attempt-specific names cannot overwrite the current snapshot or another
   // attempt's files. Until the transaction commits, all new copies are removed.
-  const saved = [...outside.saved];
+  const saved = [...outside.saved, ...catalogue.saved];
   const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
   const stored = await removeUnlessWritten(saved, (path) => pictureTools.remove(path), async () => {
     const outcomes = await copyForPublication(
@@ -3019,7 +3045,7 @@ async function publish(
       outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]),
     );
     const adopted = await adoptForeignCopies(target, settle(decision.draft, addresses), copies);
-    const list = withCopies(adopted.list, outside.copies);
+    const list = withCatalogueCopies(withCopies(adopted.list, outside.copies), catalogue.copies);
     // A copy of a copy holds the original's pictures too, and goes with them.
     const ownNames = publishedNamesIn(target, [
       ...list.items.map((item) => item.imageUrl),

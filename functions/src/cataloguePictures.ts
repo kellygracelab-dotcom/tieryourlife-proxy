@@ -1,0 +1,191 @@
+/**
+ * A list's catalogue pictures at publish, and in the backfill of lists
+ * published before: each card's attribution as fields, and a copy of ours for
+ * each picture whose licence lets us keep one (`pictureAttribution.ts`). The
+ * copy is the catalogue's own smaller picture, about 500 px, kept in the
+ * list's folder under the name every copy of that address gets. The card's
+ * `imageUrl` points at the copy, and its `attribution.originalUrl` keeps the
+ * catalogue address. A picture not copied in time keeps its catalogue address;
+ * the next publication copies it.
+ */
+import { isDemoEmulator, SAFE_VERDICT } from "./emulator";
+import { copyOutside, type OutsideTools } from "./outsidePictures";
+import {
+  attributionOf,
+  catalogueSourceOf,
+  cleanAttribution,
+  commonsFileOf,
+  copyNameOf,
+  copySourceOf,
+  isCopyOf,
+  mayCopy,
+  type CommonsDetails,
+  type PictureAttribution,
+} from "./pictureAttribution";
+import { commonsDetails } from "./pictureCredit";
+import { downloadPicture, getJson } from "./pictureSearch";
+import { storageMediaUrl } from "./publicMedia";
+
+/** A card as far as its picture goes. */
+export interface CardPicture {
+  imageUrl: string | null;
+  credit?: string;
+  /** What the client sent back of the card's attribution. */
+  sent?: { link?: string; originalUrl?: string };
+  /** The attribution the same picture had in the list's previous snapshot, if any. */
+  previous?: PictureAttribution;
+}
+
+/** The catalogue address a card's picture stands for: its own, or the one its copy was made from. */
+export function originalOf(card: CardPicture): string | null {
+  if (card.imageUrl === null) return null;
+  if (catalogueSourceOf(card.imageUrl) !== null) return card.imageUrl;
+  for (const claimed of [card.sent?.originalUrl, card.previous?.originalUrl]) {
+    if (claimed && isCopyOf(card.imageUrl, claimed)) return claimed;
+  }
+  return null;
+}
+
+/** The Commons files whose details a list's attribution needs. */
+export function commonsFilesOf(cards: readonly CardPicture[]): string[] {
+  return [...new Set(cards.flatMap((card) => {
+    const original = originalOf(card);
+    const file = original === null ? null : commonsFileOf(original);
+    return file === null ? [] : [file];
+  }))];
+}
+
+/**
+ * Each card's attribution: the catalogue's, worked out from its original
+ * address, or `web` for a picture from another site and our copy of one.
+ * A person's own photograph, and a card without art, have none.
+ */
+export function attributionsOf(cards: readonly CardPicture[], commons: ReadonlyMap<string, CommonsDetails>): (PictureAttribution | null)[] {
+  return cards.map((card) => {
+    if (card.imageUrl === null) return null;
+    const original = originalOf(card);
+    if (original !== null) {
+      const found = attributionOf(original, { credit: card.credit, sentLink: card.sent?.link ?? card.previous?.link, commons });
+      if (found === null) return null;
+      return cleanAttribution(original === card.imageUrl ? found : { ...found, originalUrl: original });
+    }
+    const stored = storageMediaUrl(card.imageUrl);
+    if (copyNameOf(stored) !== null || !stored.startsWith("https://firebasestorage.googleapis.com/")) return { source: "web" };
+    return null;
+  });
+}
+
+/** The catalogue addresses to copy: on a card as they are, and with a licence that lets us keep them. */
+export function copiesWanted(cards: readonly CardPicture[], attributions: readonly (PictureAttribution | null)[]): string[] {
+  return [...new Set(cards.flatMap((card, at) => {
+    const url = card.imageUrl;
+    return url !== null && catalogueSourceOf(url) !== null && mayCopy(url, attributions[at] ?? null) ? [url] : [];
+  }))];
+}
+
+const COMMONS_TITLES_PER_ASK = 50;
+
+/** What Commons says about each file, by its Commons name; a file it says nothing about, or an answer that fails, is left out. */
+export async function askCommons(files: readonly string[]): Promise<Map<string, CommonsDetails>> {
+  const found = new Map<string, CommonsDetails>();
+  for (let at = 0; at < files.length; at += COMMONS_TITLES_PER_ASK) {
+    const params = new URLSearchParams({
+      action: "query",
+      prop: "imageinfo",
+      iiprop: "extmetadata",
+      iiextmetadatafilter: "Artist|Credit|Attribution|LicenseShortName|LicenseUrl|UsageTerms",
+      iiextmetadatalanguage: "en",
+      titles: files.slice(at, at + COMMONS_TITLES_PER_ASK).map((file) => `File:${file}`).join("|"),
+      format: "json",
+    });
+    try {
+      const body = (await getJson(`https://commons.wikimedia.org/w/api.php?${params}`)) as { query?: { pages?: Record<string, { title?: unknown; imageinfo?: unknown[] }> } };
+      for (const page of Object.values(body?.query?.pages ?? {})) {
+        const title = typeof page.title === "string" ? page.title.replace(/^File:/, "") : null;
+        const details = title === null ? undefined : commonsDetails(page, page.imageinfo?.[0]);
+        if (title !== null && details) found.set(title.charAt(0).toUpperCase() + title.slice(1), details);
+      }
+    } catch {
+      // Without Commons' word a file is credited by its page alone and not copied.
+    }
+  }
+  return found;
+}
+
+/**
+ * Copying as for pictures from other sites, but from the catalogue's smaller
+ * picture, without SafeSearch (catalogue art was shown as it is before) and
+ * outside the person's daily count of pictures from other sites.
+ */
+export function catalogueCopyTools(base: OutsideTools): OutsideTools {
+  return {
+    ...base,
+    fetch: async (url, stop) => {
+      if (isDemoEmulator()) return base.fetch(url, stop);
+      const from = copySourceOf(url);
+      return from === null ? { error: "NOT_ALLOWED" } : downloadPicture(new URL(from), stop);
+    },
+    lookAt: async () => SAFE_VERDICT,
+    reserve: async () => true,
+    giveBack: async () => undefined,
+  };
+}
+
+const CATALOGUE_COPYING_AT_ONCE = 8;
+const CATALOGUE_WINDOW_MS = 15_000;
+
+/** The copies made, by catalogue address; one not made is not there. `saved` are the files this attempt wrote. */
+export async function copyCataloguePictures(
+  folder: string,
+  urls: readonly string[],
+  tools: OutsideTools,
+  options: { nameSuffix?: string; committed?: ReadonlyMap<string, string>; withinMs?: number } = {},
+): Promise<{ copies: Map<string, string>; saved: string[] }> {
+  if (urls.length === 0) return { copies: new Map(), saved: [] };
+  const done = await copyOutside(folder, urls, tools, {
+    atOnce: CATALOGUE_COPYING_AT_ONCE,
+    withinMs: options.withinMs ?? CATALOGUE_WINDOW_MS,
+    nameSuffix: options.nameSuffix,
+    committed: options.committed,
+  });
+  if (!done.ok) return { copies: new Map(), saved: [] };
+  const copies = new Map([...done.copies].filter((entry): entry is [string, string] => entry[1] !== null));
+  return { copies, saved: done.saved };
+}
+
+interface Pictured {
+  items: { imageUrl: string | null; attribution?: PictureAttribution }[];
+  coverImageUrl: string | null;
+  previewImages: string[];
+}
+
+/** The list pointing at the copies made, each copied card remembering its catalogue address. */
+export function withCatalogueCopies<T extends Pictured>(list: T, copies: ReadonlyMap<string, string>): T {
+  const swap = (url: string | null): string | null => (url !== null ? copies.get(url) ?? url : null);
+  return {
+    ...list,
+    items: list.items.map((item) => {
+      const copy = item.imageUrl === null ? undefined : copies.get(item.imageUrl);
+      if (copy === undefined || item.imageUrl === null) return item;
+      const attribution = item.attribution ? { ...item.attribution, originalUrl: item.imageUrl } : undefined;
+      return { ...item, imageUrl: copy, ...(attribution ? { attribution } : {}) };
+    }),
+    coverImageUrl: swap(list.coverImageUrl),
+    previewImages: list.previewImages.map((url) => swap(url) ?? url),
+  };
+}
+
+/** The attribution each picture had in a stored list, by its address in our bucket's form and by its catalogue address. */
+export function attributionsByPicture(items: unknown): Map<string, PictureAttribution> {
+  const found = new Map<string, PictureAttribution>();
+  for (const item of Array.isArray(items) ? items : []) {
+    const { imageUrl, attribution } = (item ?? {}) as { imageUrl?: unknown; attribution?: unknown };
+    if (typeof imageUrl !== "string" || attribution === null || typeof attribution !== "object") continue;
+    const source = (attribution as { source?: unknown }).source;
+    if (typeof source !== "string") continue;
+    found.set(storageMediaUrl(imageUrl), attribution as PictureAttribution);
+    const original = (attribution as { originalUrl?: unknown }).originalUrl;
+    if (typeof original === "string") found.set(original, attribution as PictureAttribution);
+  }
+  return found;
+}

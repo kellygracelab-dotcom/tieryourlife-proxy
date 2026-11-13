@@ -72,7 +72,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 9;
+const CACHE_SHAPE = 10;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -390,7 +390,7 @@ function unlessRefused<T>(fallback: () => T): (error: unknown) => T {
   };
 }
 
-async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_TIMEOUT_MS): Promise<unknown> {
+export async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_TIMEOUT_MS): Promise<unknown> {
   const reply = await fetch(url, {
     ...init,
     headers: { Accept: "application/json", "User-Agent": USER_AGENT, ...(init.headers ?? {}) },

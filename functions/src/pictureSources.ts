@@ -4,7 +4,8 @@
  * requests are in src/pictureSearch.ts.
  */
 import { fold, wordsOf } from "./search";
-import { commonsCredit } from "./pictureCredit";
+import { commonsCredit, commonsDetails } from "./pictureCredit";
+import { inaturalistLicence, linkFromAddress, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -26,6 +27,8 @@ export interface PictureHit {
   kind: PictureKind;
   /** Who the picture's license asks to be named beside it; absent when it asks for nobody or the source does not say. */
   credit?: string;
+  /** The same, as fields, with the picture's page at its source: a card keeps it as its own `attribution`. */
+  attribution?: Omit<PictureAttribution, "originalUrl">;
   /** Another name the catalogue found it by ("Cat" for the domestic cat): ranked like the title, never sent. */
   alias?: string;
 }
@@ -222,7 +225,7 @@ export function tmdbHits(body: unknown): PictureHit[] {
     if (!kind || !path || !title || typeof row.id !== "number") return [];
     const date = text(row.release_date) ?? text(row.first_air_date);
     const subtitle = kind === "person" ? text(row.known_for_department) : date?.slice(0, 4) ?? null;
-    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind }];
+    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}` } }];
   });
 }
 
@@ -236,7 +239,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number" || row.isAdult === true) return [];
     const kind: PictureKind = row.type === "MANGA" ? "manga" : "anime";
     const year = typeof row.seasonYear === "number" ? String(row.seasonYear) : typeof (row.startDate as Json | undefined)?.year === "number" ? String((row.startDate as Json).year) : null;
-    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind }];
+    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}` } }];
   });
   const characters = rows((data.characters as Json | undefined)?.characters).flatMap((row): PictureHit[] => {
     const title = text((row.name as Json | undefined)?.full);
@@ -245,7 +248,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number") return [];
     const from = rows((row.media as Json | undefined)?.nodes)[0];
     const subtitle = from ? text((from.title as Json | undefined)?.english) ?? text((from.title as Json | undefined)?.romaji) : null;
-    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: null, source: "anilist", kind: "character" }];
+    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: null, source: "anilist", kind: "character", attribution: { source: "anilist", link: `https://anilist.co/character/${row.id}` } }];
   });
   return [...media, ...characters];
 }
@@ -260,7 +263,7 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
 const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
 
 /** IGDB's games: its cover is always upright, and a game without one is not asked for. */
-export const IGDB_QUERY_FIELDS = "name,first_release_date,cover.image_id,cover.width,cover.height";
+export const IGDB_QUERY_FIELDS = "name,url,first_release_date,cover.image_id,cover.width,cover.height";
 
 export function igdbHits(body: unknown): PictureHit[] {
   return rows(body).flatMap((row): PictureHit[] => {
@@ -270,7 +273,9 @@ export function igdbHits(body: unknown): PictureHit[] {
     if (!title || !image || typeof row.id !== "number" || !/^[a-z0-9]+$/.test(image)) return [];
     if (typeof cover.width === "number" && typeof cover.height === "number" && !fitsTile(cover.width, cover.height, true)) return [];
     const year = typeof row.first_release_date === "number" ? String(new Date(row.first_release_date * 1000).getUTCFullYear()) : null;
-    return [{ id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game" }];
+    const page = text(row.url);
+    const link = page !== null && /^https:\/\/www\.igdb\.com\/games\/[a-z0-9-]{1,200}$/.test(page) ? page : null;
+    return [{ id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game", attribution: { source: "igdb", ...(link ? { link } : {}) } }];
   });
 }
 
@@ -302,6 +307,7 @@ export function steamHits(ids: readonly number[], body: unknown): PictureHit[] {
       thumbUrl: null,
       source: "steam",
       kind: "game",
+      attribution: { source: "steam", link: `https://store.steampowered.com/app/${id}` },
     }];
   });
 }
@@ -360,6 +366,7 @@ export function openLibraryHits(body: unknown): PictureHit[] {
       thumbUrl: null,
       source: "openlibrary",
       kind: "book",
+      ...(/^\/works\/OL\d{1,12}W$/.test(key) ? { attribution: { source: "openlibrary" as const, link: `https://openlibrary.org${key}` } } : {}),
     }];
   });
 }
@@ -377,6 +384,12 @@ function inaturalistPhoto(raw: unknown): { medium: string; credit: string | null
   if (!medium || !medium.startsWith("https://")) return null;
   if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return null;
   return { medium, credit: text(photo.attribution) };
+}
+
+/** An iNaturalist photo's author, licence and page, from its own attribution and address. */
+function inaturalistAttribution(photo: { medium: string; credit: string | null }): Omit<PictureAttribution, "originalUrl"> {
+  const link = linkFromAddress(photo.medium);
+  return { source: "inaturalist", ...(inaturalistLicence(photo.credit) ?? {}), ...(link ? { link } : {}) };
 }
 
 /** Taxa whose default photo will not do, so their other photos are worth asking for. */
@@ -434,6 +447,7 @@ export function inaturalistHits(body: unknown, others: Map<number, unknown[]> = 
       source: "inaturalist",
       kind: "animal",
       ...(photo.credit ? { credit: photo.credit } : {}),
+      attribution: inaturalistAttribution(photo),
       ...(alias && alias !== title ? { alias } : {}),
     }];
   });
@@ -473,16 +487,18 @@ export function commonsFitting(body: unknown, covers: boolean): Set<string> {
 }
 
 /** Fitting files with their supplied attribution; an overlong known credit is never silently cut. */
-export function commonsPictures(body: unknown, covers: boolean): Map<string, { credit?: string }> {
+export function commonsPictures(body: unknown, covers: boolean): Map<string, { credit?: string; attribution: Omit<PictureAttribution, "originalUrl"> }> {
   const pages = ((((body as Json | null)?.query as Json | undefined)?.pages ?? {}) as Record<string, Json>);
-  const pictures = new Map<string, { credit?: string }>();
+  const pictures = new Map<string, { credit?: string; attribution: Omit<PictureAttribution, "originalUrl"> }>();
   for (const page of Object.values(pages)) {
     const info = rows(page.imageinfo)[0];
     const title = text(page.title);
     if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || !fitsTile(info.width, info.height, covers)) continue;
     const credit = commonsCredit(page, info);
     if (credit === null) continue;
-    pictures.set(commonsName(title.replace(/^File:/, "")), credit ? { credit } : {});
+    const details = commonsDetails(page, info);
+    const attribution = { source: "wikimedia" as const, ...(details ?? { link: `https://commons.wikimedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}` }) };
+    pictures.set(commonsName(title.replace(/^File:/, "")), { ...(credit ? { credit } : {}), attribution });
   }
   return pictures;
 }
@@ -554,6 +570,7 @@ export function webHits(body: unknown): PictureHit[] {
       thumbUrl: null,
       source: "web",
       kind: "web",
+      attribution: { source: "web" },
     }];
   });
 }

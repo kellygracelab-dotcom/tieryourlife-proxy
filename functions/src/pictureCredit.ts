@@ -63,3 +63,31 @@ export function commonsCredit(page: unknown, info: unknown): string | undefined 
   const credit = [...new Set([author, licence, ...licenceUrls, source].filter((part): part is string => Boolean(part)))].join(" · ");
   return credit.length <= MAX_CREDIT_LENGTH ? credit : null;
 }
+
+/**
+ * The same metadata as separate fields: author, licence, licence page and the
+ * file's page. Undefined when Commons names no licence, which is also when a
+ * copy is not made.
+ */
+export function commonsDetails(page: unknown, info: unknown): { author?: string; license: string; licenseUrl?: string; link: string } | undefined {
+  const file = object(page);
+  const metadata = object(object(info).extmetadata);
+  const field = (key: string) => text(object(metadata[key]).value);
+  const license = field("LicenseShortName") || field("UsageTerms");
+  if (!license) return undefined;
+  const author = field("Attribution") || field("Artist") || field("Credit");
+  const licenceRaw = object(metadata.LicenseUrl).value;
+  const licenseUrl = typeof licenceRaw === "string"
+    ? [...licenceRaw.matchAll(/(?:https?:)?\/\/[^\s<>"']+/gi)].map((match) => safeUrl(match[0])).find((url): url is string => url !== null)
+    : undefined;
+  const pageId = file.pageid;
+  const link = typeof pageId === "number" && Number.isSafeInteger(pageId) && pageId > 0
+    ? `https://commons.wikimedia.org/?curid=${pageId}`
+    : `https://commons.wikimedia.org/wiki/${encodeURIComponent(String(file.title ?? "").replace(/ /g, "_"))}`;
+  return {
+    ...(author ? { author: author.slice(0, 300) } : {}),
+    license: license.slice(0, 100),
+    ...(licenseUrl ? { licenseUrl: licenseUrl.replace(/^http:/, "https:") } : {}),
+    link,
+  };
+}
