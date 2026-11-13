@@ -28,7 +28,7 @@ import {
 } from "./pictureAttribution";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
 import { downloadPicture } from "./pictureSearch";
-import { chargeLink, retryAfterSeconds, type SearchCount } from "./pictureSearchLimit";
+import { chargeLink, linkQuota, retryAfterSeconds, type SearchCount } from "./pictureSearchLimit";
 import { safeSearchOrNothing } from "./publishedPictures";
 import { dayKey } from "./quota";
 import { decideSafe } from "./safety";
@@ -70,6 +70,22 @@ function refuse(response: Response, status: number, code: string, extra: Record<
   response.status(status).json({ error: "That picture could not be kept", code, ...extra });
 }
 
+/** `GET /lists/pictures/link`: what the caller has left today, before anything is sent. */
+export async function routeLinkQuota(response: Response, identity: Identity): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+    return;
+  }
+  const now = Date.now();
+  const count = (await getFirestore().doc(usagePath(identity.uid, now)).get()).get("count") as number | undefined;
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ quota: linkQuota(count, now) });
+}
+
+function usagePath(uid: string, nowMs: number): string {
+  return `pictureWeb/${dayKey(nowMs)}/links/${uid}`;
+}
+
 export async function routeLinkPicture(body: unknown, response: Response, identity: Identity): Promise<void> {
   if (identity.isAnonymous) {
     response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
@@ -82,40 +98,49 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
   }
   const credit = asked.credit ? { credit: asked.credit } : {};
   response.setHeader("Cache-Control", "no-store");
+  const uid = identity.uid;
+  const db = getFirestore();
+  const usage = db.doc(usagePath(uid, Date.now()));
+  // How many of today's fetches are used, as last read or written: every answer from here says what is left.
+  let used: number | undefined;
+  const quota = () => ({ quota: linkQuota(used, Date.now()) });
 
   if (asked.catalogue !== null) {
     const file = commonsFileOf(asked.url);
-    const commons = file !== null && !isDemoEmulator() ? await askCommons([file]) : undefined;
+    const [commons, today] = await Promise.all([
+      file !== null && !isDemoEmulator() ? askCommons([file]) : Promise.resolve(undefined),
+      usage.get().catch(() => null),
+    ]);
+    used = today?.get("count") as number | undefined;
     const attribution = catalogueAnswer(asked.url, asked.link, asked.credit, commons) ?? { source: asked.catalogue };
-    response.status(200).json({ imageUrl: asked.url, attribution, ...credit });
+    response.status(200).json({ imageUrl: asked.url, attribution, ...credit, ...quota() });
     return;
   }
 
   const attribution: PictureAttribution = asked.link ? { source: "web", link: asked.link } : { source: "web" };
-  const uid = identity.uid;
-  const db = getFirestore();
-  const usage = db.doc(`pictureWeb/${dayKey(Date.now())}/links/${uid}`);
   const key = outsideName(asked.url);
   // What this address got today, or a charge for fetching it.
   const count = (again: boolean) => db.runTransaction(async (transaction): Promise<{ before: string } | { retryAtMs: number } | null> => {
     const data = (await transaction.get(usage)).data() as (Partial<SearchCount> & { seen?: Record<string, unknown> }) | undefined;
+    used = data?.count;
     const before = data?.seen?.[key];
     if (!again && typeof before === "string") return { before };
     const charge = chargeLink(data, Date.now());
     if (!charge.allowed) return { retryAtMs: charge.retryAtMs };
     transaction.set(usage, charge.next, { merge: true });
+    used = charge.next.count;
     return null;
   });
   const bucket = getStorage().bucket();
   let counted = await count(false);
   if (counted !== null && "before" in counted) {
     if (counted.before.startsWith("!")) {
-      refuse(response, 422, "PICTURE_REFUSED", { because: counted.before.slice(1) });
+      refuse(response, 422, "PICTURE_REFUSED", { because: counted.before.slice(1), ...quota() });
       return;
     }
     const [there] = await bucket.file(`users/${uid}/pictures/${counted.before}`).exists().catch((): [boolean] => [false]);
     if (there) {
-      response.status(200).json({ pictureId: counted.before, attribution, ...credit });
+      response.status(200).json({ pictureId: counted.before, attribution, ...credit, ...quota() });
       return;
     }
     // Deleted since: fetched, and counted, again.
@@ -123,14 +148,14 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
   }
   if (counted !== null && "retryAtMs" in counted) {
     response.setHeader("Retry-After", String(retryAfterSeconds(counted.retryAtMs, Date.now())));
-    refuse(response, 429, "LINK_LIMIT", { retryAt: counted.retryAtMs });
+    refuse(response, 429, "LINK_LIMIT", { retryAt: counted.retryAtMs, ...quota() });
     return;
   }
   const remember = (value: string) => usage.set({ seen: { [key]: value } }, { merge: true }).catch(() => undefined);
 
   const fetched = isDemoEmulator() ? { bytes: STUB_PICTURE, type: "image/png" } : await downloadPicture(new URL(asked.url));
   if ("error" in fetched) {
-    refuse(response, 422, fetched.error);
+    refuse(response, 422, fetched.error, quota());
     return;
   }
   // Vision out of reach: kept all the same, and publishing looks again.
@@ -138,11 +163,11 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
   const decision = verdict === null ? { ok: true as const } : decideSafe(verdict);
   if (!decision.ok) {
     await remember(`!${decision.because}`);
-    refuse(response, 422, "PICTURE_REFUSED", { because: decision.because });
+    refuse(response, 422, "PICTURE_REFUSED", { because: decision.because, ...quota() });
     return;
   }
   const pictureId = randomUUID();
   await bucket.file(`users/${uid}/pictures/${pictureId}`).save(fetched.bytes, { contentType: fetched.type, resumable: false });
   await remember(pictureId);
-  response.status(200).json({ pictureId, attribution, ...credit });
+  response.status(200).json({ pictureId, attribution, ...credit, ...quota() });
 }

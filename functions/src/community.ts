@@ -236,7 +236,7 @@ import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from 
 import { holdStaffMoves, readMovedByStaff, recordStaffMove, stillMoved, type MovedByStaff } from "./staffMoves";
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
 import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
-import { routeLinkPicture } from "./pictureLinks";
+import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import {
   cleanTopicName,
   decideAttachment,
@@ -677,6 +677,9 @@ export const lists = onRequest(
       }
       if (segments[0] === PICTURES_PATH && segments[1] === "link" && segments.length === 2 && request.method === "POST") {
         return await routeLinkPicture(request.body, response, identity);
+      }
+      if (segments[0] === PICTURES_PATH && segments[1] === "link" && segments.length === 2 && request.method === "GET") {
+        return await routeLinkQuota(response, identity);
       }
       if (segments[0] === PICTURES_PATH) {
         return await routePictures(request.method, segments.slice(1), query, request.body, response, identity);

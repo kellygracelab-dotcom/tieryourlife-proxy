@@ -76,10 +76,15 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(linked.status, 200, JSON.stringify(linked.body));
     assert.deepEqual(linked.body.attribution, { source: "web", link: page });
     assert.equal(linked.body.credit, "Jane Doe");
+    const resetsAt = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) + 86_400_000;
+    assert.deepEqual(linked.body.quota, { left: 399, limit: 400, resetsAt });
     const again = await call(author, "POST", "/lists/pictures/link", { url });
     assert.equal(again.body.pictureId, linked.body.pictureId);
+    assert.equal((again.body.quota as { left: number }).left, 399);
     const poster = "https://image.tmdb.org/t/p/w500/linked.jpg";
-    assert.deepEqual((await call(author, "POST", "/lists/pictures/link", { url: poster })).body, { imageUrl: poster, attribution: { source: "tmdb" } });
+    assert.deepEqual((await call(author, "POST", "/lists/pictures/link", { url: poster })).body, { imageUrl: poster, attribution: { source: "tmdb" }, quota: { left: 399, limit: 400, resetsAt } });
+    assert.deepEqual((await call(author, "GET", "/lists/pictures/link")).body, { quota: { left: 399, limit: 400, resetsAt } });
+    assert.equal((await call(guest, "GET", "/lists/pictures/link")).status, 403);
 
     const card = { title: "Found", pictureId: linked.body.pictureId, tierIndex: 0, credit: "Jane Doe", attribution: { source: "web", link: page } };
     const published = await call(author, "POST", "/lists", { title: "Linked picture smoke", category: "film_tv", tiers: [TIER], items: [card] });

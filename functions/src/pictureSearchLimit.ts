@@ -43,6 +43,22 @@ export function chargeLink(before: Partial<SearchCount> | undefined, nowMs: numb
   return charge(before, nowMs, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR);
 }
 
+/** What a person has left of today's pictures by link, and when the day starts again (UTC midnight). */
+export interface LinkQuota {
+  left: number;
+  limit: number;
+  resetsAt: number;
+}
+
+export function linkQuota(count: number | undefined, nowMs: number): LinkQuota {
+  const used = typeof count === "number" && Number.isFinite(count) ? count : 0;
+  return {
+    left: Math.max(0, LINKED_PICTURES_PER_DAY - used),
+    limit: LINKED_PICTURES_PER_DAY,
+    resetsAt: Date.parse(`${dayKey(nowMs)}T00:00:00Z`) + DAY_MS,
+  };
+}
+
 function charge(before: Partial<SearchCount> | undefined, nowMs: number, perDay: number, perHour: number): SearchCharge {
   const hour = Math.floor(nowMs / HOUR_MS);
   const count = typeof before?.count === "number" ? before.count : 0;

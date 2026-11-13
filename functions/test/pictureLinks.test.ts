@@ -4,7 +4,7 @@ import { attributionsByPicture, attributionsOf, firstWithoutPage, type CardPictu
 import { isCatalogueAddress } from "../src/outsidePictures";
 import { catalogueSourceOf, pageLink } from "../src/pictureAttribution";
 import { catalogueAnswer, readLinkRequest } from "../src/pictureLinks";
-import { chargeLink, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR } from "../src/pictureSearchLimit";
+import { chargeLink, linkQuota, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR } from "../src/pictureSearchLimit";
 import { decidePublish } from "../src/publishing";
 
 const FOUND = "https://example.com/pictures/cat.jpg";
@@ -74,6 +74,13 @@ describe("pictures fetched by their link", () => {
     assert.deepEqual(fullHour, { allowed: false, retryAtMs: Date.parse("2026-11-13T11:00:00Z") });
     const fullDay = chargeLink({ count: LINKED_PICTURES_PER_DAY, hour, hourCount: 0 }, now);
     assert.deepEqual(fullDay, { allowed: false, retryAtMs: Date.parse("2026-11-14T00:00:00Z") });
+  });
+
+  it("tell what is left of the day and when it starts again", () => {
+    const now = Date.parse("2026-11-13T23:59:00Z");
+    assert.deepEqual(linkQuota(undefined, now), { left: 400, limit: 400, resetsAt: Date.parse("2026-11-14T00:00:00Z") });
+    assert.equal(linkQuota(88, now).left, 312);
+    assert.equal(linkQuota(LINKED_PICTURES_PER_DAY + 5, now).left, 0);
   });
 });
 
