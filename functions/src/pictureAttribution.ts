@@ -358,10 +358,17 @@ export function mayCopy(original: string, attribution: PictureAttribution | null
   return attribution.source === "wikimedia" && commonsFileOf(original) !== null;
 }
 
-/** The catalogue's own smaller picture that the copy is made from: about 500 px on its long side. */
+/**
+ * The catalogue's own picture that the copy is made from: about 500 px on its
+ * long side for Commons and iNaturalist, a TMDB original at 500 px, the
+ * address as it is for the other catalogues (their card sizes already).
+ */
 export function copySourceOf(original: string): string | null {
   const one = parsed(original);
   if (one === null) return null;
+  const source = catalogueSourceOf(one.href);
+  if (source === "tmdb") return one.href.replace(/\/t\/p\/original\//, "/t/p/w500/");
+  if (source === "anilist" || source === "igdb" || source === "steam" || source === "openlibrary") return one.href;
   if (one.hostname === "inaturalist-open-data.s3.amazonaws.com") {
     return INATURALIST_PHOTO.test(one.pathname) ? one.href.split("?")[0].replace(/\/(?:original|large|medium|small|square|thumb)\.(\w+)$/i, "/medium.$1") : null;
   }

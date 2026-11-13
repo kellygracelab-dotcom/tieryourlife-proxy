@@ -192,6 +192,28 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(((await call(token, "GET", `/lists/${theirs.body.id}`)).body.items as { imageUrl: string }[])[0]!.imageUrl, E2E_NOT_COPIED_PHOTO);
   });
 
+  it("copies the catalogues switched on in config/pictureCopies: a house list's cards and cover", async () => {
+    const owner = await ownerToken();
+    const poster = "https://image.tmdb.org/t/p/w500/copySwitchSmoke.jpg";
+    const switches = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-copy-switch")).doc("config/pictureCopies");
+    await switches.set({ sources: { tmdb: true } });
+    try {
+      const published = await call(owner, "POST", "/lists/editorial", {
+        title: "Copied poster house smoke", category: "film_tv", tiers: [TIER], coverImageUrl: poster,
+        items: [{ title: "Poster", imageUrl: poster, attribution: { source: "tmdb", link: "https://www.themoviedb.org/movie/603" }, tierIndex: 0 }],
+      });
+      assert.equal(published.status, 201, JSON.stringify(published.body));
+      const shown = (await call(owner, "GET", `/lists/${published.body.id}`)).body;
+      const card = (shown.items as { imageUrl: string; attribution?: Record<string, string> }[])[0]!;
+      assert.match(card.imageUrl, new RegExp(`published%2F${published.body.id}%2Fw-[0-9a-f]{32}`));
+      assert.equal(card.attribution?.originalUrl, poster);
+      assert.equal(card.attribution?.source, "tmdb");
+      assert.equal(shown.coverImageUrl, card.imageUrl);
+    } finally {
+      await switches.delete();
+    }
+  });
+
   it("keeps a board and hands it back", async () => {
     const id = `b${Date.now().toString(36)}`;
     const board = {

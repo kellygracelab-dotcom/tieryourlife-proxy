@@ -1,5 +1,6 @@
 import { defineString } from "firebase-functions/params";
-import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, firstWithoutPage, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
+import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
+import { copySwitches } from "./pictureCopies";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -3083,8 +3084,11 @@ async function publish(
   });
   // A heavy list keeps its cards before their attribution, and their catalogue addresses before copies.
   if (!snapshotFits(settle(decision.draft, new Map()))) decision.draft.items.forEach((item) => delete item.attribution);
-  const wantedCopies = copiesWanted(cards, attributions);
-  const asCopied = withCatalogueCopies(settle(decision.draft, new Map()), new Map(wantedCopies.map((url) => [url, addressOf(pictureTools.bucket, `published/${target}/${outsideName(url)}${nameSuffix}`)])));
+  // Catalogue pictures we keep copies of (`config/pictureCopies`): the cards', the cover's and the collage's.
+  const switches = await copySwitches();
+  const settled = settle(decision.draft, new Map());
+  const wantedCopies = [...new Set([...copiesWanted(cards, attributions, switches), ...coverCopiesWanted([settled.coverImageUrl, ...settled.previewImages], switches)])];
+  const asCopied = withCatalogueCopies(settled, new Map(wantedCopies.map((url) => [url, addressOf(pictureTools.bucket, `published/${target}/${outsideName(url)}${nameSuffix}`)])));
   const catalogueUrls = snapshotFits(asCopied) ? wantedCopies : [];
   const catalogueCommitted = previousPictures === null ? new Map<string, string>() : committedOutsideCopies(previousPictures, catalogueUrls, `published/${target}/`, pictureTools.bucket);
 
