@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { COMMONS_CARD_WIDTH, commonsThumb, inaturalistLicence, linkFromAddress, type PictureAttribution } from "./pictureAttribution";
+import { COMMONS_CARD_WIDTH, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -382,21 +382,27 @@ export function openLibraryHits(body: unknown): PictureHit[] {
 /** Licenses that let anybody show and keep a photo, a commercial app included: no NC, no ND, not "all rights reserved". */
 const OPEN_LICENSES = new Set(["cc0", "cc-by", "cc-by-sa", "pd"]);
 
-/** An openly licensed photo a tile can be cut from, or null. */
-function inaturalistPhoto(raw: unknown): { medium: string; credit: string | null } | null {
+/**
+ * An openly licensed photo a tile can be cut from, or null: CC0, CC BY, CC BY-SA
+ * or public domain, said in its own credit, in iNaturalist's open-data bucket,
+ * which is what we may copy (`mayCopy`). One on static.inaturalist.org, or
+ * licensed NC, ND or not at all, is never offered.
+ */
+function inaturalistPhoto(raw: unknown): { medium: string; credit: string | null; code: string } | null {
   const photo = (raw ?? {}) as Json;
   const medium = text(photo.medium_url);
   const size = (photo.original_dimensions ?? {}) as Json;
   if (typeof photo.license_code !== "string" || !OPEN_LICENSES.has(photo.license_code)) return null;
   if (!medium || !medium.startsWith("https://")) return null;
   if (typeof size.width !== "number" || typeof size.height !== "number" || !fitsTile(size.width, size.height, false)) return null;
-  return { medium, credit: text(photo.attribution) };
+  const found = { medium, credit: text(photo.attribution), code: photo.license_code };
+  return mayCopy(medium, { ...inaturalistAttribution(found) }) ? found : null;
 }
 
-/** An iNaturalist photo's author, licence and page, from its own attribution and address. */
-function inaturalistAttribution(photo: { medium: string; credit: string | null }): Omit<PictureAttribution, "originalUrl"> {
+/** An iNaturalist photo's author, licence and page, from its own attribution and address; the licence from its code when the attribution does not say. */
+function inaturalistAttribution(photo: { medium: string; credit: string | null; code?: string }): Omit<PictureAttribution, "originalUrl"> {
   const link = linkFromAddress(photo.medium);
-  return { source: "inaturalist", ...(inaturalistLicence(photo.credit) ?? {}), ...(link ? { link } : {}) };
+  return { source: "inaturalist", ...(inaturalistLicence(photo.credit) ?? inaturalistLicenceOfCode(photo.code) ?? {}), ...(link ? { link } : {}) };
 }
 
 /** Taxa whose default photo will not do, so their other photos are worth asking for. */
@@ -503,8 +509,10 @@ export function commonsPictures(body: unknown, covers: boolean): Map<string, { c
     if (!title || typeof info?.width !== "number" || typeof info?.height !== "number" || !fitsTile(info.width, info.height, covers)) continue;
     const credit = commonsCredit(page, info);
     if (credit === null) continue;
+    // Only a file whose licence Commons states: one we may copy (`mayCopy`).
     const details = commonsDetails(page, info);
-    const attribution = { source: "wikimedia" as const, ...(details ?? { link: `https://commons.wikimedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}` }) };
+    if (details === undefined) continue;
+    const attribution = { source: "wikimedia" as const, ...details };
     pictures.set(commonsName(title.replace(/^File:/, "")), { ...(credit ? { credit } : {}), attribution });
   }
   return pictures;

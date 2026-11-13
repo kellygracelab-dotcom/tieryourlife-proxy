@@ -49,9 +49,9 @@ function answer(url: string): unknown {
     return {
       query: {
         pages: {
-          "1": { title: "File:Discovery cover.jpg", imageinfo: [{ width: 600, height: 600 }] },
-          "2": { title: "File:Discovery logo.png", imageinfo: [{ width: 600, height: 600 }] },
-          "3": { title: "File:Daft Punk on stage.jpg", imageinfo: [{ width: 1200, height: 800 }] },
+          "1": { title: "File:Discovery cover.jpg", imageinfo: [{ width: 600, height: 600, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+          "2": { title: "File:Discovery logo.png", imageinfo: [{ width: 600, height: 600, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+          "3": { title: "File:Daft Punk on stage.jpg", imageinfo: [{ width: 1200, height: 800, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
         },
       },
     };

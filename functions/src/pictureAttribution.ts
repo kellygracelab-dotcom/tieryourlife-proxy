@@ -227,6 +227,12 @@ const OPEN_LICENSES: Record<string, { license: string; licenseUrl: string }> = {
  * photo from elsewhere ends ", uploaded by {curator}": the author is still
  * the one named first, or the curator when nobody is.
  */
+/** An iNaturalist photo's open `license_code` (cc0, cc-by, cc-by-sa, pd) as a licence; null for any other. */
+export function inaturalistLicenceOfCode(code: unknown): { license: string; licenseUrl: string } | null {
+  const named: Record<string, string> = { cc0: "CC0", "cc-by": "CC BY", "cc-by-sa": "CC BY-SA", pd: "PD" };
+  return typeof code === "string" && Object.hasOwn(named, code) ? OPEN_LICENSES[named[code]!]! : null;
+}
+
 export function inaturalistLicence(credit: string | null | undefined): { author?: string; license: string; licenseUrl: string } | null {
   const whole = decodeEntities((credit ?? "").replace(/\s+/g, " ").trim());
   const upload = /^(.*), uploaded by (.+)$/.exec(whole);

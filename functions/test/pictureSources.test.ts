@@ -154,15 +154,17 @@ describe("the catalogues' answers", () => {
     ]);
   });
 
-  it("Commons sizes: covers must stand upright, photos may be cropped, nothing small, names as Commons writes them", () => {
+  it("Commons sizes: covers must stand upright, photos may be cropped, nothing small or unlicensed, names as Commons writes them", () => {
     const body = { query: { pages: {
-      "1": { title: "File:Hollow Knight cover.jpg", imageinfo: [{ width: 600, height: 900 }] },
-      "2": { title: "File:Album.png", imageinfo: [{ width: 500, height: 500 }] },
-      "3": { title: "File:Game logo.svg", imageinfo: [{ width: 1200, height: 300 }] },
-      "4": { title: "File:Fox.jpg", imageinfo: [{ width: 2048, height: 1638 }] },
-      "5": { title: "File:Tiny.jpg", imageinfo: [{ width: 120, height: 160 }] },
+      "1": { title: "File:Hollow Knight cover.jpg", imageinfo: [{ width: 600, height: 900, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+      "2": { title: "File:Album.png", imageinfo: [{ width: 500, height: 500, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+      "3": { title: "File:Game logo.svg", imageinfo: [{ width: 1200, height: 300, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+      "4": { title: "File:Fox.jpg", imageinfo: [{ width: 2048, height: 1638, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+      "5": { title: "File:Tiny.jpg", imageinfo: [{ width: 120, height: 160, extmetadata: { LicenseShortName: { value: "CC BY-SA 4.0" } } }] },
+      "6": { title: "File:Unlicensed.jpg", imageinfo: [{ width: 2048, height: 1638 }] },
       "-1": { title: "File:Missing.jpg", missing: "" },
     } } };
+    // A file whose licence Commons does not state is never offered: we could not copy it (mayCopy).
     const covers = commonsFitting(body, true);
     assert.deepEqual([...covers].sort(), ["Album.png", "Hollow Knight cover.jpg"]);
     assert.ok(covers.has(commonsName("hollow_Knight_cover.jpg")));
@@ -198,17 +200,32 @@ describe("the catalogues' answers", () => {
 
   it("iNaturalist: the common name over the Latin one, a large photo, never a wide one or none", () => {
     const hits = inaturalistHits({ results: [
-      { id: 42069, name: "Vulpes vulpes", preferred_common_name: "обыкновенная лисица", default_photo: { license_code: "cc-by", attribution: "(c) Ann, some rights reserved (CC BY)", medium_url: "https://static.inaturalist.org/photos/1/medium.jpg", original_dimensions: { width: 2048, height: 1638 } } },
-      { id: 2, name: "Panorama", default_photo: { license_code: "cc0", medium_url: "https://static.inaturalist.org/photos/2/medium.jpg", original_dimensions: { width: 3000, height: 1000 } } },
+      { id: 42069, name: "Vulpes vulpes", preferred_common_name: "обыкновенная лисица", default_photo: { license_code: "cc-by", attribution: "(c) Ann, some rights reserved (CC BY)", medium_url: "https://inaturalist-open-data.s3.amazonaws.com/photos/1/medium.jpg", original_dimensions: { width: 2048, height: 1638 } } },
+      { id: 2, name: "Panorama", default_photo: { license_code: "cc0", medium_url: "https://inaturalist-open-data.s3.amazonaws.com/photos/2/medium.jpg", original_dimensions: { width: 3000, height: 1000 } } },
       { id: 3, name: "Unseen" },
     ] });
     assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.thumbUrl, one.credit]), [
-      ["Обыкновенная лисица", "Vulpes vulpes", "https://static.inaturalist.org/photos/1/large.jpg", "https://static.inaturalist.org/photos/1/medium.jpg", "(c) Ann, some rights reserved (CC BY)"],
+      ["Обыкновенная лисица", "Vulpes vulpes", "https://inaturalist-open-data.s3.amazonaws.com/photos/1/large.jpg", "https://inaturalist-open-data.s3.amazonaws.com/photos/1/medium.jpg", "(c) Ann, some rights reserved (CC BY)"],
     ]);
   });
 
+  it("iNaturalist: only a photo we may copy is offered: open licence, open-data bucket; never static.inaturalist.org, NC, ND or none", () => {
+    const photo = (host: string, id: number, license: string | null, attribution?: string) => ({ license_code: license, ...(attribution ? { attribution } : {}), medium_url: `https://${host}/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
+    const open = "inaturalist-open-data.s3.amazonaws.com";
+    const hits = inaturalistHits({ results: [
+      { id: 1, name: "Static", default_photo: photo("static.inaturalist.org", 1, "cc-by", "(c) Ann, some rights reserved (CC BY)") },
+      { id: 2, name: "Non commercial", default_photo: photo(open, 2, "cc-by-nc") },
+      { id: 3, name: "No derivatives", default_photo: photo(open, 3, "cc-by-nd") },
+      { id: 4, name: "All rights", default_photo: photo(open, 4, null) },
+      { id: 5, name: "Open by its code", default_photo: photo(open, 5, "cc-by-sa", "(c) Bo, some rights reserved") },
+      { id: 6, name: "Public domain", default_photo: photo(open, 6, "pd", "no known copyright restrictions (public domain)") },
+    ] });
+    assert.deepEqual(hits.map((one) => [one.title, one.attribution?.license]), [["Open by its code", "CC BY-SA 4.0"], ["Public domain", "Public domain"]]);
+    assert.deepEqual(inaturalistWithoutPhoto({ results: [{ id: 1, name: "Static", default_photo: photo("static.inaturalist.org", 1, "cc0") }] }), [1]);
+  });
+
   it("iNaturalist: a photo licensed non-commercially or not at all gives way to the taxon's first open one", () => {
-    const photo = (id: number, license: string | null) => ({ license_code: license, medium_url: `https://static.inaturalist.org/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
+    const photo = (id: number, license: string | null) => ({ license_code: license, medium_url: `https://inaturalist-open-data.s3.amazonaws.com/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
     const found = { results: [
       { id: 1, name: "Vulpes vulpes", default_photo: photo(10, null) },
       { id: 2, name: "Vulpes lagopus", default_photo: photo(20, "cc-by-nc") },
@@ -220,13 +237,13 @@ describe("the catalogues' answers", () => {
       { id: 2, taxon_photos: [{ photo: photo(21, "cc-by-nd") }] },
     ] });
     assert.deepEqual(inaturalistHits(found, others).map((one) => one.thumbUrl), [
-      "https://static.inaturalist.org/photos/12/medium.jpg",
-      "https://static.inaturalist.org/photos/30/medium.jpg",
+      "https://inaturalist-open-data.s3.amazonaws.com/photos/12/medium.jpg",
+      "https://inaturalist-open-data.s3.amazonaws.com/photos/30/medium.jpg",
     ]);
   });
 
   it("iNaturalist: a taxon with no open photo of its own takes one from its observations", () => {
-    const photo = (id: number, license: string) => ({ license_code: license, medium_url: `https://static.inaturalist.org/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
+    const photo = (id: number, license: string) => ({ license_code: license, medium_url: `https://inaturalist-open-data.s3.amazonaws.com/photos/${id}/medium.jpg`, original_dimensions: { width: 2048, height: 1536 } });
     const found = { results: [
       { id: 1, name: "Felis catus", preferred_common_name: "Domestic Cat", matched_term: "Cat", default_photo: photo(10, "cc-by-nc") },
       { id: 2, name: "Catonephele", preferred_common_name: "Catones", default_photo: photo(20, "cc0") },
@@ -242,7 +259,7 @@ describe("the catalogues' answers", () => {
     const hits = inaturalistHits(found, others);
     assert.deepEqual(hits.map((one) => [one.title, one.thumbUrl]), [
       ["Domestic Cat", "https://inaturalist-open-data.s3.amazonaws.com/photos/11/medium.jpeg"],
-      ["Catones", "https://static.inaturalist.org/photos/20/medium.jpg"],
+      ["Catones", "https://inaturalist-open-data.s3.amazonaws.com/photos/20/medium.jpg"],
     ]);
     // Found by "Cat", the cat ranks as what was typed, above a name that merely starts so; the alias never leaves.
     const merged = mergeHits("cat", [hits]);
