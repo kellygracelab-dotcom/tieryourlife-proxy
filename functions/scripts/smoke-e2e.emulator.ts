@@ -221,6 +221,42 @@ describe("the proxy under the demo emulators", () => {
     }
   });
 
+  it("shows a board's catalogue pictures from one shared copy, the device's fingerprint and revision kept", async () => {
+    const poster = "https://image.tmdb.org/t/p/w500/boardCopySmoke.jpg";
+    const switches = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-board-copy")).doc("config/pictureCopies");
+    await switches.set({ sources: { tmdb: true } });
+    try {
+      const id = `bc${Date.now().toString(36)}`;
+      const board = {
+        title: "Board with a poster", fingerprint: "fp-poster", tiers: [{ uid: "t1", position: 0, ...TIER }], coverImageUrl: poster,
+        items: [{ uid: "i1", tierUid: "t1", position: 0, title: "Poster", imageUrl: poster, source: "TMDB", attribution: { source: "tmdb", id: "tmdb:movie:603" } }],
+      };
+      const written = await call(token, "PUT", `/boards/${id}`, board);
+      assert.equal(written.status, 200, JSON.stringify(written.body));
+      assert.equal(written.body.revision, 1);
+      const shared = (written.body.copies as Record<string, string>)[poster]!;
+      assert.match(shared, /published%2Fcatalogue%2Fw-[0-9a-f]{32}/);
+      const stored = (await call(token, "GET", `/boards/${id}`)).body;
+      const card = (stored.items as { imageUrl: string; attribution: Record<string, string> }[])[0]!;
+      assert.deepEqual([card.imageUrl, card.attribution.originalUrl, card.attribution.id, stored.coverImageUrl], [shared, poster, "tmdb:movie:603", shared]);
+      assert.equal(stored.fingerprint, "fp-poster");
+      // The same board sent again is the same board; another board with the poster shows the same file.
+      assert.deepEqual((await call(token, "PUT", `/boards/${id}`, { ...board, basedOn: 0 })).body, { uid: id, revision: 1 });
+      const again = await call(token, "PUT", `/boards/${id}`, { ...board, title: "Renamed", fingerprint: "fp-renamed", basedOn: 1 });
+      assert.deepEqual([again.body.revision, (again.body.copies as Record<string, string>)[poster]], [2, shared]);
+      const other = await call(token, "PUT", `/boards/${id}x`, { ...board, fingerprint: "fp-other" });
+      assert.equal((other.body.copies as Record<string, string>)[poster], shared);
+      // A board too large to show longer addresses keeps the catalogue's: about 673 KB of the 700 KB, over the 650 KB a move allows.
+      const filler = Array.from({ length: 1990 }, (_, at) => ({ uid: `f${at}`, tierUid: "t1", position: at + 1, title: "x".repeat(80), imageUrl: `https://example.com/${"a".repeat(115)}` }));
+      const heavy = await call(token, "PUT", `/boards/${id}h`, { ...board, fingerprint: "fp-heavy", items: [...board.items, ...filler] });
+      assert.equal(heavy.status, 200, JSON.stringify(heavy.body).slice(0, 300));
+      assert.equal(heavy.body.copies, undefined);
+      await call(token, "DELETE", `/boards/${id}h`);
+    } finally {
+      await switches.delete();
+    }
+  });
+
   it("keeps a board and hands it back", async () => {
     const id = `b${Date.now().toString(36)}`;
     const board = {
