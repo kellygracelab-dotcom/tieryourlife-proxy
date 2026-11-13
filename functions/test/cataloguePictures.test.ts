@@ -8,6 +8,7 @@ import {
   commonsFilesOf,
   copiesWanted,
   copyCataloguePictures,
+  coverCopiesWanted,
   originalOf,
   withCatalogueCopies,
   type CardPicture,
@@ -32,6 +33,7 @@ import {
   type CommonsDetails,
 } from "../src/pictureAttribution";
 import { commonsDetails } from "../src/pictureCredit";
+import { DEFAULT_COPY_SWITCHES } from "../src/pictureCopies";
 import { anilistHits, commonsPictures, igdbHits, inaturalistHits, openLibraryHits, steamHits, tmdbHits } from "../src/pictureSources";
 import { addressOf } from "../src/publishedPictures";
 import { decidePublish, settle } from "../src/publishing";
@@ -165,7 +167,11 @@ describe("what may be copied", () => {
   it("is copied from the catalogue's own picture of about 500 px", () => {
     assert.equal(copySourceOf(PHOTO), "https://inaturalist-open-data.s3.amazonaws.com/photos/82354387/medium.jpeg");
     assert.equal(copySourceOf(COMMONS), "https://commons.wikimedia.org/wiki/Special:FilePath/Felis_catus-cat_on_snow.jpg?width=500");
-    assert.equal(copySourceOf(POSTER), null);
+    // The other catalogues' card sizes are copied as they are; a TMDB original at 500 px.
+    assert.equal(copySourceOf(POSTER), POSTER);
+    assert.equal(copySourceOf("https://image.tmdb.org/t/p/original/abc.jpg"), "https://image.tmdb.org/t/p/w500/abc.jpg");
+    assert.equal(copySourceOf("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1-x.png"), "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1-x.png");
+    assert.equal(copySourceOf("https://example.com/found.jpg"), null);
   });
 });
 
@@ -240,6 +246,20 @@ describe("cards at publication", () => {
     assert.equal(attributions[0]?.link, "https://www.themoviedb.org/movie/603");
     assert.deepEqual(copiesWanted(cards, attributions), [PHOTO, COMMONS]);
     assert.deepEqual(commonsFilesOf(cards), ["Felis catus-cat on snow.jpg"]);
+    // With TMDB switched on its poster is copied too; with Commons off, Commons is not.
+    assert.deepEqual(copiesWanted(cards, attributions, { ...DEFAULT_COPY_SWITCHES, tmdb: true, wikimedia: false }), [POSTER, PHOTO]);
+  });
+
+  it("copy the cover and the collage of a catalogue switched on, and a licensed file there only when a card shows it", () => {
+    const switches = { ...DEFAULT_COPY_SWITCHES, tmdb: true };
+    assert.deepEqual(coverCopiesWanted([POSTER, null, COMMONS, "https://example.com/found.jpg", POSTER], switches), [POSTER]);
+    assert.deepEqual(coverCopiesWanted([POSTER], DEFAULT_COPY_SWITCHES), []);
+  });
+
+  it("remember the catalogue address of a copy, under the catalogue's name when the card had no credit", () => {
+    const copy = addressOf(BUCKET, `published/${LIST}/${outsideName(POSTER)}`);
+    const after = withCatalogueCopies({ items: [{ imageUrl: POSTER }], coverImageUrl: POSTER, previewImages: [POSTER] }, new Map([[POSTER, copy]]));
+    assert.deepEqual(after, { items: [{ imageUrl: copy, attribution: { source: "tmdb", originalUrl: POSTER } }], coverImageUrl: copy, previewImages: [copy] });
   });
 
   it("keep their catalogue address when sent as our copy, but only for the address the copy was made from", () => {
@@ -316,7 +336,7 @@ describe("copying catalogue pictures", () => {
 
   it("asks nothing of an address it may not copy", async () => {
     const tools = catalogueCopyTools(fakeTools());
-    assert.deepEqual(await tools.fetch(POSTER, AbortSignal.timeout(1000)), { error: "NOT_ALLOWED" });
+    assert.deepEqual(await tools.fetch("https://example.com/found.jpg", AbortSignal.timeout(1000)), { error: "NOT_ALLOWED" });
     assert.equal(await tools.reserve(5), true);
   });
 });

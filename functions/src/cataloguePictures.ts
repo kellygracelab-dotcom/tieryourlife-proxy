@@ -20,7 +20,6 @@ import {
   copySourceOf,
   isCopyOf,
   manualOf,
-  mayCopy,
   pageLink,
   withManual,
   type CommonsDetails,
@@ -28,6 +27,7 @@ import {
   type PictureAttribution,
 } from "./pictureAttribution";
 import { commonsDetails } from "./pictureCredit";
+import { DEFAULT_COPY_SWITCHES, wantsCopy, type CopySwitches } from "./pictureCopies";
 import { CatalogueRefusal, downloadPicture, getJson } from "./pictureSearch";
 import { storageMediaUrl } from "./publicMedia";
 
@@ -116,11 +116,21 @@ export function firstWithoutPage(cards: readonly CardPicture[], attributions: re
 }
 
 /** The catalogue addresses to copy: on a card as they are, and with a licence that lets us keep them. */
-export function copiesWanted(cards: readonly CardPicture[], attributions: readonly (PictureAttribution | null)[]): string[] {
-  return [...new Set(cards.flatMap((card, at) => {
-    const url = card.imageUrl;
-    return url !== null && catalogueSourceOf(url) !== null && mayCopy(url, attributions[at] ?? null) ? [url] : [];
-  }))];
+export function copiesWanted(
+  cards: readonly CardPicture[],
+  attributions: readonly (PictureAttribution | null)[],
+  switches: CopySwitches = DEFAULT_COPY_SWITCHES,
+): string[] {
+  return [...new Set(cards.flatMap((card, at) => (wantsCopy(card.imageUrl, attributions[at] ?? null, switches) ? [card.imageUrl!] : [])))];
+}
+
+/**
+ * The cover's and the collage's catalogue pictures to copy as well: those of a
+ * catalogue switched on that needs no licence read. A Commons file or an
+ * iNaturalist photo there is copied when a card shows it.
+ */
+export function coverCopiesWanted(urls: readonly (string | null)[], switches: CopySwitches = DEFAULT_COPY_SWITCHES): string[] {
+  return [...new Set(urls.filter((url): url is string => wantsCopy(url, null, switches)))];
 }
 
 const COMMONS_TITLES_PER_ASK = 50;
@@ -222,7 +232,11 @@ export function withCatalogueCopies<T extends Pictured>(list: T, copies: Readonl
     items: list.items.map((item) => {
       const copy = item.imageUrl === null ? undefined : copies.get(item.imageUrl);
       if (copy === undefined || item.imageUrl === null) return item;
-      const attribution = item.attribution ? { ...item.attribution, originalUrl: item.imageUrl } : undefined;
+      // The catalogue address is kept with the copy, under the catalogue's name when the card had no credit.
+      const source = catalogueSourceOf(item.imageUrl);
+      const attribution = item.attribution
+        ? { ...item.attribution, originalUrl: item.imageUrl }
+        : source !== null ? { source, originalUrl: item.imageUrl } : undefined;
       return { ...item, imageUrl: copy, ...(attribution ? { attribution } : {}) };
     }),
     coverImageUrl: swap(list.coverImageUrl),

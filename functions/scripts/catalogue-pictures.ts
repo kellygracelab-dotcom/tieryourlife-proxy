@@ -10,8 +10,14 @@
  * editor's older copy is not published over it. A second run finds nothing to
  * do; a picture not copied this time is copied by the next one.
  *
+ * Which catalogues are copied follows `config/pictureCopies` (src/pictureCopies.ts);
+ * `--sources tmdb,anilist` copies only those of them this time. The cover and
+ * the collage are copied as the cards are. Ranking snapshots too: each into its
+ * own folder, `published/ranking-{id}/`, as a website ranking outlives its list;
+ * their credits are kept as they are.
+ *
  * A dry run unless `--apply`; a dry run copies nothing. `--list a,b` limits it
- * to those lists; the house's go first anyway.
+ * to those lists and their rankings; the house's go first anyway.
  *
  *   npm run catalogue-pictures -- --project tieryourlife
  *   npm run catalogue-pictures -- --project tieryourlife --list AzFH5kWWVPXS2Fl8XXwE --apply
@@ -29,9 +35,11 @@ import {
   commonsFilesOf,
   copiesWanted,
   copyCataloguePictures,
+  coverCopiesWanted,
   withCatalogueCopies,
   type CardPicture,
 } from "../src/cataloguePictures";
+import { COPY_SOURCES, copySwitches, type CopySwitches } from "../src/pictureCopies";
 import { EDITORIAL_UID } from "../src/editorial";
 import { realOutsideTools } from "../src/outsidePictures";
 import { HOUSE_FILL_JOBS } from "../src/houseFill";
@@ -124,8 +132,9 @@ export function changedFields(before: ListPictures, after: ListPictures): { fiel
   return { fields, old: Object.fromEntries(Object.keys(fields).map((key) => [key, before[key as keyof ListPictures]])) };
 }
 
-function readArgs(argv: string[]): { rest: string[]; backup: string; lists: Set<string> | null } {
+function readArgs(argv: string[]): { rest: string[]; backup: string; lists: Set<string> | null; sources: Set<string> | null } {
   const rest: string[] = [];
+  let sources: Set<string> | null = null;
   let backup = join(DEFAULT_BACKUPS, `catalogue-pictures-${new Date().toISOString().slice(0, 10)}`);
   let lists: Set<string> | null = null;
   for (let at = 0; at < argv.length; at++) {
@@ -133,13 +142,14 @@ function readArgs(argv: string[]): { rest: string[]; backup: string; lists: Set<
     const value = () => inline ?? argv[++at] ?? "";
     if (flag === "--backup") backup = value();
     else if (flag === "--list") lists = new Set(value().split(",").map((id) => id.trim()).filter(Boolean));
+    else if (flag === "--sources") sources = new Set(value().split(",").map((id) => id.trim()).filter(Boolean));
     else rest.push(argv[at]);
   }
-  return { rest, backup, lists };
+  return { rest, backup, lists, sources };
 }
 
 async function main(): Promise<number> {
-  const { rest, backup, lists } = readArgs(process.argv.slice(2));
+  const { rest, backup, lists, sources } = readArgs(process.argv.slice(2));
   const options = readBackfillOptions(rest);
   if ("error" in options) {
     console.error(options.error);
@@ -150,6 +160,9 @@ async function main(): Promise<number> {
   initializeApp({ credential: applicationDefault(), projectId: options.projectId, storageBucket: options.bucket });
   const db = getFirestore();
   const tools = catalogueCopyTools(realOutsideTools("catalogue-backfill"));
+  const stored = await copySwitches();
+  const switches = Object.fromEntries(COPY_SOURCES.map((source) => [source, stored[source] && (sources === null || sources.has(source))])) as CopySwitches;
+  console.log(`Copying: ${COPY_SOURCES.filter((source) => switches[source]).join(", ") || "nothing"} (config/pictureCopies${sources === null ? "" : `, only ${[...sources].join(", ")}`}).`);
 
   const docs = (await db.collection("publishedLists").get()).docs
     .filter((doc) => lists === null || lists.has(doc.id))
@@ -176,7 +189,7 @@ async function main(): Promise<number> {
     const cards = cardsOf(list.items, ids);
     const files = commonsFilesOf(cards);
     const attributions = attributionsOf(cards, files.length > 0 ? await askCommons(files) : new Map());
-    const wanted = copiesWanted(cards, attributions);
+    const wanted = [...new Set([...copiesWanted(cards, attributions, switches), ...coverCopiesWanted([list.coverImageUrl, ...list.previewImages], switches)])];
     const copied = dryRun || wanted.length === 0
       ? { copies: new Map<string, string>(), saved: [] }
       : await copyCataloguePictures(`published/${doc.id}/`, wanted, tools, { withinMs: LIST_COPY_WINDOW_MS });
@@ -198,6 +211,31 @@ async function main(): Promise<number> {
   }
   console.log(`publishedLists: ${docs.length} lists, ${totals.cards} cards, ${totals.attributed} attributed, ${totals.withId} with a catalogue id (${[...bySource].map(([source, n]) => `${source} ${n}, ${idsBySource.get(source) ?? 0} with id`).join("; ")}), ${totals.wanted} pictures we may copy${dryRun ? "" : `, ${totals.copied} copied`}.`);
   samples.lines.forEach((line) => console.log(`  ${line}`));
+
+  // Ranking snapshots: their cards' catalogue pictures, each ranking into a folder of its own.
+  const rankingDocs = (await db.collection("rankings").get()).docs.filter((doc) => lists === null || lists.has(String(doc.get("listId"))));
+  const rankingSamples = new Samples(40);
+  let rankingWanted = 0;
+  let rankingCopied = 0;
+  for (const doc of rankingDocs) {
+    const items = doc.get("snapshot.items") as Item[] | undefined;
+    if (!Array.isArray(items)) continue;
+    const snapshot: ListPictures = { items, coverImageUrl: null, previewImages: [] };
+    const wanted = copiesWanted(cardsOf(items), items.map((item) => item?.attribution ?? null), switches);
+    if (wanted.length === 0) continue;
+    const copied = dryRun
+      ? { copies: new Map<string, string>(), saved: [] }
+      : await copyCataloguePictures(`published/ranking-${doc.id}/`, wanted, tools, { withinMs: LIST_COPY_WINDOW_MS });
+    rankingWanted += wanted.length;
+    rankingCopied += copied.copies.size;
+    rankingSamples.add(`${doc.ref.path}: ${items.length} cards, ${wanted.length} to copy${dryRun ? "" : `, ${copied.copies.size} copied`}`);
+    const after = withCatalogueCopies(snapshot, copied.copies);
+    if (sameJson(after.items) === sameJson(items)) continue;
+    saved[doc.ref.path] = { "snapshot.items": items };
+    updates.push({ ref: doc.ref, fields: { "snapshot.items": after.items }, readAt: doc.updateTime });
+  }
+  console.log(`rankings: ${rankingDocs.length} snapshots, ${rankingWanted} pictures to copy${dryRun ? "" : `, ${rankingCopied} copied`}.`);
+  rankingSamples.lines.forEach((line) => console.log(`  ${line}`));
 
   if (updates.length === 0) {
     console.log("Nothing to change.");
