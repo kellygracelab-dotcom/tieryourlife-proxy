@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { commonsThumb, inaturalistLicence, linkFromAddress, type PictureAttribution } from "./pictureAttribution";
+import { COMMONS_CARD_WIDTH, commonsThumb, inaturalistLicence, linkFromAddress, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -532,7 +532,7 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
         id: `wikidata:${id}`,
         title,
         subtitle: labelIn(entity.descriptions, language),
-        imageUrl: commonsThumb(file, 600),
+        imageUrl: commonsThumb(file, COMMONS_CARD_WIDTH),
         thumbUrl: commonsThumb(file, 400),
         source: "wikidata",
         kind: "thing",

@@ -97,6 +97,33 @@ interface PicturesAnswer {
   notices: string[];
   /** Quick answers only: whether the whole search can find more. */
   rest?: boolean;
+  /** The catalogues of this search that are busy (refused, or resting after a refusal): a gap, not "nothing found". */
+  busy?: PictureSource[];
+  /** With [busy]: when they may be asked again, epoch milliseconds. */
+  retryAt?: number;
+}
+
+/**
+ * The catalogues of [sources] that left a gap because they are busy: not in
+ * [answered] and resting past [nowMs]. Empty fields when there are none.
+ */
+export function busyGap(
+  sources: readonly PictureSource[],
+  answered: ReadonlySet<PictureSource>,
+  resting: ReadonlyMap<PictureSource, number>,
+  nowMs: number,
+): Pick<PicturesAnswer, "busy" | "retryAt"> {
+  const busy = sources.filter((source) => !answered.has(source) && (resting.get(source) ?? 0) > nowMs);
+  return busy.length === 0 ? {} : { busy, retryAt: Math.max(...busy.map((source) => resting.get(source)!)) };
+}
+
+/**
+ * Whether an answer is `503 SOURCE_BUSY` rather than "nothing found": nothing
+ * was found, a catalogue it needed is busy, and no later part of the search can
+ * still find something.
+ */
+export function busyAnswer(answer: PicturesAnswer): answer is PicturesAnswer & Required<Pick<PicturesAnswer, "busy" | "retryAt">> {
+  return answer.busy !== undefined && answer.retryAt !== undefined && answer.items.length === 0 && answer.rest !== true;
 }
 
 /** This person has searched the catalogues as much as an hour or a UTC day allows (src/pictureSearchLimit.ts). */
@@ -139,6 +166,12 @@ export async function routePictures(
       response.status(429).json({ error: "Too many picture searches", code: "SEARCH_LIMIT", retryAt: answer.retryAtMs });
       return;
     }
+    if (busyAnswer(answer)) {
+      response.setHeader("Retry-After", String(retryAfterSeconds(answer.retryAt, Date.now())));
+      response.setHeader("Cache-Control", "no-store");
+      response.status(503).json({ error: "A catalogue this search needs is busy", code: "SOURCE_BUSY", retryAt: answer.retryAt, busy: answer.busy });
+      return;
+    }
     response.setHeader("Cache-Control", "no-store");
     response.status(200).json(answer);
     return;
@@ -170,10 +203,14 @@ interface SearchInput {
   uid: string;
 }
 
-/** Null only when every catalogue asked failed: an empty answer from catalogues that worked is still an answer. Not counted: the house fill's. */
+/**
+ * Null when every catalogue asked failed, or nothing was found while one it
+ * needed is busy: an empty answer from catalogues that worked is still an
+ * answer. Not counted: the house fill's.
+ */
 export async function searchPictures(input: SearchInput): Promise<PicturesAnswer | null> {
   const answer = await search(input, false);
-  return answer !== null && "limited" in answer ? null : answer;
+  return answer === null || "limited" in answer || busyAnswer(answer) ? null : answer;
 }
 
 /** A person's search, counted against their hourly and daily searches. */
@@ -222,8 +259,9 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   if (!web.hits) return catalogues;
   const items = mergeHits(input.typed, [catalogues.items, web.hits]);
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
-  await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
-  return withWeb;
+  // An answer with a busy catalogue's gap is not kept: asked again, it may be whole.
+  if (catalogues.busy === undefined) await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
+  return catalogues.busy === undefined ? withWeb : { ...withWeb, busy: catalogues.busy, retryAt: catalogues.retryAt };
 }
 
 /** A catalogue's answer as kept among a quick search's parts, with when it was heard. */
@@ -259,9 +297,11 @@ async function askCatalogues(
   const asked = await Promise.all(asking.map(async (source) => [source, await askSource(source, input)] as const));
   for (const [source, answer] of asked) if (answer) answers.set(source, { ...answer, atMs: Date.now() });
   const found = sources.map((source) => answers.get(source) ?? null);
-  if (found.every((answer) => answer === null)) return null;
+  // A catalogue that refused now, or rests after an earlier refusal, is busy: its gap is said, not hidden.
+  const gap = busyGap(sources, new Set(answers.keys()), await restingUntil(), Date.now());
+  if (found.every((answer) => answer === null)) return gap.busy ? { items: [], hasMore: false, notices: [], ...gap } : null;
   const hits = withoutTmdbTwins(found.map((answer) => answer ?? { hits: [], hasMore: false }));
-  const merged = { items: mergeHits(input.typed, hits), hasMore: found.some((answer) => answer?.hasMore === true), notices: [] };
+  const merged: PicturesAnswer = { items: mergeHits(input.typed, hits), hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap };
   const cache = getFirestore().collection(CACHE);
   if (keep.parts && asked.some(([, answer]) => answer !== null)) {
     const parts = sources.flatMap((source) => {

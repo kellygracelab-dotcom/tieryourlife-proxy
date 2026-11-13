@@ -218,17 +218,62 @@ describe("a catalogue that refuses", () => {
     assert.ok(fakes.db.get("config/pictureSources")?.inaturalist);
   });
 
-  it("answers SOURCES_DOWN, as before, when every catalogue is resting or failing", async () => {
+  it("answers SOURCE_BUSY with when to ask again when every catalogue is resting, and asks none of them meanwhile", async () => {
     for (const host of ["api.themoviedb.org", "graphql.anilist.co", "api.igdb.com", "store.steampowered.com", "api.inaturalist.org", "www.wikidata.org", "openlibrary.org"]) {
       refuse.set(host, { status: 503 });
     }
-    assert.equal((await get({ part: "quick" })).status, 200);
+    // A quick answer still has the whole search to come.
+    const quick = await get({ part: "quick" });
+    assert.equal(quick.status, 200);
+    assert.equal(quick.body.rest, true);
+    const whole = await get({});
+    assert.equal(whole.status, 503);
+    assert.deepEqual(whole.body, {
+      error: "A catalogue this search needs is busy",
+      code: "SOURCE_BUSY",
+      retryAt: NOW + CATALOGUE_REST_MS,
+      busy: ["tmdb", "anilist", "igdb", "steam", "openlibrary", "inaturalist", "wikidata"],
+    });
+    assert.equal(whole.headers["Retry-After"], String(CATALOGUE_REST_MS / 1000));
+    asked = [];
+    assert.equal((await get({ q: "Tiger" })).status, 503);
+    assert.deepEqual(hosts(), []);
+  });
+
+  it("answers SOURCES_DOWN, as before, when every catalogue failed without asking us to wait", async () => {
+    for (const host of ["api.themoviedb.org", "graphql.anilist.co", "api.igdb.com", "store.steampowered.com", "api.inaturalist.org", "www.wikidata.org", "openlibrary.org"]) {
+      refuse.set(host, { status: 404 });
+    }
     const whole = await get({});
     assert.equal(whole.status, 502);
     assert.equal(whole.body.code, "SOURCES_DOWN");
+  });
+
+  it("says AniList is busy instead of finding nothing, keeps no answer, and asks AniList again once its rest is over", async () => {
+    refuse.set("graphql.anilist.co", { status: 429, retryAfter: "60" });
+    refuse.set("www.wikidata.org", { status: 404 });
+    for (const part of [{ part: "quick" }, {}] as Record<string, string>[]) {
+      const busy = await get({ scope: "anime", ...part });
+      assert.equal(busy.status, 503, JSON.stringify(busy.body));
+      assert.deepEqual([busy.body.code, busy.body.retryAt, busy.body.busy, busy.headers["Retry-After"]], ["SOURCE_BUSY", NOW + 60_000, ["anilist"], "60"]);
+    }
+    // Another catalogue finds something while AniList rests: shown, with AniList's gap named.
+    refuse.delete("www.wikidata.org");
     asked = [];
-    assert.equal((await get({ q: "Tiger" })).status, 502);
-    assert.deepEqual(hosts(), []);
+    const partial = await get({ scope: "all" });
+    assert.equal(partial.status, 200);
+    assert.ok((partial.body.items as unknown[]).length > 0);
+    assert.deepEqual([partial.body.busy, partial.body.retryAt], [["anilist"], NOW + 60_000]);
+    assert.ok(!hosts().includes("graphql.anilist.co"));
+
+    refuse.clear();
+    now = NOW + 61_000;
+    forgetCatalogueRests();
+    asked = [];
+    const back = await get({ scope: "anime" });
+    assert.equal(back.status, 200);
+    assert.ok(hosts().includes("graphql.anilist.co"));
+    assert.equal(back.body.busy, undefined);
   });
 });
 

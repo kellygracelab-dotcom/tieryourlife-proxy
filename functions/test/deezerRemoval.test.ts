@@ -8,7 +8,8 @@ import { withoutDeezer } from "../scripts/remove-deezer-covers";
 const DZ = (n: number) => `https://cdn-images.dzcdn.net/images/cover/${n}/1000x1000-000000-80-0-0.jpg`;
 const DZ_OLD = "https://e-cdns-images.dzcdn.net/images/artist/abc/500x500.jpg";
 const TMDB = "https://image.tmdb.org/t/p/w500/a.jpg";
-const WIKI = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Band.jpg";
+// A Commons thumbnail at a width Wikimedia makes: kept as it is (an original would become its 600 px FilePath).
+const WIKI = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Band.jpg/500px-Band.jpg";
 
 function publish(overrides: Record<string, unknown>) {
   const decision = decidePublish({
