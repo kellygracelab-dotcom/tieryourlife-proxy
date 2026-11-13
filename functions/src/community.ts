@@ -1,5 +1,5 @@
 import { defineString } from "firebase-functions/params";
-import { askCommons, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
+import { askCommons, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, firstWithoutPage, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -236,6 +236,7 @@ import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from 
 import { holdStaffMoves, readMovedByStaff, recordStaffMove, stillMoved, type MovedByStaff } from "./staffMoves";
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
 import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
+import { routeLinkPicture } from "./pictureLinks";
 import {
   cleanTopicName,
   decideAttachment,
@@ -673,6 +674,9 @@ export const lists = onRequest(
       }
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
+      }
+      if (segments[0] === PICTURES_PATH && segments[1] === "link" && segments.length === 2 && request.method === "POST") {
+        return await routeLinkPicture(request.body, response, identity);
       }
       if (segments[0] === PICTURES_PATH) {
         return await routePictures(request.method, segments.slice(1), query, request.body, response, identity);
@@ -2978,14 +2982,25 @@ async function publish(
 
   // Each card's attribution, and copies of the catalogue pictures we may keep.
   const before = attributionsByPicture(previous?.items);
-  const cards: CardPicture[] = decision.draft.items.map((item) => ({
-    imageUrl: item.imageUrl,
-    ...(item.credit ? { credit: item.credit } : {}),
-    ...(item.sent ? { sent: item.sent } : {}),
-    ...(item.imageUrl !== null && before.has(storageMediaUrl(item.imageUrl)) ? { previous: before.get(storageMediaUrl(item.imageUrl)) } : {}),
-  }));
+  const cards: CardPicture[] = decision.draft.items.map((item) => {
+    // Only a picture of the person's own folder can say it came from another site.
+    const { web, ...sent } = item.sent ?? {};
+    const told = { ...sent, ...(web && item.pictureId !== null ? { web } : {}) };
+    return {
+      imageUrl: item.imageUrl,
+      ...(item.credit ? { credit: item.credit } : {}),
+      ...(item.sent ? { sent: told } : {}),
+      ...(item.imageUrl !== null && before.has(storageMediaUrl(item.imageUrl)) ? { previous: before.get(storageMediaUrl(item.imageUrl)) } : {}),
+    };
+  });
   const files = commonsFilesOf(cards);
   const attributions = attributionsOf(cards, files.length > 0 && !isDemoEmulator() ? await askCommons(files) : new Map());
+  // The house names where each new picture from another site was found.
+  const withoutPage = byline.speaker === null ? null : firstWithoutPage(cards, attributions);
+  if (withoutPage !== null) {
+    response.status(422).json({ error: "Say where this picture was found", code: "PICTURE_LINK_NEEDED", itemIndex: withoutPage });
+    return;
+  }
   decision.draft.items.forEach((item, at) => {
     const attribution = attributions[at];
     if (attribution) item.attribution = attribution;

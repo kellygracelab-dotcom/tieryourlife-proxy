@@ -73,7 +73,7 @@ export interface DraftItem {
   credit?: string;
   sourceIndex?: number;
   /** What the client sent back of the card's attribution: only its page link and original address are read, and both are checked. */
-  sent?: { link?: string; originalUrl?: string };
+  sent?: { link?: string; originalUrl?: string; web?: true };
   /** Set by the publisher once it knows; `settle` stores it. */
   attribution?: PictureAttribution;
 }
@@ -372,12 +372,20 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
   };
 }
 
-/** The two parts of a card's `attribution` the server reads back; it works out the rest itself. */
+/**
+ * What the server reads back of a card's `attribution`: its page link, its
+ * original address, and whether a picture of the person's own folder came from
+ * another site. It works out the rest itself.
+ */
 function sentAttribution(raw: unknown): DraftItem["sent"] | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const { link, originalUrl } = raw as Record<string, unknown>;
+  const { link, originalUrl, source } = raw as Record<string, unknown>;
   const short = (value: unknown) => (typeof value === "string" && value.length > 0 && value.length <= MAX_LINK_LENGTH ? value : null);
-  const sent = { ...(short(link) ? { link: link as string } : {}), ...(short(originalUrl) ? { originalUrl: originalUrl as string } : {}) };
+  const sent = {
+    ...(short(link) ? { link: link as string } : {}),
+    ...(short(originalUrl) ? { originalUrl: originalUrl as string } : {}),
+    ...(source === "web" ? { web: true as const } : {}),
+  };
   return Object.keys(sent).length > 0 ? sent : null;
 }
 

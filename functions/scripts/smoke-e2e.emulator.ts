@@ -64,6 +64,44 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((mine.body.lists as { boardUid?: string }[])[0].boardUid, board);
   });
 
+  it("takes a picture by its link with the page it was found on, for an account and never a guest, and the house must name the page", async () => {
+    const url = `https://example.invalid/linked-${Date.now().toString(36)}.png`;
+    const page = "https://example.com/found-here";
+    const author = await newAuthor("linked");
+    assert.deepEqual((await call(guest, "POST", "/lists/pictures/link", { url })).status, 403);
+    assert.equal((await call(author, "POST", "/lists/pictures/link", { url, link: "http://example.com/page" })).body.code, "BAD_LINK");
+    assert.equal((await call(author, "POST", "/lists/pictures/link", {})).status, 400);
+
+    const linked = await call(author, "POST", "/lists/pictures/link", { url, link: page, credit: " Jane  Doe " });
+    assert.equal(linked.status, 200, JSON.stringify(linked.body));
+    assert.deepEqual(linked.body.attribution, { source: "web", link: page });
+    assert.equal(linked.body.credit, "Jane Doe");
+    const again = await call(author, "POST", "/lists/pictures/link", { url });
+    assert.equal(again.body.pictureId, linked.body.pictureId);
+    const poster = "https://image.tmdb.org/t/p/w500/linked.jpg";
+    assert.deepEqual((await call(author, "POST", "/lists/pictures/link", { url: poster })).body, { imageUrl: poster, attribution: { source: "tmdb" } });
+
+    const card = { title: "Found", pictureId: linked.body.pictureId, tierIndex: 0, credit: "Jane Doe", attribution: { source: "web", link: page } };
+    const published = await call(author, "POST", "/lists", { title: "Linked picture smoke", category: "film_tv", tiers: [TIER], items: [card] });
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const item = ((await call(author, "GET", `/lists/${published.body.id}`)).body.items as { imageUrl: string; attribution?: unknown; credit?: string }[])[0];
+    assert.match(item.imageUrl, /published%2F/);
+    assert.deepEqual(item.attribution, { source: "web", link: page });
+    assert.equal(item.credit, "Jane Doe");
+
+    const owner = await ownerToken();
+    const houseLinked = await call(owner, "POST", "/lists/pictures/link", { url: `${url}?house` });
+    assert.equal(houseLinked.status, 200, JSON.stringify(houseLinked.body));
+    const house = (link?: string) => call(owner, "POST", "/lists/editorial", {
+      title: "Linked picture house smoke", category: "film_tv", tiers: [TIER],
+      items: [{ title: "Poster", imageUrl: poster, tierIndex: 0 }, { title: "Found", pictureId: houseLinked.body.pictureId, tierIndex: 0, attribution: { source: "web", ...(link ? { link } : {}) } }],
+    });
+    assert.deepEqual((await house()).body.code, "PICTURE_LINK_NEEDED");
+    assert.equal((await house()).body.itemIndex, 1);
+    const named = await house(page);
+    assert.equal(named.status, 201, JSON.stringify(named.body));
+  });
+
   it("credits each card's picture, copies an open photo and keeps its catalogue address, and leaves a poster where it is", async () => {
     const photo = "https://inaturalist-open-data.s3.amazonaws.com/photos/82354387/large.jpeg";
     const poster = "https://image.tmdb.org/t/p/w500/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg";

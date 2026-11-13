@@ -19,6 +19,7 @@ import {
   copySourceOf,
   isCopyOf,
   mayCopy,
+  pageLink,
   type CommonsDetails,
   type PictureAttribution,
 } from "./pictureAttribution";
@@ -30,8 +31,8 @@ import { storageMediaUrl } from "./publicMedia";
 export interface CardPicture {
   imageUrl: string | null;
   credit?: string;
-  /** What the client sent back of the card's attribution. */
-  sent?: { link?: string; originalUrl?: string };
+  /** What the client sent back of the card's attribution; `web` on a picture of its own folder that it says came from another site. */
+  sent?: { link?: string; originalUrl?: string; web?: true };
   /** The attribution the same picture had in the list's previous snapshot, if any. */
   previous?: PictureAttribution;
 }
@@ -62,7 +63,7 @@ export function commonsFilesOf(cards: readonly CardPicture[]): string[] {
  */
 export function attributionsOf(cards: readonly CardPicture[], commons: ReadonlyMap<string, CommonsDetails>): (PictureAttribution | null)[] {
   return cards.map((card) => {
-    if (card.imageUrl === null) return null;
+    if (card.imageUrl === null) return card.sent?.web ? webAttribution(card) : null;
     const original = originalOf(card);
     if (original !== null) {
       const found = attributionOf(original, { credit: card.credit, sentLink: card.sent?.link ?? card.previous?.link, commons });
@@ -70,9 +71,28 @@ export function attributionsOf(cards: readonly CardPicture[], commons: ReadonlyM
       return cleanAttribution(original === card.imageUrl ? found : { ...found, originalUrl: original });
     }
     const stored = storageMediaUrl(card.imageUrl);
-    if (copyNameOf(stored) !== null || !stored.startsWith("https://firebasestorage.googleapis.com/")) return { source: "web" };
-    return null;
+    if (copyNameOf(stored) !== null || !stored.startsWith("https://firebasestorage.googleapis.com/")) return webAttribution(card);
+    return card.sent?.web ? webAttribution(card) : null;
   });
+}
+
+/**
+ * A picture from another site, with the page it was found on: the one the
+ * client sends, or, from a client that sends no attribution, the one the
+ * same picture had before.
+ */
+function webAttribution(card: CardPicture): PictureAttribution {
+  const link = card.sent ? pageLink(card.sent.link) : card.previous?.source === "web" ? card.previous.link : undefined;
+  return link ? { source: "web", link } : { source: "web" };
+}
+
+/**
+ * The first card a house publication may not carry: a picture from another
+ * site, new to this list, without the page it was found on. Null when none.
+ */
+export function firstWithoutPage(cards: readonly CardPicture[], attributions: readonly (PictureAttribution | null)[]): number | null {
+  const at = attributions.findIndex((one, index) => one?.source === "web" && !one.link && cards[index]?.previous === undefined);
+  return at < 0 ? null : at;
 }
 
 /** The catalogue addresses to copy: on a card as they are, and with a licence that lets us keep them. */
@@ -182,9 +202,9 @@ export function attributionsByPicture(items: unknown): Map<string, PictureAttrib
     const { imageUrl, attribution } = (item ?? {}) as { imageUrl?: unknown; attribution?: unknown };
     if (typeof imageUrl !== "string" || attribution === null || typeof attribution !== "object") continue;
     const source = (attribution as { source?: unknown }).source;
-    if (typeof source !== "string") continue;
-    found.set(storageMediaUrl(imageUrl), attribution as PictureAttribution);
-    const original = (attribution as { originalUrl?: unknown }).originalUrl;
+    if (typeof source !== "string") continue;
+    found.set(storageMediaUrl(imageUrl), attribution as PictureAttribution);
+    const original = (attribution as { originalUrl?: unknown }).originalUrl;
     if (typeof original === "string") found.set(original, attribution as PictureAttribution);
   }
   return found;

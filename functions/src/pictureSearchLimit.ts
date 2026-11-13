@@ -29,11 +29,26 @@ export type SearchCharge = { allowed: true; next: SearchCount } | { allowed: fal
 
 /** Whether one more search fits, given what this day's document holds; when it does not, the moment the full window opens again. */
 export function chargeSearch(before: Partial<SearchCount> | undefined, nowMs: number): SearchCharge {
+  return charge(before, nowMs, PICTURE_SEARCHES_PER_DAY, PICTURE_SEARCHES_PER_HOUR);
+}
+
+/**
+ * Pictures one person may have fetched by their address (`POST /lists/pictures/link`):
+ * each costs a download and a Vision look. Kept in `pictureWeb/{day}/links/{uid}`.
+ */
+export const LINKED_PICTURES_PER_DAY = 400;
+export const LINKED_PICTURES_PER_HOUR = 200;
+
+export function chargeLink(before: Partial<SearchCount> | undefined, nowMs: number): SearchCharge {
+  return charge(before, nowMs, LINKED_PICTURES_PER_DAY, LINKED_PICTURES_PER_HOUR);
+}
+
+function charge(before: Partial<SearchCount> | undefined, nowMs: number, perDay: number, perHour: number): SearchCharge {
   const hour = Math.floor(nowMs / HOUR_MS);
   const count = typeof before?.count === "number" ? before.count : 0;
   const hourCount = before?.hour === hour && typeof before.hourCount === "number" ? before.hourCount : 0;
-  if (count >= PICTURE_SEARCHES_PER_DAY) return { allowed: false, retryAtMs: Date.parse(`${dayKey(nowMs)}T00:00:00Z`) + DAY_MS };
-  if (hourCount >= PICTURE_SEARCHES_PER_HOUR) return { allowed: false, retryAtMs: (hour + 1) * HOUR_MS };
+  if (count >= perDay) return { allowed: false, retryAtMs: Date.parse(`${dayKey(nowMs)}T00:00:00Z`) + DAY_MS };
+  if (hourCount >= perHour) return { allowed: false, retryAtMs: (hour + 1) * HOUR_MS };
   return { allowed: true, next: { count: count + 1, hour, hourCount: hourCount + 1 } };
 }
 
