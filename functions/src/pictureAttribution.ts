@@ -34,6 +34,32 @@ export interface PictureAttribution {
   id?: string;
   /** Addresses the card showed before the catalogue moved its picture, oldest first; set only by the server. */
   formerUrls?: string[];
+  /**
+   * Author, licence and page given by the house's editor (`manualAttribution.ts`),
+   * kept as given: publishing, the backfill and `refreshPictures` never work them out again.
+   */
+  manual?: true;
+}
+
+/** A credit the house's editor gave: a licence and the page it stands on always, the author and the deed where known. */
+export type ManualAttribution = Pick<PictureAttribution, "author" | "licenseUrl"> & { license: string; link: string; manual: true };
+
+/** The editor's credit a stored attribution carries, or null. */
+export function manualOf(attribution: PictureAttribution | null | undefined): ManualAttribution | null {
+  if (attribution?.manual !== true || !attribution.license || !attribution.link) return null;
+  return {
+    ...(attribution.author ? { author: attribution.author } : {}),
+    license: attribution.license,
+    ...(attribution.licenseUrl ? { licenseUrl: attribution.licenseUrl } : {}),
+    link: attribution.link,
+    manual: true,
+  };
+}
+
+/** A card's attribution with the editor's credit over it: the source, id and addresses stay the server's; a picture of nowhere known is `web`. */
+export function withManual(derived: PictureAttribution | null, manual: ManualAttribution): PictureAttribution {
+  const { author: _author, license: _license, licenseUrl: _licenseUrl, link: _link, manual: _manual, ...kept } = derived ?? { source: "web" as const };
+  return { ...kept, ...manual };
 }
 
 export const MAX_AUTHOR_LENGTH = 300;
@@ -364,6 +390,7 @@ export function cleanAttribution(value: PictureAttribution): PictureAttribution 
     ...(value.originalUrl ? { originalUrl: value.originalUrl } : {}),
     ...(catalogueIdOf(value.source, value.id) ? { id: value.id } : {}),
     ...(formerUrls.length > 0 ? { formerUrls } : {}),
+    ...(value.manual === true ? { manual: true as const } : {}),
   };
 }
 
@@ -396,5 +423,6 @@ export function readAttribution(raw: unknown): PictureAttribution | null {
     originalUrl: original && original.length <= MAX_LINK_LENGTH && catalogueSourceOf(original) !== null ? original : undefined,
     id: text("id"),
     formerUrls: Array.isArray(value.formerUrls) ? (value.formerUrls as string[]) : undefined,
+    manual: value.manual === true ? true : undefined,
   });
 }
