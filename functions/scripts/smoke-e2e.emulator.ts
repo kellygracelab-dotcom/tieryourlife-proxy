@@ -5,6 +5,7 @@
  * keys, by both the direct and the Hosting-style path.
  */
 import assert from "node:assert/strict";
+import { crc32, deflateSync } from "node:zlib";
 import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
@@ -219,6 +220,39 @@ describe("the proxy under the demo emulators", () => {
     } finally {
       await switches.delete();
     }
+  });
+
+  it("makes a topic with its translations in one call, found by any of them", async () => {
+    const owner = await ownerToken();
+    const name = `Hand-drawn films ${Date.now().toString(36)}`;
+    const made = await call(owner, "POST", "/lists/topics", { name, section: "anime", names: { uk: "Мальовані фільми", de: "Handgezeichnete Filme", fr: "" } });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.deepEqual(made.body.names, { uk: "Мальовані фільми", de: "Handgezeichnete Filme" });
+    const found = await call(owner, "GET", `/lists/topics?q=${encodeURIComponent("Handgezeichnete")}`);
+    assert.ok((found.body.topics as { id: string }[]).some((topic) => topic.id === made.body.id), JSON.stringify(found.body));
+    const refused = await call(owner, "POST", "/lists/topics", { name: `${name} 2`, section: "anime", names: { xx: "Nope" } });
+    assert.deepEqual([refused.status, refused.body.code, refused.body.detail], [400, "INVALID", "names"]);
+  });
+
+  it("keeps a topic picture's credit while the picture stays", async () => {
+    const owner = await ownerToken();
+    const { owner: { uid } } = await seed();
+    // A topic picture is at least 960 px wide and 16:10: a black 960 x 600 PNG in the owner's own folder.
+    const pictureId = `topic-${Date.now().toString(36)}`;
+    await getStorage(initializeApp({ projectId: PROJECT }, "smoke-topic-picture")).bucket(`${PROJECT}.appspot.com`)
+      .file(`users/${uid}/pictures/${pictureId}`).save(blankPng(960, 600), { contentType: "image/png", resumable: false });
+    const kept = { body: { pictureId } };
+    const credit = { author: "Jane Doe", license: "cc by-sa 4.0", link: "https://example.com/photos/1" };
+    const name = `Credited topic ${Date.now().toString(36)}`;
+    const bad = await call(owner, "POST", "/lists/topics", { name, section: "anime", pictureId: kept.body.pictureId, pictureAttribution: { ...credit, license: "All rights reserved" } });
+    assert.deepEqual([bad.status, bad.body.code, bad.body.reason], [400, "BAD_ATTRIBUTION", "UNKNOWN_LICENSE"]);
+    const made = await call(owner, "POST", "/lists/topics", { name, section: "anime", pictureId: kept.body.pictureId, pictureAttribution: credit });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.deepEqual(made.body.pictureAttribution, { author: "Jane Doe", license: "CC BY-SA 4.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", link: "https://example.com/photos/1", manual: true });
+    const renamed = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { names: { de: "Bewertetes Thema" } });
+    assert.deepEqual(renamed.body.pictureAttribution, made.body.pictureAttribution);
+    const bare = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { pictureId: null });
+    assert.deepEqual([bare.status, bare.body.pictureUrl, bare.body.pictureAttribution], [200, null, undefined]);
   });
 
   it("shows a board's catalogue pictures from one shared copy, the device's fingerprint and revision kept", async () => {
@@ -555,3 +589,21 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await call(author, "PUT", "/boards/resurrect", { ...base, play })).status, 401);
   });
 });
+
+/** A black PNG of [width] x [height]: a picture big enough to be a section's or a topic's. */
+function blankPng(width: number, height: number): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([length, body, crc]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  const rows = Buffer.alloc(height * (1 + width * 3));
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+}

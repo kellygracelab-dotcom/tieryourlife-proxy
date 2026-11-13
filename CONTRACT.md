@@ -257,9 +257,11 @@ Optional `version` is the source list's `updatedAt`; when supplied, a stale valu
 
 **`GET /lists/topics/{id}`**: `200 Topic`. `400 INVALID`, `404 NOT_FOUND`.
 
-**`POST /lists/topics`**: staff. Body `{name, section, pictureId?}`: an approved topic outright, in an open section. `201 Topic`. `400 {code: "INVALID", detail: "name" | "section"}`, `409 {code: "NAME_TAKEN", id, detail: id}`, `400 BAD_PICTURE`.
+**`POST /lists/topics`**: staff. Body `{name, section, names?, pictureId?, pictureAttribution?}`: an approved topic outright, in an open section. `names` (since 14.11.2026): its translations at once, as `PATCH` takes them, `{<locale>: <name>}` for the locales of **Locales** (`en` is `name`); an empty one is left out; found by search in every language as the name is. `201 Topic`. `400 {code: "INVALID", detail: "name" | "section" | "names"}`, `409 {code: "NAME_TAKEN", id, detail: id}`, `400 BAD_PICTURE`.
 
-**`PATCH /lists/topics/{id}`**: staff. Body `{name?, names?, pictureId?}` (`pictureId: null` removes the picture; an empty translation removes it). `200 Topic`. `400 INVALID`, `400 BAD_PICTURE`, `409 NAME_TAKEN`, `409 SETTLED`.
+**`PATCH /lists/topics/{id}`**: staff. Body `{name?, names?, pictureId?, pictureAttribution?}` (`pictureId: null` removes the picture; an empty translation removes it). `200 Topic`. `400 INVALID`, `400 BAD_PICTURE`, `400 BAD_ATTRIBUTION`, `409 NAME_TAKEN`, `409 SETTLED`.
+
+**A topic picture's credit** (since 14.11.2026): `pictureAttribution` in `POST` and `PATCH /lists/topics`, `{author?, license, licenseUrl?, link}` (`manual: true` may be sent or left out), by the rules of the house editor's credit (**Editor's credit** below: the same licences, `link` required, an author or licence left empty read from a Commons, Flickr or iNaturalist page). `null` takes it away. It is kept while the picture stays: a new picture sent without one, or the picture taken away, takes it away too. `Topic` carries it, as stored (`manual: true`), only while the topic has a picture. Refused: `400 {code: "BAD_ATTRIBUTION", reason, detail: "pictureAttribution"}`, `reason` as for a card.
 
 **`DELETE /lists/topics/{id}`**: owner. Only a topic no list carries: `204`. `409 {code: "NOT_EMPTY", detail: "lists", lists}`.
 
@@ -465,7 +467,7 @@ A client shows TMDB's own notice and logo wherever any card's `source` is `tmdb`
 
 **Ranking** `{uid, authorName, authorPhotoUrl, arrangement, rows, tierLabels, updatedAtMs, mine?}`.
 
-**Topic** `{id, name, names, section, status: "pending" | "approved" | "rejected" | "merged", listCount, followerCount, following, createdBy?, mergedInto, pictureUrl}`. `createdBy` goes only to its proposer and staff, and for a topic first named by an anonymous list only to its proposer and the owner.
+**Topic** `{id, name, names, section, status: "pending" | "approved" | "rejected" | "merged", listCount, followerCount, following, createdBy?, mergedInto, pictureUrl, pictureAttribution?}`. `pictureAttribution`: the staff's credit for the picture (**A topic picture's credit** above), only while there is a picture. `createdBy` goes only to its proposer and staff, and for a topic first named by an anonymous list only to its proposer and the owner.
 
 **SectionView** `{id, name, names, icon, pictureUrl, tint, topicBg, topicIcon, status: "approved" | "pending" | "declined" | "merged", builtIn, hidden, rank, approvedAt, listCount, lists30d, newThisWeek, followerCount, following, collage}`. Each colour is `{light, dark}`; `collage` is four picture addresses or none.
 - Its proposer, while it is not approved, also gets `fileUnder`, `proposerUid`, `declineNote`, `mergedInto`, `mergedTopicId` and `waitingLists`.
