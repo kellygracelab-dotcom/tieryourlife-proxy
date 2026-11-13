@@ -11,7 +11,9 @@
  * do; a picture not copied this time is copied by the next one.
  *
  * Which catalogues are copied follows `config/pictureCopies` (src/pictureCopies.ts);
- * `--sources tmdb,anilist` copies only those of them this time. The cover and
+ * `--sources tmdb,anilist` copies only those of them this time; in a dry run it
+ * shows what those would copy even while switched off, counted by catalogue,
+ * before a switch is turned on. The cover and
  * the collage are copied as the cards are. Ranking snapshots too: each into its
  * own folder, `published/ranking-{id}/`, as a website ranking outlives its list;
  * their credits are kept as they are.
@@ -132,6 +134,26 @@ export function changedFields(before: ListPictures, after: ListPictures): { fiel
   return { fields, old: Object.fromEntries(Object.keys(fields).map((key) => [key, before[key as keyof ListPictures]])) };
 }
 
+/**
+ * The catalogues this run copies: those switched on in [stored], of [sources]
+ * when it names some; a dry run naming [sources] counts them as if switched on.
+ */
+export function switchesFor(stored: CopySwitches, sources: ReadonlySet<string> | null, dryRun: boolean): CopySwitches {
+  return Object.fromEntries(
+    COPY_SOURCES.map((source) => [source, sources !== null && dryRun ? sources.has(source) : stored[source] && (sources === null || sources.has(source))]),
+  ) as CopySwitches;
+}
+
+/** How many of [urls] each catalogue gives. */
+function countBySource(into: Map<string, number>, urls: readonly string[]): void {
+  urls.forEach((url) => {
+    const source = catalogueSourceOf(url) ?? "web";
+    into.set(source, (into.get(source) ?? 0) + 1);
+  });
+}
+
+const bySourceText = (counts: ReadonlyMap<string, number>) => [...counts].map(([source, n]) => `${source} ${n}`).join(", ") || "none";
+
 function readArgs(argv: string[]): { rest: string[]; backup: string; lists: Set<string> | null; sources: Set<string> | null } {
   const rest: string[] = [];
   let sources: Set<string> | null = null;
@@ -161,8 +183,8 @@ async function main(): Promise<number> {
   const db = getFirestore();
   const tools = catalogueCopyTools(realOutsideTools("catalogue-backfill"));
   const stored = await copySwitches();
-  const switches = Object.fromEntries(COPY_SOURCES.map((source) => [source, stored[source] && (sources === null || sources.has(source))])) as CopySwitches;
-  console.log(`Copying: ${COPY_SOURCES.filter((source) => switches[source]).join(", ") || "nothing"} (config/pictureCopies${sources === null ? "" : `, only ${[...sources].join(", ")}`}).`);
+  const switches = switchesFor(stored, sources, dryRun);
+  console.log(`Copying: ${COPY_SOURCES.filter((source) => switches[source]).join(", ") || "nothing"} (${sources !== null && dryRun ? `as if switched on: ${[...sources].join(", ")}; switched on now: ${COPY_SOURCES.filter((source) => stored[source]).join(", ")}` : `config/pictureCopies${sources === null ? "" : `, only ${[...sources].join(", ")}`}`}).`);
 
   const docs = (await db.collection("publishedLists").get()).docs
     .filter((doc) => lists === null || lists.has(doc.id))
@@ -178,6 +200,7 @@ async function main(): Promise<number> {
   const totals = { cards: 0, attributed: 0, withId: 0, wanted: 0, copied: 0 };
   const bySource = new Map<string, number>();
   const idsBySource = new Map<string, number>();
+  const wantedBySource = new Map<string, number>();
   for (const doc of docs) {
     const data = doc.data();
     const list: ListPictures = {
@@ -200,6 +223,7 @@ async function main(): Promise<number> {
     totals.attributed += attributions.filter(Boolean).length;
     totals.withId += attributions.filter((one) => one?.id).length;
     totals.wanted += wanted.length;
+    countBySource(wantedBySource, wanted);
     totals.copied += copied.copies.size;
     attributions.forEach((one) => one && bySource.set(one.source, (bySource.get(one.source) ?? 0) + 1));
     attributions.forEach((one) => one?.id && idsBySource.set(one.source, (idsBySource.get(one.source) ?? 0) + 1));
@@ -209,7 +233,7 @@ async function main(): Promise<number> {
     saved[doc.ref.path] = old;
     updates.push({ ref: doc.ref, fields, readAt: doc.updateTime, revise: true });
   }
-  console.log(`publishedLists: ${docs.length} lists, ${totals.cards} cards, ${totals.attributed} attributed, ${totals.withId} with a catalogue id (${[...bySource].map(([source, n]) => `${source} ${n}, ${idsBySource.get(source) ?? 0} with id`).join("; ")}), ${totals.wanted} pictures we may copy${dryRun ? "" : `, ${totals.copied} copied`}.`);
+  console.log(`publishedLists: ${docs.length} lists, ${totals.cards} cards, ${totals.attributed} attributed, ${totals.withId} with a catalogue id (${[...bySource].map(([source, n]) => `${source} ${n}, ${idsBySource.get(source) ?? 0} with id`).join("; ")}), ${totals.wanted} pictures we may copy (${bySourceText(wantedBySource)})${dryRun ? "" : `, ${totals.copied} copied`}.`);
   samples.lines.forEach((line) => console.log(`  ${line}`));
 
   // Ranking snapshots: their cards' catalogue pictures, each ranking into a folder of its own.
@@ -217,6 +241,7 @@ async function main(): Promise<number> {
   const rankingSamples = new Samples(40);
   let rankingWanted = 0;
   let rankingCopied = 0;
+  const rankingBySource = new Map<string, number>();
   for (const doc of rankingDocs) {
     const items = doc.get("snapshot.items") as Item[] | undefined;
     if (!Array.isArray(items)) continue;
@@ -227,6 +252,7 @@ async function main(): Promise<number> {
       ? { copies: new Map<string, string>(), saved: [] }
       : await copyCataloguePictures(`published/ranking-${doc.id}/`, wanted, tools, { withinMs: LIST_COPY_WINDOW_MS });
     rankingWanted += wanted.length;
+    countBySource(rankingBySource, wanted);
     rankingCopied += copied.copies.size;
     rankingSamples.add(`${doc.ref.path}: ${items.length} cards, ${wanted.length} to copy${dryRun ? "" : `, ${copied.copies.size} copied`}`);
     const after = withCatalogueCopies(snapshot, copied.copies);
@@ -234,7 +260,7 @@ async function main(): Promise<number> {
     saved[doc.ref.path] = { "snapshot.items": items };
     updates.push({ ref: doc.ref, fields: { "snapshot.items": after.items }, readAt: doc.updateTime });
   }
-  console.log(`rankings: ${rankingDocs.length} snapshots, ${rankingWanted} pictures to copy${dryRun ? "" : `, ${rankingCopied} copied`}.`);
+  console.log(`rankings: ${rankingDocs.length} snapshots, ${rankingWanted} pictures to copy (${bySourceText(rankingBySource)})${dryRun ? "" : `, ${rankingCopied} copied`}.`);
   rankingSamples.lines.forEach((line) => console.log(`  ${line}`));
 
   if (updates.length === 0) {
