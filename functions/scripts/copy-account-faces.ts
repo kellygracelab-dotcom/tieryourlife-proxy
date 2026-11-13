@@ -68,7 +68,8 @@ async function main(): Promise<number> {
       console.log(`  ${one.doc.ref.path} ${one.field}: whose face is unknown, left as it is`);
       continue;
     }
-    const copy = dryRun ? null : await checkedFace(one.uid, one.url, realOutsideTools(one.uid));
+    // A minute, not a request's 6 s: from a PC the first fetch, Vision and Storage calls start cold.
+    const copy = dryRun ? null : await checkedFace(one.uid, one.url, realOutsideTools(one.uid), { until: AbortSignal.timeout(60_000) });
     console.log(`  ${one.doc.ref.path} ${one.field} (${one.uid.slice(0, 6)}...): ${dryRun ? "to copy" : copy === null ? "refused: left as it is" : copy === one.url ? "not copied now: left as it is" : "copied"}`);
     if (dryRun || copy === null || copy === one.url) continue;
     copied++;
