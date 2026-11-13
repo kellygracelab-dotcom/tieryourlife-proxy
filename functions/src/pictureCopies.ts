@@ -17,6 +17,18 @@ export const COPY_SOURCES = ["wikimedia", "inaturalist", "tmdb", "anilist", "igd
 export type CopySource = (typeof COPY_SOURCES)[number];
 export type CopySwitches = Readonly<Record<CopySource, boolean>>;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Catalogues whose terms limit how long a copy is kept: fetched again after
+ * `refreshAfterMs`, and undone (the card shows the catalogue's address again)
+ * when it could not be fetched again by `dropAfterMs`. TMDB keeps a cache six
+ * months at most.
+ */
+export const COPY_LIMITS: Readonly<Record<string, { refreshAfterMs: number; dropAfterMs: number }>> = {
+  tmdb: { refreshAfterMs: 90 * DAY_MS, dropAfterMs: 150 * DAY_MS },
+};
+
 /** Without a switch written: the openly licensed only, as since 13.11.2026. */
 export const DEFAULT_COPY_SWITCHES: CopySwitches = {
   wikimedia: true,

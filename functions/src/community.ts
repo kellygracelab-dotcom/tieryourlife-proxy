@@ -241,7 +241,7 @@ import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from 
 import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import { manualCredits } from "./manualAttribution";
 import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
-import { manualOf, type ManualAttribution } from "./pictureAttribution";
+import { catalogueSourceOf, manualOf, type ManualAttribution } from "./pictureAttribution";
 import {
   cleanTopicName,
   decideAttachment,
@@ -3113,7 +3113,9 @@ async function publish(
   }
 
   // The house keeps every licensed catalogue picture as our copy, or publishes nothing yet.
-  const notCopied = byline.speaker === null ? [] : catalogueUrls.filter((url) => !catalogue.copies.has(url));
+  // Only the openly licensed (Commons, iNaturalist): another catalogue's picture not copied now stays its own address
+  // and is copied by the daily upkeep (`pictureCopyUpkeep.ts`).
+  const notCopied = byline.speaker === null ? [] : catalogueUrls.filter((url) => !catalogue.copies.has(url) && LICENSED_SOURCES.has(catalogueSourceOf(url) ?? ""));
   if (notCopied.length > 0) {
     console.warn(`House publication of ${target}: ${notCopied.length} of ${catalogueUrls.length} catalogue pictures not copied`);
     await Promise.all([...outside.saved, ...catalogue.saved].map((path) => pictureTools.remove(path).catch(() => undefined)));
@@ -3385,6 +3387,7 @@ function wikimediaNotReady(response: Response, code: "SOURCE_BUSY" | "PICTURES_N
 }
 
 const HOUSE_PICTURE_RETRY_MS = 60_000;
+const LICENSED_SOURCES: ReadonlySet<string> = new Set(["wikimedia", "inaturalist"]);
 
 /** A replacement read at an older revision than the list now has: nothing was written. */
 function listChanged(response: Response, revision: number): void {

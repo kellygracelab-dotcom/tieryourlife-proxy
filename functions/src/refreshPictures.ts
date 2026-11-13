@@ -11,6 +11,7 @@
 import { createHash } from "node:crypto";
 import { getFirestore, type DocumentReference } from "firebase-admin/firestore";
 import { nextRevision } from "./listRevision";
+import { keepPictureCopies } from "./pictureCopyUpkeep";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import {
   anilistPictures,
@@ -61,8 +62,16 @@ export const refreshPictures = onSchedule(
   },
   async () => {
     if (isDemoEmulator()) return;
-    const summary = await refreshCataloguePictures(Date.now());
-    console.log(`Picture refresh: ${JSON.stringify(summary)}`);
+    const started = Date.now();
+    try {
+      const summary = await refreshCataloguePictures(started);
+      console.log(`Picture refresh: ${JSON.stringify(summary)}`);
+    } catch (error) {
+      console.error(`Picture refresh failed: ${(error as Error).message}`);
+    }
+    // Copies to make, and copies a catalogue's terms want fetched again or undone, until a minute before the run's end.
+    const copies = await keepPictureCopies(Date.now(), started + 480_000);
+    console.log(`Picture copies: ${JSON.stringify(copies)}`);
   },
 );
 

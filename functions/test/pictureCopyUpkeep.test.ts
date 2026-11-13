@@ -1,0 +1,88 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { copyMetaFor } from "../src/outsidePictures";
+import { DEFAULT_COPY_SWITCHES } from "../src/pictureCopies";
+import { copiesToUndo, copyAgeDue, pictureFields, readCopyMeta, stillToCopy, storedPathOf, withoutCopies, type ShownPictures } from "../src/pictureCopyUpkeep";
+import { addressOf } from "../src/publishedPictures";
+import { outsideName } from "../src/outsidePictures";
+import { readSources } from "../scripts/remove-picture-copies";
+
+const BUCKET = "tieryourlife.firebasestorage.app";
+const DAY = 24 * 60 * 60 * 1000;
+const NOW = 1_800_000_000_000;
+const POSTER = "https://image.tmdb.org/t/p/w500/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg";
+const COVER = "https://image.tmdb.org/t/p/w500/cover.jpg";
+const COMMONS = "https://commons.wikimedia.org/wiki/Special:FilePath/Felis_catus-cat_on_snow.jpg?width=600";
+const path = (url: string) => `published/L1/${outsideName(url)}`;
+const copy = (url: string) => addressOf(BUCKET, path(url));
+
+describe("a catalogue picture's copy after it is made", () => {
+  it("says what it was copied from and when, and an older file its upload time", () => {
+    assert.deepEqual(copyMetaFor(POSTER, NOW), { originalUrl: POSTER, source: "tmdb", copiedAt: String(NOW) });
+    assert.deepEqual(readCopyMeta({ originalUrl: POSTER, source: "tmdb", copiedAt: String(NOW) }, "2026-01-01T00:00:00Z"), { originalUrl: POSTER, source: "tmdb", copiedAt: NOW });
+    assert.deepEqual(readCopyMeta(undefined, "2026-01-01T00:00:00Z"), { copiedAt: Date.parse("2026-01-01T00:00:00Z") });
+  });
+
+  it("is fetched again after 90 days when it is TMDB's, and undone if that fails after 150; others are kept", () => {
+    const tmdb = (days: number) => ({ originalUrl: POSTER, source: "tmdb", copiedAt: NOW - days * DAY });
+    assert.equal(copyAgeDue(tmdb(89), NOW), "keep");
+    assert.equal(copyAgeDue(tmdb(90), NOW), "refresh");
+    assert.equal(copyAgeDue(tmdb(150), NOW), "refresh-or-drop");
+    assert.equal(copyAgeDue({ originalUrl: COMMONS, source: "wikimedia", copiedAt: NOW - 400 * DAY }, NOW), "keep");
+    assert.equal(copyAgeDue({ source: "tmdb", copiedAt: NOW - 400 * DAY }, NOW), "keep");
+  });
+
+  it("is found by its path in our bucket", () => {
+    assert.equal(storedPathOf(copy(POSTER)), path(POSTER));
+    assert.equal(storedPathOf(POSTER), null);
+    assert.equal(storedPathOf(null), null);
+  });
+});
+
+describe("undoing a catalogue's copies", () => {
+  const credit = { source: "tmdb" as const, link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603", originalUrl: POSTER };
+  const shown: ShownPictures = {
+    items: [
+      { title: "Matrix", imageUrl: copy(POSTER), attribution: credit },
+      { title: "Cat", imageUrl: copy(COMMONS), attribution: { source: "wikimedia", license: "CC BY-SA 4.0", originalUrl: COMMONS } },
+      { title: "No picture", imageUrl: null },
+    ],
+    coverImageUrl: copy(COVER),
+    previewImages: [copy(POSTER), copy(COMMONS)],
+  };
+  const files = new Map([[path(COVER), { originalUrl: COVER, source: "tmdb", copiedAt: NOW }]]);
+
+  it("finds them by the card's credit and by the file's own word, and leaves other catalogues' copies", () => {
+    assert.deepEqual(copiesToUndo(shown, files, new Set(["tmdb"])), new Map([[path(POSTER), POSTER], [path(COVER), COVER]]));
+    assert.deepEqual(copiesToUndo(shown, files, new Set(["igdb"])), new Map());
+  });
+
+  it("shows the catalogue's own address again with the same credit, cover and collage too, and saves what it was", () => {
+    const after = withoutCopies(shown, copiesToUndo(shown, files, new Set(["tmdb"])))!;
+    assert.deepEqual(after.items[0], { title: "Matrix", imageUrl: POSTER, attribution: { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" } });
+    assert.deepEqual(after.items[1], shown.items[1]);
+    assert.equal(after.coverImageUrl, COVER);
+    assert.deepEqual(after.previewImages, [POSTER, copy(COMMONS)]);
+    assert.deepEqual(Object.keys(pictureFields(shown, after, false)), ["items", "coverImageUrl", "previewImages"]);
+    assert.deepEqual(pictureFields(after, shown, false).coverImageUrl, copy(COVER));
+    assert.deepEqual(Object.keys(pictureFields(shown, after, true)), ["snapshot.items"]);
+    assert.equal(withoutCopies(shown, new Map()), null);
+  });
+
+  it("is asked for one catalogue, several, or all of them", () => {
+    assert.deepEqual(readSources("tmdb"), new Set(["tmdb"]));
+    assert.deepEqual(readSources("tmdb, igdb"), new Set(["tmdb", "igdb"]));
+    assert.equal(readSources("all")?.size, 7);
+    assert.equal(readSources("web"), null);
+    assert.equal(readSources(""), null);
+    assert.equal(readSources(null), null);
+  });
+});
+
+describe("what the daily upkeep still copies", () => {
+  it("is what a list shows from a catalogue switched on, the cover and collage too", () => {
+    const shown: ShownPictures = { items: [{ imageUrl: POSTER }, { imageUrl: copy(COVER) }], coverImageUrl: COVER, previewImages: [POSTER] };
+    assert.deepEqual(stillToCopy(shown, DEFAULT_COPY_SWITCHES), []);
+    assert.deepEqual(stillToCopy(shown, { ...DEFAULT_COPY_SWITCHES, tmdb: true }), [POSTER, COVER]);
+  });
+});

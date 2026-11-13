@@ -209,6 +209,13 @@ describe("the proxy under the demo emulators", () => {
       assert.equal(card.attribution?.originalUrl, poster);
       assert.equal(card.attribution?.source, "tmdb");
       assert.equal(shown.coverImageUrl, card.imageUrl);
+      // The copy's file says what it was copied from, and when: how a catalogue's copies are fetched again or undone.
+      const path = decodeURIComponent(card.imageUrl.split("/o/")[1]!.split("?")[0]!);
+      const bucketName = card.imageUrl.split("/v0/b/")[1]!.split("/")[0]!;
+      const [meta] = await getStorage(initializeApp({ projectId: PROJECT }, "smoke-copy-meta")).bucket(bucketName).file(path).getMetadata();
+      const custom = meta.metadata as Record<string, string>;
+      assert.deepEqual([custom.originalUrl, custom.source], [poster, "tmdb"]);
+      assert.ok(Math.abs(Number(custom.copiedAt) - Date.now()) < 120_000);
     } finally {
       await switches.delete();
     }
