@@ -88,8 +88,30 @@ export function quickSourcesFor(scope: PictureScope): PictureSource[] {
   return sourcesFor(scope).filter((source) => !SLOW_SOURCES.includes(source));
 }
 
+export function isSlowSource(source: PictureSource): boolean {
+  return SLOW_SOURCES.includes(source);
+}
+
 export function hasSlowSources(scope: PictureScope): boolean {
   return quickSourcesFor(scope).length < sourcesFor(scope).length;
+}
+
+/** A catalogue that answered 429 or 5xx without saying for how long is left alone this long. */
+export const CATALOGUE_REST_MS = 5 * 60 * 1000;
+const LONGEST_REST_MS = 60 * 60 * 1000;
+
+/** Until when a catalogue is left alone after answering [status] with [retryAfter]; null when that was no refusal. */
+export function restUntil(status: number, retryAfter: string | null, nowMs: number): number | null {
+  if (status !== 429 && status < 500) return null;
+  return nowMs + Math.min(LONGEST_REST_MS, retryAfterMs(retryAfter, nowMs) ?? CATALOGUE_REST_MS);
+}
+
+/** Retry-After as seconds or as an HTTP date. */
+function retryAfterMs(value: string | null, nowMs: number): number | null {
+  const raw = value?.trim() ?? "";
+  if (/^\d+$/.test(raw)) return Number(raw) * 1000;
+  const at = raw.length > 0 ? Date.parse(raw) : Number.NaN;
+  return Number.isFinite(at) ? Math.max(0, at - nowMs) : null;
 }
 
 /** Scopes whose tiles are covers and posters, where anything wider than tall looks broken; the others hold photos. */
@@ -366,6 +388,11 @@ export function inaturalistWithoutPhoto(body: unknown): number[] {
   return rows((body as Json | null)?.results)
     .filter((row) => typeof row.id === "number" && inaturalistPhoto(row.default_photo) === null)
     .map((row) => row.id as number);
+}
+
+/** Whether any of a taxon's photos would do. */
+export function inaturalistHasOpenPhoto(photos: readonly unknown[]): boolean {
+  return photos.some((photo) => inaturalistPhoto(photo) !== null);
 }
 
 /**
