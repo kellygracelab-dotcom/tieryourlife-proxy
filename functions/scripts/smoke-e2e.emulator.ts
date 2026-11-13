@@ -9,7 +9,7 @@ import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
-import { STUB_PICTURE } from "../src/emulator";
+import { E2E_NOT_COPIED_PHOTO, STUB_PICTURE } from "../src/emulator";
 import { decideStore, MAX_BOARD_BYTES, MAX_PLAY_HISTORY } from "../src/sync";
 import { PROJECT, assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, seed } from "./seed-e2e";
 
@@ -172,6 +172,24 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(after[0].attribution?.originalUrl, photo);
     assert.equal(after[0].attribution?.author, "Douglas Goldman");
     assert.match(after[0].imageUrl, /w-[0-9a-f]{32}/);
+  });
+
+  it("publishes a house list only once every licensed catalogue picture is our copy, and anybody else's as before", async () => {
+    const owner = await ownerToken();
+    const card = { title: "Uncopied", imageUrl: E2E_NOT_COPIED_PHOTO, credit: "(c) Jane Doe, some rights reserved (CC BY)", tierIndex: 0 };
+    const body = { title: "House picture not copied", category: "film_tv", tiers: [TIER], items: [card] };
+    const lists = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-not-copied")).collection("publishedLists");
+    const before = (await lists.where("authorUid", "==", "tyl-editorial").count().get()).data().count;
+    const refused = await call(owner, "POST", "/lists/editorial", body);
+    assert.equal(refused.status, 503, JSON.stringify(refused.body));
+    assert.equal(refused.body.code, "PICTURES_NOT_COPIED");
+    assert.deepEqual(refused.body.imageUrls, [E2E_NOT_COPIED_PHOTO]);
+    assert.ok(Number(refused.body.retryAt) > Date.now());
+    assert.equal((await lists.where("authorUid", "==", "tyl-editorial").count().get()).data().count, before);
+
+    const theirs = await call(token, "POST", "/lists", { ...body, title: "Person's picture not copied" });
+    assert.equal(theirs.status, 201, JSON.stringify(theirs.body));
+    assert.equal(((await call(token, "GET", `/lists/${theirs.body.id}`)).body.items as { imageUrl: string }[])[0]!.imageUrl, E2E_NOT_COPIED_PHOTO);
   });
 
   it("keeps a board and hands it back", async () => {

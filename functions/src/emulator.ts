@@ -40,6 +40,9 @@ export const CALM_WORDS: WordingVerdict = { sexual: 0, derogatory: 0, profanity:
 /** TMDB's answer to a search that found nothing. */
 export const EMPTY_TMDB_SEARCH = { page: 1, results: [], total_pages: 0, total_results: 0 };
 
+/** An iNaturalist photo the demo emulator cannot copy, as a catalogue that fails would. */
+export const E2E_NOT_COPIED_PHOTO = "https://inaturalist-open-data.s3.amazonaws.com/photos/999000001/large.jpeg";
+
 /** A one-pixel PNG: what a web picture kept for somebody turns out to be. */
 export const STUB_PICTURE = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",

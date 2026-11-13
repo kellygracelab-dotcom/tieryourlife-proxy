@@ -1,5 +1,5 @@
 import { defineString } from "firebase-functions/params";
-import { askCommons, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, firstWithoutPage, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
+import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, firstWithoutPage, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -3066,7 +3066,11 @@ async function publish(
     coverManual = cover === null ? undefined : (cover as ManualAttribution | "cleared");
   }
   const files = commonsFilesOf(cards);
-  const attributions = attributionsOf(cards, files.length > 0 && !isDemoEmulator() ? await askCommons(files) : new Map());
+  const commons = files.length > 0 && !isDemoEmulator() ? await askCommonsFully(files) : { found: new Map(), unasked: 0, retryAfterMs: null };
+  // The house waits for Commons' word: without its licence a picture is not copied and
+  // stays a direct Wikimedia address, which Wikimedia refuses some apps.
+  if (byline.speaker !== null && commons.unasked > 0) return wikimediaNotReady(response, "SOURCE_BUSY", commons.retryAfterMs, { busy: ["wikimedia"] });
+  const attributions = attributionsOf(cards, commons.found);
   // The house names where each new picture from another site was found.
   const withoutPage = byline.speaker === null ? null : firstWithoutPage(cards, attributions);
   if (withoutPage !== null) {
@@ -3102,6 +3106,14 @@ async function publish(
       imageUrl: outside.refused.url,
     });
     return;
+  }
+
+  // The house keeps every licensed catalogue picture as our copy, or publishes nothing yet.
+  const notCopied = byline.speaker === null ? [] : catalogueUrls.filter((url) => !catalogue.copies.has(url));
+  if (notCopied.length > 0) {
+    console.warn(`House publication of ${target}: ${notCopied.length} of ${catalogueUrls.length} catalogue pictures not copied`);
+    await Promise.all([...outside.saved, ...catalogue.saved].map((path) => pictureTools.remove(path).catch(() => undefined)));
+    return wikimediaNotReady(response, "PICTURES_NOT_COPIED", null, { imageUrls: notCopied });
   }
 
   // Attempt-specific names cannot overwrite the current snapshot or another
@@ -3355,6 +3367,20 @@ async function publish(
   }
   response.status(201).json({ id: target, topicId, underReview: document.underReview, revision, ...dropped });
 }
+
+/**
+ * A house publication that waits for Commons (`SOURCE_BUSY`: it could not be asked
+ * about the licences) or for copies of its pictures (`PICTURES_NOT_COPIED`): nothing
+ * was written, and the same body may be sent again at `retryAt`.
+ */
+function wikimediaNotReady(response: Response, code: "SOURCE_BUSY" | "PICTURES_NOT_COPIED", retryAfterMs: number | null, extra: Record<string, unknown>): void {
+  const waitMs = Math.min(Math.max(retryAfterMs ?? HOUSE_PICTURE_RETRY_MS, 1000), 3_600_000);
+  response.setHeader("Retry-After", String(Math.ceil(waitMs / 1000)));
+  response.setHeader("Cache-Control", "no-store");
+  response.status(503).json({ error: "Wikimedia did not give all the pictures yet; nothing was published. Try again in a minute.", code, retryAt: Date.now() + waitMs, ...extra });
+}
+
+const HOUSE_PICTURE_RETRY_MS = 60_000;
 
 /** A replacement read at an older revision than the list now has: nothing was written. */
 function listChanged(response: Response, revision: number): void {
