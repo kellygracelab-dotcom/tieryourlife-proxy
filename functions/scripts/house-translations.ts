@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { applicationDefault, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { auditEntry } from "../src/audit";
+import { nextRevision } from "../src/listRevision";
 import { decideTranslations, EDITORIAL_UID, searchAfterTranslations, titleNames, translatableStrings } from "../src/editorial";
 
 const SCRIPT_UID = "script:house-translations";
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
       if (execute) {
         transaction.update(ref, {
           translations: decision.translations,
+          ...nextRevision(),
           ...searchAfterTranslations(list.title, titleNames(list.title, decision.translations)),
         });
         transaction.set(db.collection("auditLog").doc(), {

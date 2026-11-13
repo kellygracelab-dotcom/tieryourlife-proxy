@@ -301,7 +301,7 @@ async function main(): Promise<number> {
     }
     Object.assign(fields, listFieldsAfter(data, copies) ?? {});
     if (changes) listsChanging++;
-    if (Object.keys(fields).length > 0) updates.push({ ref: doc.ref, fields, readAt: doc.updateTime });
+    if (Object.keys(fields).length > 0) updates.push({ ref: doc.ref, fields, readAt: doc.updateTime, revise: true });
   }
   for (const doc of rankingDocs) {
     const fields: Record<string, unknown> = {};

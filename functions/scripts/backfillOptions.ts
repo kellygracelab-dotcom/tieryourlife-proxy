@@ -1,3 +1,5 @@
+import { nextRevision } from "../src/listRevision";
+
 /** The flags the one-off backfills take: which project, and `--apply` to write. */
 export interface BackfillOptions {
   projectId: string;
@@ -40,6 +42,8 @@ export interface GuardedUpdate {
   fields: Record<string, unknown>;
   /** The document's update time when it was read: a document changed since is left alone. */
   readAt: FirebaseFirestore.Timestamp;
+  /** A published list whose shown contents change: its revision moves (src/listRevision.ts). */
+  revise?: boolean;
 }
 
 /**
@@ -47,20 +51,22 @@ export interface GuardedUpdate {
  * A batch that fails is written again one by one, so one document changed
  * meanwhile leaves only itself alone; a later run picks it up.
  */
+const fieldsOf = (one: GuardedUpdate): Record<string, unknown> => (one.revise ? { ...one.fields, ...nextRevision() } : one.fields);
+
 export async function writeGuarded(db: FirebaseFirestore.Firestore, updates: readonly GuardedUpdate[], log: (line: string) => void): Promise<{ written: number; leftAlone: number }> {
   let written = 0;
   let leftAlone = 0;
   for (let at = 0; at < updates.length; at += WRITES_PER_BATCH) {
     const chunk = updates.slice(at, at + WRITES_PER_BATCH);
     const batch = db.batch();
-    for (const one of chunk) batch.update(one.ref, one.fields, { lastUpdateTime: one.readAt });
+    for (const one of chunk) batch.update(one.ref, fieldsOf(one), { lastUpdateTime: one.readAt });
     try {
       await batch.commit();
       written += chunk.length;
     } catch {
       for (const one of chunk) {
         try {
-          await one.ref.update(one.fields, { lastUpdateTime: one.readAt });
+          await one.ref.update(fieldsOf(one), { lastUpdateTime: one.readAt });
           written++;
         } catch (error) {
           leftAlone++;

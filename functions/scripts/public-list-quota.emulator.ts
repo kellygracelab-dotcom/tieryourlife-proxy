@@ -103,7 +103,7 @@ describe(`new-public-list HTTP quota (${limit === null ? "default OFF" : `demo N
       assert.equal(full.body.retryAt, history[0] + PUBLIC_LIST_WINDOW_MS);
       assert.ok(Number(full.retryAfter) > 0);
       const retry = await call(person.token, "POST", "/lists", body);
-      assert.deepEqual(retry, { status: 200, body: { id: first.body.id, topicId: null, existing: true } });
+      assert.deepEqual(retry, { status: 200, body: { id: first.body.id, topicId: null, existing: true, revision: 1 } });
       assert.equal((await call(person.token, "POST", `/lists/${first.body.id}`, { ...body, title: "Updated" })).status, 200);
       assert.deepEqual(await events(person.uid), history);
       assert.equal((await call(person.token, "DELETE", `/lists/${first.body.id}`)).status, 204);

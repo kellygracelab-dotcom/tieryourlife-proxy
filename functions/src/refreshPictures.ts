@@ -10,6 +10,7 @@
  */
 import { createHash } from "node:crypto";
 import { getFirestore, type DocumentReference } from "firebase-admin/firestore";
+import { nextRevision } from "./listRevision";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import {
   anilistPictures,
@@ -175,7 +176,8 @@ export async function refreshCataloguePictures(nowMs: number): Promise<Record<st
         if (!fresh.exists) return false;
         const fields = movedFields(prefix ? fresh.get("snapshot") : fresh.data(), moves, prefix);
         if (Object.keys(fields).length === 0) return false;
-        transaction.update(ref, fields);
+        // A list's revision moves, so an editor's copy from before cannot put the old addresses back.
+        transaction.update(ref, prefix ? fields : { ...fields, ...nextRevision() });
         return true;
       }).catch((error) => {
         console.error(`Picture refresh: ${ref.path} not moved: ${(error as Error).message}`);

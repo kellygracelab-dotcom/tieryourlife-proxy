@@ -6,7 +6,8 @@
  * keeps its catalogue address in `attribution.originalUrl`, and the old values
  * of every document it changes are saved first under `--backup` (default
  * D:\MyProjects\TierYourLife\backups\catalogue-pictures-<date>). `updatedAt`
- * is left alone, so no list moves in the feed. A second run finds nothing to
+ * is left alone, so no list moves in the feed; its `revision` moves, so an
+ * editor's older copy is not published over it. A second run finds nothing to
  * do; a picture not copied this time is copied by the next one.
  *
  * A dry run unless `--apply`; a dry run copies nothing. `--list a,b` limits it
@@ -193,7 +194,7 @@ async function main(): Promise<number> {
     samples.add(`${doc.id} (${house}) ${String(data.title ?? "").slice(0, 40)}: ${list.items.length} cards, ${attributions.filter(Boolean).length} attributed, ${wanted.length} to copy${dryRun ? "" : `, ${copied.copies.size} copied`}; ${Object.keys(fields).join(", ") || "nothing to change"}`);
     if (Object.keys(fields).length === 0) continue;
     saved[doc.ref.path] = old;
-    updates.push({ ref: doc.ref, fields, readAt: doc.updateTime });
+    updates.push({ ref: doc.ref, fields, readAt: doc.updateTime, revise: true });
   }
   console.log(`publishedLists: ${docs.length} lists, ${totals.cards} cards, ${totals.attributed} attributed, ${totals.withId} with a catalogue id (${[...bySource].map(([source, n]) => `${source} ${n}, ${idsBySource.get(source) ?? 0} with id`).join("; ")}), ${totals.wanted} pictures we may copy${dryRun ? "" : `, ${totals.copied} copied`}.`);
   samples.lines.forEach((line) => console.log(`  ${line}`));
