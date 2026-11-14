@@ -41,6 +41,40 @@ function text(value: unknown): string {
   }));
 }
 
+const BARE_URL = /^(?:https?:)?\/\/\S+$/i;
+const URL_IN_BRACKETS = /\s*\((?:https?:)?\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*\)/gi;
+
+/**
+ * The name a credit shows for a Commons author, without addresses: Commons
+ * writes a linked author as "Name (https://…)", and a frame from a YouTube
+ * video often names the channel by its address alone. "Name (address)" keeps
+ * the name; an address alone gives the channel's handle or user name it
+ * carries (`youtube.com/@TV10` → "@TV10", `/user/mang2goon` → "mang2goon"),
+ * "YouTube" for a YouTube address that names nobody (`/channel/UC…`), and the
+ * site's name for any other. The address itself is not kept: a credit has no
+ * field for an author's page, and the file's page (`link`) says the rest.
+ * A trailing " - YouTube" on a channel's name goes too (since 14.11.2026).
+ */
+export function authorName(raw: string): string {
+  const named = raw.replace(URL_IN_BRACKETS, "").replace(/\s+-\s+YouTube$/i, "").replace(/\s+/g, " ").trim();
+  if (named !== "" && !BARE_URL.test(named)) return named;
+  const address = named !== "" ? named : (/(?:https?:)?\/\/[^\s()]+/i.exec(raw)?.[0] ?? "");
+  let url: URL;
+  try {
+    url = new URL(address.startsWith("//") ? `https:${address}` : address);
+  } catch {
+    return named;
+  }
+  const host = url.hostname.replace(/^(?:www|m)\./, "");
+  if (host === "youtube.com" || host === "youtu.be") {
+    const handle = /^\/(@[\w.-]{1,100})/.exec(url.pathname)?.[1];
+    if (handle) return handle;
+    const user = /^\/(?:user|c)\/([\w.-]{1,100})/.exec(url.pathname)?.[1];
+    return user ?? "YouTube";
+  }
+  return host;
+}
+
 /** Undefined when nothing was supplied; null when a known attribution cannot be kept whole. */
 export function commonsCredit(page: unknown, info: unknown): string | undefined | null {
   const file = object(page);
@@ -75,7 +109,7 @@ export function commonsDetails(page: unknown, info: unknown): { author?: string;
   const field = (key: string) => text(object(metadata[key]).value);
   const license = field("LicenseShortName") || field("UsageTerms");
   if (!license) return undefined;
-  const author = field("Attribution") || field("Artist") || field("Credit");
+  const author = authorName(field("Attribution") || field("Artist") || field("Credit"));
   const licenceRaw = object(metadata.LicenseUrl).value;
   const licenseUrl = typeof licenceRaw === "string"
     ? [...licenceRaw.matchAll(/(?:https?:)?\/\/[^\s<>"']+/gi)].map((match) => safeUrl(match[0])).find((url): url is string => url !== null)

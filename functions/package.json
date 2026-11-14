@@ -25,6 +25,7 @@
     "remove-picture-copies": "tsc -p tsconfig.test.json && node lib-test/scripts/remove-picture-copies.js",
     "copy-account-faces": "tsc -p tsconfig.test.json && node lib-test/scripts/copy-account-faces.js",
     "anilist-links": "tsc -p tsconfig.test.json && node lib-test/scripts/anilist-links.js",
+    "commons-authors": "tsc -p tsconfig.test.json && node lib-test/scripts/commons-authors.js",
     "count-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/count-deezer-covers.js",
     "remove-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/remove-deezer-covers.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
