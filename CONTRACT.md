@@ -89,7 +89,7 @@ canonical Storage addresses, their shared catalogue copies included
 | A game on a board | 2–2000 cards, up to 14000 answers (full-size Swiss + refine), kept 30 days after its last write | `sync.ts` |
 | Follows of authors, of topics, of sections | 200 each | `MAX_FOLLOWING` |
 | Report note | 500 | `MAX_NOTE_LENGTH` |
-| Topic name | 2–40 characters, a letter or digit in it, refused otherwise | `topics.ts` |
+| Topic name, and each of its translations (`names`) | 1–40 characters (since 14.11.2026; one Han, kana or Hangul character such as 犬 is a whole name), a letter or digit in it, refused otherwise | `topics.ts` |
 | Waiting topics per account | 3 | `MAX_PENDING_TOPICS_PER_ACCOUNT` |
 | Section name | 2–24 characters (an emoji is one), a letter or digit in it, refused otherwise | `sections.ts` |
 | Waiting section proposals per account | 3 | `MAX_PENDING_SECTIONS_PER_ACCOUNT` |

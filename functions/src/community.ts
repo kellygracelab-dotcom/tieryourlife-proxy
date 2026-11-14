@@ -14,6 +14,7 @@ import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } f
 import { claimListSlot } from "./publishLimit";
 import { claimPublicListQuota, decidePublicListQuota, readPublicListQuotaLimit, type PublicListQuota } from "./publicListQuota";
 import { boardLineage } from "./boardOrigin";
+import { queuePictureCopies } from "./pictureCopyUpkeep";
 import { countsAsTake } from "./takes";
 import { liftBanLogged, readBan, replaceKeptBans } from "./banIdentities";
 import { banTarget, decideHide, groupReports, mayJudge, REPORT_REASONS, weighsOnHiding, type QueuedReport } from "./moderation";
@@ -3405,6 +3406,9 @@ async function publish(
   });
   if (stored === null) return;
   const { document, topicId, addresses, revision } = stored;
+  // Catalogue pictures that had no time to be copied (a slow catalogue) are copied within the quarter of an hour.
+  const leftToCopy = catalogueUrls.filter((url) => !catalogue.copies.has(url)).length;
+  if (leftToCopy > 0) await queuePictureCopies(target, leftToCopy);
   const dropped = outside.dropped > 0 ? { droppedPictures: outside.dropped } : {};
   await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
   if (held) await noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined);
@@ -4031,7 +4035,7 @@ function refuseTopicRequest(response: Response, reason: "both" | "bad_name" | "b
       response.status(400).json({ error: "Pick a topic, name a new one, or ask for none", code: "INVALID" });
       return;
     case "bad_name":
-      response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID" });
+      response.status(400).json({ error: "A topic name is one to forty characters", code: "INVALID" });
       return;
     case "bad_id":
       response.status(400).json({ error: "Which topic?", code: "INVALID" });
@@ -4757,7 +4761,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   if (!decision.ok) {
     switch (decision.reason) {
       case "bad_name":
-        response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID", detail: "name" });
+        response.status(400).json({ error: "A topic name is one to forty characters", code: "INVALID", detail: "name" });
         return;
       case "no_section":
         response.status(400).json({ error: "Which section?", code: "INVALID", detail: "section" });
@@ -4770,7 +4774,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   // Its translations at once, as `PATCH` takes them: a hundred new topics need no second call each.
   const names = source.names === undefined ? {} : readTopicNames(source.names);
   if (names === null) {
-    response.status(400).json({ error: "A translation is two to forty characters, in one of the app's languages", code: "INVALID", detail: "names" });
+    response.status(400).json({ error: "A translation is one to forty characters, in one of the app's languages", code: "INVALID", detail: "names" });
     return;
   }
   const asked = readTopicPictureId(source.pictureId);
@@ -4980,7 +4984,7 @@ function refuseTopicAction(
       response.status(400).json({ error: "Approving needs a section", code: "INVALID" });
       return;
     case "bad_name":
-      response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID" });
+      response.status(400).json({ error: "A topic name is one to forty characters", code: "INVALID" });
       return;
     case "settled":
       response.status(409).json({ error: "That topic has been decided already", code: "SETTLED" });
@@ -5575,7 +5579,7 @@ function refuseTopicApproval(response: Response, reason: "missing" | "settled" |
       response.status(400).json({ error: "Approve it into an open section", code: "INVALID", detail: "section" });
       return;
     case "bad_name":
-      response.status(400).json({ error: "A topic name is two to forty characters", code: "INVALID", detail: "name" });
+      response.status(400).json({ error: "A topic name is one to forty characters", code: "INVALID", detail: "name" });
       return;
   }
 }

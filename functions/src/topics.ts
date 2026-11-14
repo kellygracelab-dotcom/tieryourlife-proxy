@@ -8,7 +8,7 @@ import { OTHER, readNames } from "./sections";
 import type { ManualAttribution } from "./pictureAttribution";
 import { isPictureId } from "./safety";
 
-export const MIN_TOPIC_NAME_LENGTH = 2;
+export const MIN_TOPIC_NAME_LENGTH = 1;
 export const MAX_TOPIC_NAME_LENGTH = 40;
 
 /** Three, so one account cannot fill the queue while its first word is still being read. */
@@ -85,7 +85,8 @@ export function mayKnowProposer(topic: { createdBy: string; proposedAnonymously?
 }
 
 /**
- * Collapsed and trimmed, two to forty characters, and something in it that is
+ * Collapsed and trimmed, one to forty characters (one Han, kana or Hangul
+ * character is a whole name: 犬, 猫), and something in it that is
  * a letter or a digit: a name that is only punctuation names nothing.
  */
 export function cleanTopicName(value: unknown): string | null {

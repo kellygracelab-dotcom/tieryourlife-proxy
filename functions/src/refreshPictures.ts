@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { getFirestore, type DocumentReference } from "firebase-admin/firestore";
 import { nextRevision } from "./listRevision";
-import { keepPictureCopies, type CopyRescue } from "./pictureCopyUpkeep";
+import { copyQueuedPictures, keepPictureCopies, type CopyRescue } from "./pictureCopyUpkeep";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import {
   anilistPictures,
@@ -51,6 +51,26 @@ const PROBE_TIMEOUT_MS = 10_000;
 const AT_ONCE = 4;
 /** Probes of one host that may fail without an answer before that host is left for the next run. */
 const UNSURE_PER_HOST = 3;
+
+/**
+ * Every quarter of an hour, the catalogue pictures a publication had no time
+ * to copy (`pictureCopyQueue`): a slow catalogue's covers are ours the same
+ * hour, not the next day. Nothing queued costs one read.
+ */
+export const copyPicturesSoon = onSchedule(
+  {
+    schedule: "every 15 minutes",
+    timeZone: "Etc/UTC",
+    region: "europe-west1",
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    if (isDemoEmulator()) return;
+    const summary = await copyQueuedPictures(Date.now() + 240_000);
+    if (summary.queued > 0) console.log(`Queued picture copies: ${JSON.stringify(summary)}`);
+  },
+);
 
 export const refreshPictures = onSchedule(
   {
