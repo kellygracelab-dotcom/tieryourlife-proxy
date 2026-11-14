@@ -59,6 +59,7 @@ import {
   wantsCovers,
   wikidataCandidates,
 } from "./pictureSources";
+import { noteDenied } from "./pictureAlarms";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
 import { fold } from "./search";
@@ -438,6 +439,8 @@ export async function getJson(url: string, init: RequestInit = {}, timeoutMs = S
   });
   if (!reply.ok) {
     const host = new URL(url).host;
+    // A 401 or 403 is a key switched off or access closed: an alarm, not a quiet gap (`pictureAlarms.ts`).
+    noteDenied(url, reply.status);
     if (reply.status === 429 || reply.status >= 500) throw new CatalogueRefusal(host, reply.status, reply.headers.get("retry-after"));
     throw new Error(`${host} answered ${reply.status}`);
   }
@@ -809,7 +812,10 @@ export async function downloadPicture(start: URL, stop?: AbortSignal): Promise<D
     if (hops++ >= KEEP_MAX_REDIRECTS) return { error: "UNREACHABLE" };
     url = new URL(next, url);
   }
-  if (!reply.ok) return { error: "UNREACHABLE" };
+  if (!reply.ok) {
+    noteDenied(url, reply.status);
+    return { error: "UNREACHABLE" };
+  }
   const type = (reply.headers.get("content-type") ?? "").split(";")[0]?.trim() ?? "";
   if (!/^image\/(jpeg|png|webp|gif)$/.test(type)) return { error: "NOT_A_PICTURE" };
   if (Number(reply.headers.get("content-length") ?? "0") > KEEP_MAX_BYTES) return { error: "TOO_BIG" };

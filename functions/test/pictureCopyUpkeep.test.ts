@@ -2,7 +2,21 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { copyMetaFor } from "../src/outsidePictures";
 import { DEFAULT_COPY_SWITCHES } from "../src/pictureCopies";
-import { copiesToUndo, copyAgeDue, pictureFields, readCopyMeta, shownPictures, stillToCopy, storedPathOf, withoutCopies, type ShownPictures } from "../src/pictureCopyUpkeep";
+import {
+  afterFailedRefresh,
+  copiesToUndo,
+  copyAgeDue,
+  copyIdIn,
+  foundAgain,
+  pictureFields,
+  readCopyMeta,
+  shownPictures,
+  stillToCopy,
+  storedPathOf,
+  withMovedCopy,
+  withoutCopies,
+  type ShownPictures,
+} from "../src/pictureCopyUpkeep";
 import { addressOf } from "../src/publishedPictures";
 import { outsideName } from "../src/outsidePictures";
 import { readSources } from "../scripts/remove-picture-copies";
@@ -25,11 +39,11 @@ describe("a catalogue picture's copy after it is made", () => {
     assert.deepEqual(readCopyMeta(undefined, "2026-01-01T00:00:00Z"), { copiedAt: Date.parse("2026-01-01T00:00:00Z") });
   });
 
-  it("is fetched again after 90 days when it is TMDB's, and undone if that fails after 150; others are kept", () => {
+  it("is fetched again after 90 days when it is TMDB's, and found again or kept if that fails after 150; others are kept", () => {
     const tmdb = (days: number) => ({ originalUrl: POSTER, source: "tmdb", copiedAt: NOW - days * DAY });
     assert.equal(copyAgeDue(tmdb(89), NOW), "keep");
     assert.equal(copyAgeDue(tmdb(90), NOW), "refresh");
-    assert.equal(copyAgeDue(tmdb(150), NOW), "refresh-or-drop");
+    assert.equal(copyAgeDue(tmdb(150), NOW), "refresh-or-rescue");
     assert.equal(copyAgeDue({ originalUrl: COMMONS, source: "wikimedia", copiedAt: NOW - 400 * DAY }, NOW), "keep");
     assert.equal(copyAgeDue({ source: "tmdb", copiedAt: NOW - 400 * DAY }, NOW), "keep");
   });
@@ -38,6 +52,75 @@ describe("a catalogue picture's copy after it is made", () => {
     assert.equal(storedPathOf(copy(POSTER)), path(POSTER));
     assert.equal(storedPathOf(POSTER), null);
     assert.equal(storedPathOf(null), null);
+  });
+});
+
+describe("a TMDB copy past 150 days that could not be fetched again", () => {
+  const MOVED = "https://image.tmdb.org/t/p/w500/newPoster.jpg";
+  const credit = { source: "tmdb" as const, link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603", originalUrl: POSTER };
+
+  it("is kept with the reason unless its address answers 404 or 410; a busy catalogue is not even looked at", () => {
+    assert.deepEqual(afterFailedRefresh("SOURCE_BUSY", undefined, "tmdb:movie:603"), { keep: "refresh failed: the catalogue is busy" });
+    assert.deepEqual(afterFailedRefresh("UNREACHABLE", null, "tmdb:movie:603"), { keep: "refresh failed (UNREACHABLE); the address answers nothing" });
+    assert.deepEqual(afterFailedRefresh("UNREACHABLE", 403, "tmdb:movie:603"), { keep: "refresh failed (UNREACHABLE); the address answers 403" });
+    assert.deepEqual(afterFailedRefresh("NOT_A_PICTURE", 200, "tmdb:movie:603"), { keep: "refresh failed (NOT_A_PICTURE); the address answers 200" });
+  });
+
+  it("is looked for by its card's catalogue id when its address is dead, and kept when no card has one", () => {
+    assert.deepEqual(afterFailedRefresh("UNREACHABLE", 404, "tmdb:movie:603"), { find: "tmdb:movie:603" });
+    assert.deepEqual(afterFailedRefresh("UNREACHABLE", 410, "tmdb:movie:603"), { find: "tmdb:movie:603" });
+    assert.deepEqual(afterFailedRefresh("UNREACHABLE", 404, null), { keep: "the address answers 404 and no card showing the copy has a catalogue id" });
+  });
+
+  it("moves only to a picture the catalogue names now that is not the dead one", () => {
+    assert.deepEqual(foundAgain("tmdb:movie:603", MOVED, POSTER), { move: MOVED });
+    assert.deepEqual(foundAgain("tmdb:movie:603", undefined, POSTER), { keep: "the address is dead and the catalogue could not be asked for tmdb:movie:603" });
+    assert.deepEqual(foundAgain("tmdb:movie:603", null, POSTER), { keep: "the address is dead and the catalogue has no picture for tmdb:movie:603 any more" });
+    assert.deepEqual(foundAgain("tmdb:movie:603", POSTER, POSTER), { keep: "the address is dead and the catalogue still names it for tmdb:movie:603" });
+    // The same poster at its original size is the same dead picture.
+    assert.ok("keep" in foundAgain("tmdb:movie:603", POSTER.replace("/w500/", "/original/"), POSTER));
+  });
+
+  it("takes its id from a card showing it: the page's own word first, the kept id otherwise", () => {
+    const shown = (attribution: ShownPictures["items"][number]["attribution"]): ShownPictures => ({
+      items: [{ imageUrl: copy(COVER) }, { imageUrl: copy(POSTER), attribution }],
+      coverImageUrl: null,
+      previewImages: [],
+    });
+    assert.equal(copyIdIn(shown(credit), path(POSTER), POSTER), "tmdb:movie:603");
+    assert.equal(copyIdIn(shown({ source: "tmdb", id: "tmdb:tv:1399", originalUrl: POSTER }), path(POSTER), POSTER), "tmdb:tv:1399");
+    assert.equal(copyIdIn(shown({ source: "tmdb", id: "nonsense", originalUrl: POSTER }), path(POSTER), POSTER), null);
+    assert.equal(copyIdIn(shown(undefined), path(POSTER), POSTER), null);
+    assert.equal(copyIdIn(shown(credit), path(COVER), COVER), null);
+  });
+
+  it("is replaced on cards, cover and collage by a copy of the new picture, the old address kept in formerUrls", () => {
+    const newCopy = copy(MOVED);
+    const shown: ShownPictures = {
+      items: [
+        { title: "Matrix", imageUrl: copy(POSTER), attribution: { ...credit, formerUrls: ["https://image.tmdb.org/t/p/w500/older.jpg"] } },
+        { title: "Other", imageUrl: copy(COVER), attribution: { source: "tmdb", originalUrl: COVER } },
+      ],
+      coverImageUrl: copy(POSTER),
+      previewImages: [copy(COVER), copy(POSTER)],
+    };
+    const after = withMovedCopy(shown, path(POSTER), newCopy, MOVED, POSTER)!;
+    assert.deepEqual(after.items[0], {
+      title: "Matrix",
+      imageUrl: newCopy,
+      attribution: { ...credit, originalUrl: MOVED, formerUrls: ["https://image.tmdb.org/t/p/w500/older.jpg", POSTER] },
+    });
+    assert.deepEqual(after.items[1], shown.items[1]);
+    assert.equal(after.coverImageUrl, newCopy);
+    assert.deepEqual(after.previewImages, [copy(COVER), newCopy]);
+    assert.equal(withMovedCopy(shown, path(MOVED), newCopy, MOVED, POSTER), null);
+  });
+
+  it("keeps at most five former addresses, the newest", () => {
+    const former = [1, 2, 3, 4, 5].map((at) => `https://image.tmdb.org/t/p/w500/f${at}.jpg`);
+    const shown: ShownPictures = { items: [{ imageUrl: copy(POSTER), attribution: { ...credit, formerUrls: former } }], coverImageUrl: null, previewImages: [] };
+    const after = withMovedCopy(shown, path(POSTER), copy(MOVED), MOVED, POSTER)!;
+    assert.deepEqual(after.items[0]!.attribution!.formerUrls, [...former.slice(1), POSTER]);
   });
 });
 
