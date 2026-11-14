@@ -2,6 +2,7 @@ import { onRequest } from "firebase-functions/v2/https";
 import { defineSecret } from "firebase-functions/params";
 import { requireAppCheck } from "./appCheck";
 import { EMPTY_TMDB_SEARCH, isDemoEmulator, secretsOutsideDemo } from "./emulator";
+import { noteDenied } from "./pictureAlarms";
 
 const tmdbReadAccessToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
 
@@ -58,6 +59,8 @@ export const tmdb = onRequest(
 
     if (!upstream.ok) {
       console.error("TMDB returned", upstream.status);
+      // A refused key also raises the picture catalogues' alarm, under the same name as the server's own TMDB requests.
+      noteDenied(TMDB_BASE_URL, upstream.status);
       response.status(upstream.status).json({ error: "Catalogue refused the request" });
       return;
     }
