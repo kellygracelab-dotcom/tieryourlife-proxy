@@ -42,6 +42,8 @@ function text(value: unknown): string {
 }
 
 const BARE_URL = /^(?:https?:)?\/\/\S+$/i;
+/** Commons' {{self}} credit, "I, Name": the uploader speaking of themselves. */
+const SELF = /^I\s*,\s*(?=\S)/;
 const URL_IN_BRACKETS = /\s*\((?:https?:)?\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*\)/gi;
 
 /**
@@ -53,10 +55,11 @@ const URL_IN_BRACKETS = /\s*\((?:https?:)?\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*\
  * "YouTube" for a YouTube address that names nobody (`/channel/UC…`), and the
  * site's name for any other. The address itself is not kept: a credit has no
  * field for an author's page, and the file's page (`link`) says the rest.
- * A trailing " - YouTube" on a channel's name goes too (since 14.11.2026).
+ * A trailing " - YouTube" on a channel's name goes too, and the "I, " of a
+ * {{self}} credit ("I, Luc Viatour" → "Luc Viatour") (since 14.11.2026).
  */
 export function authorName(raw: string): string {
-  const named = raw.replace(URL_IN_BRACKETS, "").replace(/\s+-\s+YouTube$/i, "").replace(/\s+/g, " ").trim();
+  const named = raw.replace(URL_IN_BRACKETS, "").replace(/\s+-\s+YouTube$/i, "").replace(/\s+/g, " ").trim().replace(SELF, "");
   if (named !== "" && !BARE_URL.test(named)) return named;
   const address = named !== "" ? named : (/(?:https?:)?\/\/[^\s()]+/i.exec(raw)?.[0] ?? "");
   let url: URL;

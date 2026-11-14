@@ -19,6 +19,14 @@ describe("a Commons author's name", () => {
     assert.equal(authorName("https://www.flickr.com/people/someone"), "flickr.com");
   });
 
+  it("drops the 'I, ' of Commons' {{self}} credit", () => {
+    assert.equal(authorName("I, Luc Viatour"), "Luc Viatour");
+    assert.equal(authorName("I, J.P.Lon"), "J.P.Lon");
+    assert.equal(authorName("I,Someone (https://a.b/c)"), "Someone");
+    assert.equal(authorName("Ivan, Jane"), "Ivan, Jane");
+    assert.equal(authorName("I,"), "I,");
+  });
+
   it("leaves a plain name, brackets without an address and nothing as they are", () => {
     assert.equal(authorName("Jane Doe"), "Jane Doe");
     assert.equal(authorName("Foo (bar)"), "Foo (bar)");
