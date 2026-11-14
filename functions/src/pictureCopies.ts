@@ -21,9 +21,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Catalogues whose terms limit how long a copy is kept: fetched again after
- * `refreshAfterMs`, and undone (the card shows the catalogue's address again)
- * when it could not be fetched again by `dropAfterMs`. TMDB keeps a cache six
- * months at most.
+ * `refreshAfterMs`. One still not fetched again by `dropAfterMs` is found again
+ * by its card's catalogue id when its address is dead, and otherwise kept with
+ * an alarm, never switched back to the catalogue's address blind
+ * (`pictureCopyUpkeep.ts`). TMDB keeps a cache six months at most.
  */
 export const COPY_LIMITS: Readonly<Record<string, { refreshAfterMs: number; dropAfterMs: number }>> = {
   tmdb: { refreshAfterMs: 90 * DAY_MS, dropAfterMs: 150 * DAY_MS },

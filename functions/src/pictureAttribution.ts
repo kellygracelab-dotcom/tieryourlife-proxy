@@ -201,8 +201,11 @@ export function linkFromAddress(url: string): string | null {
       return photo ? `https://www.inaturalist.org/photos/${photo}` : null;
     }
     case "anilist": {
-      const character = /\/character\/(?:large|medium)\/b(\d{1,12})-/.exec(one.pathname)?.[1];
-      return character ? `https://anilist.co/character/${character}` : null;
+      // A character's picture, or an anime's or a manga's cover: its folder names which.
+      const character = /\/character\/(?:large|medium)\/[a-z]{0,2}(\d{1,12})[-.]/.exec(one.pathname)?.[1];
+      if (character) return `https://anilist.co/character/${character}`;
+      const media = /\/media\/(anime|manga)\/cover\/(?:extraLarge|large|medium|small)\/[a-z]{0,2}(\d{1,12})[-.]/.exec(one.pathname);
+      return media ? `https://anilist.co/${media[1]}/${media[2]}` : null;
     }
     case "openlibrary": {
       const book = /^\/b\/olid\/(OL\d{1,12}M)-[SML]\.jpg$/.exec(one.pathname)?.[1];
@@ -211,6 +214,18 @@ export function linkFromAddress(url: string): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * The AniList page of [id] (`anilist:{n}`, `anilist:c{n}`): a character's from
+ * the id alone, an anime's or a manga's only with its [type] as AniList names
+ * it (`ANIME`, `MANGA`), since both share one numbering. Null otherwise.
+ */
+export function anilistLink(id: string, type: string | null): string | null {
+  const match = /^anilist:(c?)(\d{1,10})$/.exec(id);
+  if (match === null) return null;
+  if (match[1] === "c") return `https://anilist.co/character/${match[2]}`;
+  return type === "ANIME" || type === "MANGA" ? `https://anilist.co/${type.toLowerCase()}/${match[2]}` : null;
 }
 
 const OPEN_LICENSES: Record<string, { license: string; licenseUrl: string }> = {
@@ -345,10 +360,12 @@ export function attributionOf(
     if (details) return { source, ...details };
     return file === null ? { source } : { source, link: `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file.replace(/ /g, "_"))}` };
   }
-  const link = linkFromAddress(original) ?? sourceLink(source, sentLink);
+  const told = linkFromAddress(original) ?? sourceLink(source, sentLink);
   const licence = source === "inaturalist" ? inaturalistLicence(credit) : null;
   // What the address or its page says wins; a client's id is kept only where they say nothing.
-  const id = idFromAddress(original, link) ?? catalogueIdOf(source, sentId);
+  const id = idFromAddress(original, told) ?? catalogueIdOf(source, sentId);
+  // An AniList character's page follows from its id alone; an anime's or a manga's needs its type.
+  const link = told ?? (source === "anilist" && id !== null ? anilistLink(id, null) : null);
   return { source, ...(licence ?? {}), ...(link ? { link } : {}), ...(id ? { id } : {}) };
 }
 

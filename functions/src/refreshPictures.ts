@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { getFirestore, type DocumentReference } from "firebase-admin/firestore";
 import { nextRevision } from "./listRevision";
-import { keepPictureCopies } from "./pictureCopyUpkeep";
+import { keepPictureCopies, type CopyRescue } from "./pictureCopyUpkeep";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import {
   anilistPictures,
@@ -31,6 +31,7 @@ import {
   type PictureCheck,
 } from "./catalogueRefresh";
 import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
+import { noteDenied } from "./pictureAlarms";
 import type { AttributionSource } from "./pictureAttribution";
 import {
   CatalogueRefusal,
@@ -69,8 +70,8 @@ export const refreshPictures = onSchedule(
     } catch (error) {
       console.error(`Picture refresh failed: ${(error as Error).message}`);
     }
-    // Copies to make, and copies a catalogue's terms want fetched again or undone, until a minute before the run's end.
-    const copies = await keepPictureCopies(Date.now(), started + 480_000);
+    // Copies to make, and copies a catalogue's terms want fetched again or found again, until a minute before the run's end.
+    const copies = await keepPictureCopies(Date.now(), started + 480_000, copyRescue());
     console.log(`Picture copies: ${JSON.stringify(copies)}`);
   },
 );
@@ -219,6 +220,7 @@ export async function refreshCataloguePictures(nowMs: number): Promise<Record<st
 async function askById(url: string, init: RequestInit, read: (body: unknown) => string | null): Promise<string | null | undefined> {
   const reply = await fetch(url, { ...init, headers: { Accept: "application/json", "User-Agent": USER_AGENT, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
   if (reply.status === 404) return null;
+  noteDenied(url, reply.status);
   if (reply.status === 429 || reply.status >= 500) throw new CatalogueRefusal(new URL(url).host, reply.status, reply.headers.get("retry-after"));
   if (!reply.ok) return undefined;
   return read(await reply.json());
@@ -236,12 +238,41 @@ async function probe(url: string): Promise<number | null> {
       });
       await reply.body?.cancel().catch(() => undefined);
       if (method === "HEAD" && (reply.status === 403 || reply.status === 405)) continue;
+      noteDenied(url, reply.status);
       return reply.status;
     } catch {
       if (method === "GET") return null;
     }
   }
   return null;
+}
+
+/**
+ * The copy upkeep's way to look at a copy's catalogue address and to ask the
+ * catalogue for its id again: the same requests as the run above, with its
+ * own memory of catalogues that refused, and the same rests.
+ */
+function copyRescue(): CopyRescue {
+  const stopped = new Set<AttributionSource>();
+  return {
+    probe,
+    findById: async (source, id, url) => {
+      const resting = await restingUntil();
+      let answer: string | null | undefined = undefined;
+      await lookUp(
+        [{ url, source: source as AttributionSource, id }],
+        (one) => !stopped.has(one) && (resting.get(one as PictureSource) ?? 0) <= Date.now(),
+        async (one, error) => {
+          stopped.add(one);
+          if (error instanceof CatalogueRefusal) await rest(one as PictureSource, error);
+        },
+        (_, found) => {
+          answer = found;
+        },
+      );
+      return answer;
+    },
+  };
 }
 
 /** The dead addresses' catalogues asked by id: AniList and Steam several at once, Open Library one by one, TMDB and IGDB as above. */
