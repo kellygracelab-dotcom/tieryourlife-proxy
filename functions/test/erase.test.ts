@@ -15,7 +15,7 @@ describe("what erasing an account removes", () => {
     assert.ok(NAMED_IN.some((one) => one.collection === "sectionFollows" && one.field === "follower"));
   });
 
-  it("removes the topics they followed and their rankings, and takes each one off its count", () => {
+  it("removes the topics they followed, their rankings and the likes they gave, and takes each one off its count", () => {
     assert.deepEqual(COUNTED_FOLLOWS, [
       {
         collection: "topicFollows",
@@ -27,12 +27,17 @@ describe("what erasing an account removes", () => {
         field: "uid",
         countedOn: { collection: "publishedLists", idField: "listId", counter: "rankingCount" },
       },
+      {
+        collection: "rankingLikes",
+        field: "uid",
+        countedOn: { collection: "rankings", idField: "rankingId", counter: "likeCount" },
+      },
     ]);
   });
 
   // An erased moderator was still listed under GET /lists/moderators, with name and face (QA S8).
   it("removes the documents kept under their uid, the moderator's role among them", () => {
-    assert.deepEqual([...OWN_DOCUMENTS].sort(), ["publishLocks", "roles", "sectionProposers"]);
+    assert.deepEqual([...OWN_DOCUMENTS].sort(), ["likeQuota", "publishLocks", "roles", "sectionProposers"]);
   });
 });
 

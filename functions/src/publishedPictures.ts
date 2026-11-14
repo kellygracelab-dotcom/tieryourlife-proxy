@@ -324,6 +324,7 @@ export async function discardCopiesIn(
   copyListIds: string[],
   originalListId: string,
   bucket: FolderLister = getStorage().bucket(),
+  copied: (fileName: string, originalListId: string) => boolean = isCopiedFrom,
 ): Promise<void> {
   await Promise.all(
     copyListIds.map(async (id) => {
@@ -331,11 +332,46 @@ export async function discardCopiesIn(
       const [files] = await bucket.getFiles({ prefix });
       await Promise.all(
         files
-          .filter((file) => isCopiedFrom(file.name.slice(prefix.length), originalListId))
+          .filter((file) => copied(file.name.slice(prefix.length), originalListId))
           .map((file) => file.delete().catch(() => undefined)),
       );
     }),
   );
+}
+
+/**
+ * Whether a copy's file is of a photograph the original's author put in
+ * (a picture of their own folder, named by its id there), rather than of a
+ * picture from a catalogue or another site, which are named `w-…` and are
+ * nobody's own (`outsideName`).
+ */
+export function isPhotoCopiedFrom(fileName: string, originalListId: string): boolean {
+  if (!isCopiedFrom(fileName, originalListId)) return false;
+  const at = fileName.startsWith(`${originalListId}-`) ? 0 : fileName.indexOf(`-${originalListId}-`) + 1;
+  return !fileName.slice(at + originalListId.length + 1).startsWith("w-");
+}
+
+/**
+ * [list] without the copies, in its own folder [folderId], of the photographs
+ * the author of [originalListId] put in (`isPhotoCopiedFrom`): a card that
+ * showed one shows no picture, and the collage leaves it out. Null when it
+ * held none. For a list whose original goes with its author's account.
+ */
+export function withoutPhotosFrom<T extends PictureAddresses>(list: T, folderId: string, originalListId: string): T | null {
+  let changed = false;
+  const keep = (url: string | null): string | null => {
+    const [name] = publishedNamesIn(folderId, [url]);
+    if (name === undefined || !isPhotoCopiedFrom(name, originalListId)) return url;
+    changed = true;
+    return null;
+  };
+  const items = list.items.map((item) => {
+    const imageUrl = keep(item.imageUrl);
+    return imageUrl === item.imageUrl ? item : { ...item, imageUrl };
+  });
+  const coverImageUrl = keep(list.coverImageUrl);
+  const previewImages = list.previewImages.filter((url) => keep(url) !== null);
+  return changed ? { ...list, items, coverImageUrl, previewImages } : null;
 }
 
 /**

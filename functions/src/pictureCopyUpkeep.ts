@@ -82,6 +82,8 @@ export interface ShownPictures {
   items: Card[];
   coverImageUrl: string | null;
   previewImages: string[];
+  /** Where a ranking keeps [items]: a signed-in reader's added cards, rather than a website ranking's snapshot. */
+  itemsField?: "addedCards";
 }
 
 /**
@@ -200,8 +202,15 @@ export function pictureDocOf(ref: DocumentReference): PictureDoc {
   return ref.parent.id === "rankings" ? "ranking" : ref.parent.id === "boards" ? "board" : "list";
 }
 
-/** The pictures of a list, of a ranking's snapshot, or of a board (its collage as `previewImages`). */
+/**
+ * The pictures of a list, of a ranking (a website ranking's snapshot, or the
+ * cards a signed-in reader added to theirs), or of a board (its collage as
+ * `previewImages`).
+ */
 export function shownPictures(data: Record<string, unknown> | undefined, kind: PictureDoc): ShownPictures {
+  if (kind === "ranking" && data?.snapshot === undefined && Array.isArray(data?.addedCards)) {
+    return { items: data.addedCards as Card[], coverImageUrl: null, previewImages: [], itemsField: "addedCards" };
+  }
   const from = (kind === "ranking" ? (data?.snapshot as Record<string, unknown> | undefined) : data) ?? {};
   const collage = kind === "board" ? from.coverImageUrls : from.previewImages;
   return {
@@ -214,7 +223,7 @@ export function shownPictures(data: Record<string, unknown> | undefined, kind: P
 /** The fields of a list, a ranking's snapshot or a board that hold [after]'s pictures where they differ from [before]. */
 export function pictureFields(before: ShownPictures, after: ShownPictures, kind: PictureDoc): Record<string, unknown> {
   const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
-  if (kind === "ranking") return same(before.items, after.items) ? {} : { "snapshot.items": after.items };
+  if (kind === "ranking") return same(before.items, after.items) ? {} : { [before.itemsField === "addedCards" ? "addedCards" : "snapshot.items"]: after.items };
   const fields: Record<string, unknown> = {};
   if (!same(before.items, after.items)) fields.items = after.items;
   if (before.coverImageUrl !== after.coverImageUrl) fields.coverImageUrl = after.coverImageUrl;

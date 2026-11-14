@@ -8,7 +8,6 @@ import {
   creditNeedsRewrite,
   decidePublication,
   isOwnedRanking,
-  mineFirst,
   rankingPrecheck,
   rankingRefusal,
   rankingWrite,
@@ -20,6 +19,10 @@ import {
   sameCards,
   rankingRowsOver,
   shownCredit,
+  addedCardsBody,
+  rankInstead,
+  rowsFromArrangement,
+  MAX_ADDED_CARDS,
   type Card,
   type SourceList,
 } from "../src/rankings";
@@ -196,21 +199,6 @@ describe("official translated publication baselines", () => {
   it("uses the base text when a locale has only a partial official translation", () => {
     const partial = { ...original, translations: { ru: { Films: "Фильмы" } } };
     assert.equal(decidePublication({ ...translated, source: partial, tiers: original.tiers, items: original.items }).kind, "ranking");
-  });
-});
-
-describe("mineFirst", () => {
-  it("puts the reader's own ranking first and flags it", () => {
-    const page = [{ uid: "a" }, { uid: "me" }, { uid: "b" }];
-    assert.deepEqual(mineFirst(page, "me"), [
-      { uid: "me", mine: true },
-      { uid: "a", mine: false },
-      { uid: "b", mine: false },
-    ]);
-  });
-
-  it("leaves a page without the reader as it came", () => {
-    assert.deepEqual(mineFirst([{ uid: "a" }], "me"), [{ uid: "a", mine: false }]);
   });
 });
 
@@ -417,5 +405,80 @@ describe("what a reader's ranking must pass before their face is fetched", () =>
     assert.deepEqual(rankingPrecheck(reader, { ...list, underReview: true }, body), { refused: "missing" });
     assert.deepEqual(rankingPrecheck(reader, { ...list, authorUid: "r1" }, body), { refused: "own_list" });
     assert.deepEqual(rankingPrecheck(reader, list, { tierLabels: [] }), { invalid: "tierLabels" });
+  });
+});
+
+describe("a ranking with cards the reader added", () => {
+  const labels = ["S", "A"];
+
+  it("places the added cards after the list's, and tells installed apps only about the list's", () => {
+    assert.deepEqual(readRankingBody({ tierLabels: labels, rows: [[3, 0], [1, 4]] }, 3, 2), {
+      ok: true,
+      arrangement: [0, 1, null],
+      rows: [[0], [1]],
+      tierLabels: labels,
+      allRows: [[3, 0], [1, 4]],
+    });
+  });
+
+  it("refuses an index past the added cards, and one at all when none were added", () => {
+    assert.deepEqual(readRankingBody({ tierLabels: labels, rows: [[5], []] }, 3, 2), { ok: false, detail: "rows" });
+    assert.deepEqual(readRankingBody({ tierLabels: labels, rows: [[3], []] }, 3), { ok: false, detail: "rows" });
+  });
+
+  it("leaves the added cards unranked when the placing comes the old way", () => {
+    assert.deepEqual(readRankingBody({ tierLabels: labels, arrangement: [1, null, 0] }, 3, 2), {
+      ok: true, arrangement: [1, null, 0], rows: null, tierLabels: labels, allRows: [[2], [0]],
+    });
+  });
+
+  it("is judged with the added cards before the face is fetched", () => {
+    const reader = { uid: "r1", isAnonymous: false, banned: false };
+    const list = { authorUid: "a1", underReview: false, itemCount: 1 };
+    assert.deepEqual(rankingPrecheck(reader, list, { tierLabels: ["S"], rows: [[0, 1]] }, 1), { ok: true });
+    assert.deepEqual(rankingPrecheck(reader, list, { tierLabels: ["S"], rows: [[0, 1]] }), { invalid: "rows" });
+  });
+
+  it("rows from a tier per card keep the list's order", () => {
+    assert.deepEqual(rowsFromArrangement([1, null, 0, 1, 9], 2), [[2], [0, 3]]);
+  });
+});
+
+describe("addedCardsBody", () => {
+  it("reads no cards as none", () => {
+    for (const raw of [undefined, null, []]) assert.deepEqual(addedCardsBody(raw), { ok: true, body: null, count: 0 });
+  });
+
+  it("refuses anything but up to fifty cards", () => {
+    assert.deepEqual(addedCardsBody("cards"), { ok: false });
+    assert.deepEqual(addedCardsBody([{ title: "x" }, 7]), { ok: false });
+    assert.deepEqual(addedCardsBody([[]]), { ok: false });
+    assert.deepEqual(addedCardsBody(Array.from({ length: MAX_ADDED_CARDS + 1 }, () => ({ title: "x" }))), { ok: false });
+    assert.equal(addedCardsBody(Array.from({ length: MAX_ADDED_CARDS }, () => ({ title: "x" }))).ok, true);
+  });
+
+  it("is a list of one tier holding the cards, unranked, without their own places or an editor's credit", () => {
+    const read = addedCardsBody([{ title: "Mine", imageUrl: "https://image.tmdb.org/t/p/w500/m.jpg", tierIndex: 0, sourceIndex: 3, credit: "Jane", attribution: { link: "https://example.com", manual: true, author: "x" } }]);
+    assert.ok(read.ok && read.body !== null);
+    assert.equal(read.count, 1);
+    assert.deepEqual((read.body as { items: unknown[] }).items, [{ title: "Mine", imageUrl: "https://image.tmdb.org/t/p/w500/m.jpg", credit: "Jane", attribution: { link: "https://example.com", author: "x" }, tierIndex: null }]);
+    assert.equal((read.body as { tiers: unknown[] }).tiers.length, 1);
+  });
+});
+
+describe("rankInstead", () => {
+  it("names the original of a changed copy of somebody else's list, and nothing else", () => {
+    assert.equal(rankInstead({ kind: "list", basedOn: { id: "L1", title: "T", authorUid: "", authorName: "" } }), "L1");
+    assert.equal(rankInstead({ kind: "list", basedOn: null }), null);
+    assert.equal(rankInstead({ kind: "ranking", listId: "L1" }), null);
+  });
+
+  it("follows decidePublication: a changed copy is refused, the same cards rank, one's own and a missing source publish", () => {
+    const original = source();
+    const base = { takenFrom: original.id, callerUid: "reader", title: original.title, tiers: original.tiers, items: original.items };
+    assert.equal(rankInstead(decidePublication({ ...base, source: original, title: "Mine now" })), original.id);
+    assert.equal(rankInstead(decidePublication({ ...base, source: original })), null);
+    assert.equal(rankInstead(decidePublication({ ...base, source: original, callerUid: original.authorUid, title: "Mine now" })), null);
+    assert.equal(rankInstead(decidePublication({ ...base, source: null, title: "Mine now" })), null);
   });
 });

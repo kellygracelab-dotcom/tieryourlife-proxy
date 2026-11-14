@@ -1,7 +1,10 @@
 import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
-import { discardPublished } from "./publishedPictures";
+import { discardCopiesIn, discardPublished, isPhotoCopiedFrom, withoutPhotosFrom } from "./publishedPictures";
+import { nextRevision } from "./listRevision";
+import { LIKE_QUOTA, RANKING_LIKES, rankingFolderOf } from "./rankingLikes";
+import { discardRankingFolder, discardRankingsOf, removeLikesWhere } from "./rankingRemains";
 import { proposalAfterErasure, type SectionStatus } from "./sections";
 import { auditTargetsOf, withoutNames } from "./audit";
 import { ERASED_PROPOSER, topicAfterErasure, type TopicStatus } from "./topics";
@@ -41,13 +44,14 @@ export const NAMED_IN: readonly { collection: string; field: string }[] = [
   { collection: PUBLISH_HOLDS, field: "authorUid" },
 ];
 
-/** Documents kept under the person's own uid: their recent proposals, the moderator's role, and their publish lock. */
-export const OWN_DOCUMENTS: readonly string[] = [SECTION_PROPOSERS, ROLES, PUBLISH_LOCKS];
+/** Documents kept under the person's own uid: their recent proposals, the moderator's role, their publish lock and their recent likes. */
+export const OWN_DOCUMENTS: readonly string[] = [SECTION_PROPOSERS, ROLES, PUBLISH_LOCKS, LIKE_QUOTA];
 
 /**
- * Follows and rankings that a count stands on: each one removed takes one off
- * the count on the thing followed or ranked, as unfollowing or withdrawing a
- * ranking does, so an erased account leaves nobody behind in the numbers either.
+ * Follows, rankings and likes that a count stands on: each one removed takes
+ * one off the count on the thing followed, ranked or liked, as unfollowing,
+ * withdrawing a ranking or taking a like back does, so an erased account
+ * leaves nobody behind in the numbers either.
  */
 export const COUNTED_FOLLOWS: readonly {
   collection: string;
@@ -56,6 +60,16 @@ export const COUNTED_FOLLOWS: readonly {
 }[] = [
   { collection: TOPIC_FOLLOWS, field: "follower", countedOn: { collection: TOPICS, idField: "topicId", counter: "followerCount" } },
   { collection: RANKINGS, field: "uid", countedOn: { collection: PUBLISHED, idField: "listId", counter: "rankingCount" } },
+  { collection: RANKING_LIKES, field: "uid", countedOn: { collection: RANKINGS, idField: "rankingId", counter: "likeCount" } },
+];
+
+/**
+ * Where other people keep copies of a list's pictures: lists made from it,
+ * and the cards readers added to their rankings, each in its own folder.
+ */
+const COPY_HOLDERS: readonly { collection: string; items: "items" | "addedCards"; folderOf: (id: string) => string }[] = [
+  { collection: PUBLISHED, items: "items", folderOf: (id) => id },
+  { collection: RANKINGS, items: "addedCards", folderOf: rankingFolderOf },
 ];
 
 /**
@@ -74,10 +88,15 @@ export async function eraseAccount(uid: string): Promise<void> {
   // A ban in force outlives the account, kept by the person's hashed sign-ins rather than the uid.
   await keepBanPastErasure(uid);
 
-  // Their published lists, and the feed's copies of their pictures with them.
+  // Their published lists, and the feed's copies of their pictures with them:
+  // in other people's lists and rankings too, where a card that showed one of
+  // their photographs shows none. Other people's rankings of their lists go
+  // as they would with the list taken down.
   const published = await db.collection(PUBLISHED).where("authorUid", "==", uid).get();
   for (const doc of published.docs) {
+    await dropPhotoCopiesOf(doc.id);
     await discardPublished(doc.id);
+    await discardRankingsOf(doc.id);
     await removeWhere(REPORTS, "listId", "==", doc.id);
     await doc.ref.delete();
   }
@@ -86,6 +105,11 @@ export async function eraseAccount(uid: string): Promise<void> {
   for (const named of NAMED_IN) {
     await removeWhere(named.collection, named.field, "==", uid);
   }
+  // Their rankings' folders of pictures, and the likes given to them, before
+  // the rankings themselves, so a repeated erasure still finds them.
+  const ranked = await db.collection(RANKINGS).where("uid", "==", uid).select().get();
+  for (const doc of ranked.docs) await discardRankingFolder(doc.id);
+  await removeLikesWhere("rankedBy", uid);
   for (const follows of COUNTED_FOLLOWS) {
     await removeCounted(follows, uid);
   }
@@ -139,6 +163,39 @@ export async function eraseAccount(uid: string): Promise<void> {
     .catch((error: { code?: unknown } | null) => {
       if (error?.code !== "auth/user-not-found") throw error;
     });
+}
+
+/**
+ * Their photographs, copied into other people's lists and rankings that took
+ * them from [listId] (`picturesFrom`), come out of those: the card shows no
+ * picture, and the copy's file goes. Pictures from catalogues and other sites
+ * stay where they are, being nobody's own.
+ */
+async function dropPhotoCopiesOf(listId: string): Promise<void> {
+  const db = getFirestore();
+  for (const holder of COPY_HOLDERS) {
+    const copies = await db.collection(holder.collection).where("picturesFrom", "array-contains", listId).get();
+    for (const copy of copies.docs) {
+      const folderId = holder.folderOf(copy.id);
+      await db.runTransaction(async (transaction) => {
+        const fresh = await transaction.get(copy.ref);
+        if (!fresh.exists) return;
+        const items = fresh.get(holder.items);
+        const previews = fresh.get("previewImages");
+        const cover = fresh.get("coverImageUrl");
+        const without = withoutPhotosFrom({
+          items: Array.isArray(items) ? (items as { imageUrl: string | null }[]) : [],
+          coverImageUrl: typeof cover === "string" ? cover : null,
+          previewImages: Array.isArray(previews) ? previews.filter((url): url is string => typeof url === "string") : [],
+        }, folderId, listId);
+        if (without === null) return;
+        transaction.update(copy.ref, holder.items === "items"
+          ? { items: without.items, coverImageUrl: without.coverImageUrl, previewImages: without.previewImages, ...nextRevision() }
+          : { addedCards: without.items });
+      });
+      await discardCopiesIn([folderId], listId, getStorage().bucket(), isPhotoCopiedFrom);
+    }
+  }
 }
 
 /** Copies that credited them by uid and name credit nobody; each one rewritten leaves the query. */

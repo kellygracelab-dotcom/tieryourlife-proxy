@@ -4,7 +4,8 @@ import { before, describe, it } from "node:test";
 import { initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
-import { assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, PROJECT } from "./seed-e2e";
+import { getStorage } from "firebase-admin/storage";
+import { assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, PROJECT, seed } from "./seed-e2e";
 
 const TIERS = [{ label: "S", caption: "Best", colorLight: "#FF7777", colorDark: "#773333" }, { label: "A", caption: null, colorLight: "#FFFF77", colorDark: "#777733" }];
 const ITEMS = [{ title: "Duplicate", imageUrl: null, tierIndex: null }, { title: "Duplicate", imageUrl: null, tierIndex: null }, { title: "Picture", imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg", tierIndex: null }];
@@ -117,19 +118,18 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.equal(honest.body.kind, "ranking", JSON.stringify(honest));
   });
 
-  it("classifies a new private photograph as changed content without leaking it, with the same image priority as publication", async () => {
+  it("refuses a new private photograph in somebody's list as a list of one's own without leaking it, with the same image priority as publication", async () => {
     const kept = await call(reader, "POST", "/lists/pictures/keep", { url: "https://example.invalid/private-photo.png" });
     assert.equal(kept.status, 200, JSON.stringify(kept));
     const pictureId = String(kept.body.pictureId);
     const changed = { ...draft(), items: [{ ...ITEMS[0], pictureId }, ...ITEMS.slice(1)] };
-    const preflight = await call(reader, "POST", "/lists/classify", changed);
-    assert.equal(preflight.body.kind, "list", JSON.stringify(preflight));
-    assert.equal(JSON.stringify(preflight.body).includes(pictureId), false);
-    const published = await call(reader, "POST", "/lists", changed);
-    assert.equal(published.status, 201, JSON.stringify(published));
-    assert.equal(published.body.ranking, undefined);
-    const saved = await call(reader, "GET", `/lists/${published.body.id}`);
-    assert.ok((saved.body.items as { imageUrl: string | null }[])[0].imageUrl, "the new photograph must really be published");
+    const count = (await db.collection("publishedLists").where("authorUid", "==", readerUid).get()).size;
+    for (const path of ["/lists/classify", "/lists"]) {
+      const answer = await call(reader, "POST", path, changed);
+      assert.deepEqual([answer.status, answer.body.code, answer.body.listId], [409, "RANK_INSTEAD", original], JSON.stringify(answer));
+      assert.equal(JSON.stringify(answer.body).includes(pictureId), false);
+    }
+    assert.equal((await db.collection("publishedLists").where("authorUid", "==", readerUid).get()).size, count);
     const samePublicPicture = { ...draft(), items: [ITEMS[0], ITEMS[1], { ...ITEMS[2], pictureId }] };
     assert.equal((await call(reader, "POST", "/lists/classify", samePublicPicture)).body.kind, "ranking");
     assert.deepEqual(await call(reader, "POST", "/lists", samePublicPicture), { status: 200, body: { id: original, ranking: true } });
@@ -168,14 +168,20 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.equal(repeat.status, 200); assert.equal(repeat.body.revision, 1);
   });
 
-  it("permits meaningful derivatives with attribution, and preserves existing public list type", async () => {
+  it("refuses a changed copy of somebody else's list as a list of one's own (RANK_INSTEAD), and keeps an existing copy a list", async () => {
+    const count = (await db.collection("publishedLists").where("authorUid", "==", readerUid).get()).size;
     for (const change of [{ title: "Derivative title" }, { items: [ITEMS[0], ITEMS[1], { ...ITEMS[2], title: "Picture renamed" }] }, { tiers: [{ ...TIERS[0], caption: "Other criterion" }, TIERS[1]] }, { tiers: [...TIERS].reverse() }]) {
-      const body = { ...draft(), ...change };
-      const classified = await call(reader, "POST", "/lists/classify", body);
-      assert.equal(classified.body.kind, "list"); assert.equal((classified.body.basedOn as { id: string }).id, original);
+      for (const path of ["/lists/classify", "/lists"]) {
+        const answer = await call(reader, "POST", path, { ...draft(), ...change, boardUid: `public-${boardId}` });
+        assert.deepEqual([answer.status, answer.body.code, answer.body.listId], [409, "RANK_INSTEAD", original], JSON.stringify(answer));
+      }
     }
-    const created = await call(reader, "POST", "/lists", { ...draft(), title: "Derivative title", boardUid: `public-${boardId}` });
+    assert.equal((await db.collection("publishedLists").where("authorUid", "==", readerUid).get()).size, count);
+    // A copy published before the refusal existed stays a list when its author replaces it.
+    const { takenFrom: _taken, sourceVersion: _version, ...independent } = draft();
+    const created = await call(reader, "POST", "/lists", { ...independent, title: "Derivative title", boardUid: `public-${boardId}` });
     assert.equal(created.status, 201, JSON.stringify(created));
+    await db.collection("publishedLists").doc(String(created.body.id)).update({ basedOn: { id: original, title: "Ranking source", authorUid: "", authorName: "" } });
     assert.equal(((await call(reader, "GET", `/lists/${created.body.id}`)).body.basedOn as { id: string }).id, original);
     const replaced = await call(reader, "POST", `/lists/${created.body.id}`, draft());
     assert.equal(replaced.status, 200); assert.equal(replaced.body.id, created.body.id); assert.equal(replaced.body.ranking, undefined);
@@ -230,7 +236,7 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.deepEqual((await db.collection("rankings").doc(`${id}_${readerUid}`).get()).get("rows"), [{ items: [1, 2] }]);
     for (const edit of [{ title: "Мои фильмы" }, { items: [{ ...russian.items[0], title: "Прибуття" }, ...russian.items.slice(1)] }, { items: [russian.items[0], { ...russian.items[1], title: "Renamed same picture" }, russian.items[2]] }]) {
       const preflight = await call(reader, "POST", "/lists/classify", { ...russian, ...edit });
-      assert.equal(preflight.body.kind, "list", JSON.stringify(preflight));
+      assert.deepEqual([preflight.status, preflight.body.code, preflight.body.listId], [409, "RANK_INSTEAD", id], JSON.stringify(preflight));
     }
     assert.equal((await call(owner, "PUT", `/lists/editorial/${id}/translations`, { translations: { ...translations, ru: { ...translations.ru, Films: "Кино" } } })).status, 200);
     const stale = await call(reader, "POST", "/lists", russian);
@@ -245,9 +251,200 @@ describe("ranking choices and authoritative publication under the demo emulators
     assert.equal(repeat.status, 200, JSON.stringify(repeat)); assert.equal(repeat.body.existing, true);
     const exact = { ...draft(), title: "Source version changed" };
     assert.equal((await call(reader, "POST", "/lists", exact)).body.ranking, true);
-    const refused = await call(reader, "POST", "/lists", { ...exact, title: "A new public list" });
+    assert.equal((await call(reader, "POST", "/lists", { ...exact, title: "A new public list" })).body.code, "RANK_INSTEAD");
+    const { takenFrom: _taken, sourceVersion: _version, ...own } = exact;
+    const refused = await call(reader, "POST", "/lists", { ...own, title: "A new public list" });
     assert.equal(refused.status, 409); assert.equal(refused.body.code, "TOO_MANY_LISTS");
     const saved = await call(reader, "PUT", `/boards/quota-${boardId}`, { ...privateBoard(), title: "Private survives quota" });
     assert.equal(saved.status, 200, JSON.stringify(saved));
+  });
+});
+
+describe("rankings sheet: the author first, likes, added cards, withdrawal and erasure (14.11.2026)", () => {
+  const app = initializeApp({ projectId: PROJECT }, "rankings-sheet");
+  const db = getFirestore(app);
+  const PHOTO = "https://inaturalist-open-data.s3.amazonaws.com/photos/82354387/large.jpeg";
+  const PHOTO_CREDIT = "(c) Douglas Goldman, some rights reserved (CC BY-SA)";
+  const OUTSIDE = `https://example.com/added-${Date.now().toString(36)}.png`;
+  type Person = { token: string; uid: string };
+  let author: Person, one: Person, two: Person, three: Person, guest = "", list = "", version = 0;
+  const sheet = async (who: string, query = "?withAuthor=1") => call(who, "GET", `/lists/${list}/rankings${query}`);
+  const ids = (answer: Awaited<ReturnType<typeof call>>) => (answer.body.rankings as { uid: string }[]).map((one) => one.uid);
+  const placing = { tierLabels: ["S", "A"], rows: [[0], [1]] };
+  async function person(prefix: string): Promise<Person> {
+    const start = await identity("signUp", {});
+    const made = await passwordAccount(start.idToken, `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}@e2e.test`);
+    return { token: made.idToken, uid: made.localId };
+  }
+  async function filesIn(folder: string, anyAddress: string): Promise<string[]> {
+    const bucket = getStorage(app).bucket(anyAddress.split("/v0/b/")[1]!.split("/")[0]!);
+    const [files] = await bucket.getFiles({ prefix: `published/${folder}/` });
+    return files.map((file) => file.name.slice(`published/${folder}/`.length)).sort();
+  }
+
+  before(async () => {
+    assertEmulatorsOnly();
+    [author, one, two, three] = await Promise.all([person("sheet-author"), person("sheet-one"), person("sheet-two"), person("sheet-three")]);
+    guest = (await identity("signUp", {})).idToken;
+    const published = await call(author.token, "POST", "/lists", { title: "Sheet source", category: "film_tv", tiers: TIERS, items: [{ title: "First", tierIndex: 1 }, { title: "Second", tierIndex: null }, { title: "Third", tierIndex: 1 }] });
+    assert.equal(published.status, 201, JSON.stringify(published));
+    list = String(published.body.id);
+    version = Number((await call(one.token, "GET", `/lists/${list}`)).body.updatedAt);
+    for (const who of [one, two, three]) {
+      const ranked = await call(who.token, "PUT", `/lists/${list}/rankings/mine`, { ...placing, rows: [[0], [1, 2]], version });
+      assert.equal(ranked.status, 200, JSON.stringify(ranked));
+    }
+  });
+
+  it("starts with the author's own placing, then the newest, the reader's own in its place", async () => {
+    const answer = await sheet(one.token);
+    assert.equal(answer.status, 200, JSON.stringify(answer));
+    assert.deepEqual(ids(answer), [author.uid, three.uid, two.uid, one.uid]);
+    const [first, , , mine] = answer.body.rankings as Record<string, unknown>[];
+    assert.deepEqual(first, { uid: author.uid, authorName: first.authorName, authorPhotoUrl: first.authorPhotoUrl, arrangement: [1, null, 1], rows: [[], [0, 2]], tierLabels: ["S", "A"], updatedAtMs: version, mine: false, isAuthor: true, likedByMe: false });
+    assert.deepEqual([mine.mine, mine.isAuthor, mine.likedByMe], [true, false, false]);
+    assert.equal(((await sheet(author.token)).body.rankings as { mine: boolean }[])[0].mine, true);
+    assert.deepEqual(ids(await sheet(one.token, "")), [three.uid, two.uid, one.uid]);
+    assert.equal(JSON.stringify(answer.body).includes("likeCount"), false);
+    for (const old of ["~1790000000.1", `${list}_${one.uid}`]) {
+      const gone = await sheet(one.token, `?withAuthor=1&after=${encodeURIComponent(old)}`);
+      assert.deepEqual([gone.status, gone.body.code], [409, "CURSOR_GONE"]);
+    }
+  });
+
+  it("likes a ranking once, puts the most liked first, and never says how many", async () => {
+    const like = () => call(one.token, "PUT", `/lists/${list}/rankings/${two.uid}/like`);
+    assert.deepEqual(await like(), { status: 200, body: { likedByMe: true } });
+    assert.deepEqual(await like(), { status: 200, body: { likedByMe: true } });
+    assert.equal((await db.collection("rankings").doc(`${list}_${two.uid}`).get()).get("likeCount"), 1);
+    const answer = await sheet(one.token);
+    assert.deepEqual(ids(answer), [author.uid, two.uid, three.uid, one.uid]);
+    assert.equal((answer.body.rankings as { likedByMe: boolean }[])[1].likedByMe, true);
+    assert.equal(((await sheet(three.token)).body.rankings as { likedByMe: boolean }[])[1].likedByMe, false);
+    assert.equal(JSON.stringify(answer.body).includes("likeCount"), false);
+    // Replacing the liked ranking keeps its likes.
+    assert.equal((await call(two.token, "PUT", `/lists/${list}/rankings/mine`, placing)).status, 200);
+    assert.equal((await db.collection("rankings").doc(`${list}_${two.uid}`).get()).get("likeCount"), 1);
+    const back = () => call(one.token, "DELETE", `/lists/${list}/rankings/${two.uid}/like`);
+    assert.deepEqual(await back(), { status: 200, body: { likedByMe: false } });
+    assert.deepEqual(await back(), { status: 200, body: { likedByMe: false } });
+    assert.equal((await db.collection("rankings").doc(`${list}_${two.uid}`).get()).get("likeCount"), 0);
+  });
+
+  it("refuses a guest, one's own, the author's, a ranking not there, a hidden list and the 301st like in an hour", async () => {
+    const at = (who: string, uid: string, method = "PUT") => call(who, method, `/lists/${list}/rankings/${uid}/like`);
+    assert.deepEqual([(await at(guest, two.uid)).status, (await at(guest, two.uid)).body.code], [403, "NOT_SIGNED_IN"]);
+    assert.deepEqual((await at(one.token, one.uid)).body, { error: "That one cannot be liked", code: "CANNOT_LIKE", detail: "own" });
+    assert.deepEqual([(await at(one.token, author.uid)).status, (await at(one.token, author.uid)).body.detail], [409, "author"]);
+    assert.equal((await at(one.token, "NobodyRankedThisList1")).status, 404);
+    const ref = db.collection("publishedLists").doc(list);
+    await ref.update({ underReview: true });
+    try {
+      assert.equal((await at(one.token, two.uid)).status, 404);
+    } finally {
+      await ref.update({ underReview: false });
+    }
+    const quota = db.collection("likeQuota").doc(one.uid);
+    await quota.set({ events: Array.from({ length: 300 }, (_, i) => Date.now() - 1000 + i) });
+    try {
+      const limited = await at(one.token, three.uid);
+      assert.equal(limited.status, 429, JSON.stringify(limited));
+      assert.equal(limited.body.code, "LIKE_LIMIT");
+      assert.ok(Number(limited.body.retryAt) > Date.now());
+      assert.deepEqual((await at(one.token, three.uid, "DELETE")).body, { likedByMe: false }, "asking for what is already so costs nothing");
+    } finally {
+      await quota.delete();
+    }
+  });
+
+  it("keeps cards the reader added, with copies of their pictures in the ranking's own folder, and drops the ones taken away", async () => {
+    const kept = await call(one.token, "POST", "/lists/pictures/keep", { url: "https://example.invalid/added-photo.png" });
+    assert.equal(kept.status, 200, JSON.stringify(kept));
+    const addedCards = [
+      { title: "Lion", imageUrl: PHOTO, credit: PHOTO_CREDIT, tierIndex: 0 },
+      { title: "My own", pictureId: kept.body.pictureId },
+      { title: "From a site", imageUrl: OUTSIDE },
+    ];
+    for (const [body, detail] of [
+      [{ ...placing, addedCards: Array.from({ length: 51 }, () => ({ title: "x" })) }, "addedCards"],
+      [{ ...placing, addedCards: [{ title: "" }] }, "addedCards"],
+      [{ ...placing, rows: [[0, 6], [1]], addedCards }, "rows"],
+    ] as [unknown, string][]) {
+      const refused = await call(one.token, "PUT", `/lists/${list}/rankings/mine`, body);
+      assert.deepEqual([refused.status, refused.body.code, refused.body.detail], [400, "INVALID", detail], JSON.stringify(refused));
+    }
+    const saved = await call(one.token, "PUT", `/lists/${list}/rankings/mine`, { tierLabels: ["S", "A"], rows: [[3, 0], [1, 4, 5]], version, addedCards });
+    assert.equal(saved.status, 200, JSON.stringify(saved));
+    assert.deepEqual(saved.body.rows, [[0], [1]]);
+    assert.deepEqual(saved.body.arrangement, [0, 1, null]);
+    assert.deepEqual(saved.body.allRows, [[3, 0], [1, 4, 5]]);
+    const folder = `ranking-${list}_${one.uid}`;
+    const cards = saved.body.addedCards as { title: string; imageUrl: string; attribution?: Record<string, string>; credit?: string }[];
+    assert.deepEqual(cards.map((card) => card.title), ["Lion", "My own", "From a site"]);
+    assert.match(cards[0].imageUrl, new RegExp(`published%2F${folder}%2Fw-[0-9a-f]{32}`));
+    assert.deepEqual([cards[0].attribution?.source, cards[0].attribution?.originalUrl, cards[0].credit], ["inaturalist", PHOTO, PHOTO_CREDIT]);
+    assert.match(cards[1].imageUrl, new RegExp(`published%2F${folder}%2F`));
+    assert.match(cards[2].imageUrl, new RegExp(`published%2F${folder}%2Fw-[0-9a-f]{32}`));
+    assert.equal((await filesIn(folder, cards[0].imageUrl)).length, 3);
+    const shown = ((await sheet(two.token)).body.rankings as { uid: string; addedCards?: unknown[]; allRows?: unknown }[]).find((one_) => one_.uid === one.uid)!;
+    assert.deepEqual([shown.addedCards?.length, shown.allRows], [3, [[3, 0], [1, 4, 5]]]);
+    // Sent back as read, the lion keeps its copy; the photograph and the outside picture go.
+    const again = await call(one.token, "PUT", `/lists/${list}/rankings/mine`, { tierLabels: ["S"], rows: [[3, 2]], addedCards: [cards[0]] });
+    assert.equal(again.status, 200, JSON.stringify(again));
+    assert.equal((again.body.addedCards as { imageUrl: string }[])[0].imageUrl, cards[0].imageUrl);
+    const left = await filesIn(folder, cards[0].imageUrl);
+    assert.deepEqual(left, [decodeURIComponent(cards[0].imageUrl.split("%2F").pop()!.split("?")[0]!)]);
+    // Without added cards they all go, and old readers' rows never held them.
+    const plain = await call(one.token, "PUT", `/lists/${list}/rankings/mine`, placing);
+    assert.equal(plain.body.addedCards, undefined);
+    assert.deepEqual(await filesIn(folder, cards[0].imageUrl), []);
+  });
+
+  it("withdraws a ranking with the likes it was given and its copies", async () => {
+    const added = await call(three.token, "PUT", `/lists/${list}/rankings/mine`, { tierLabels: ["S"], rows: [[3]], addedCards: [{ title: "Lion", imageUrl: PHOTO, credit: PHOTO_CREDIT }] });
+    assert.equal(added.status, 200, JSON.stringify(added));
+    const address = (added.body.addedCards as { imageUrl: string }[])[0].imageUrl;
+    assert.equal((await call(two.token, "PUT", `/lists/${list}/rankings/${three.uid}/like`)).status, 200);
+    const count = (await db.collection("publishedLists").doc(list).get()).get("rankingCount");
+    assert.equal((await call(three.token, "DELETE", `/lists/${list}/rankings/mine`)).status, 204);
+    assert.equal((await db.collection("rankings").doc(`${list}_${three.uid}`).get()).exists, false);
+    assert.equal((await db.collection("rankingLikes").where("rankingId", "==", `${list}_${three.uid}`).get()).size, 0);
+    assert.deepEqual(await filesIn(`ranking-${list}_${three.uid}`, address), []);
+    assert.equal((await db.collection("publishedLists").doc(list).get()).get("rankingCount"), count - 1);
+    assert.equal((await call(two.token, "PUT", `/lists/${list}/rankings/${three.uid}/like`)).status, 404);
+  });
+
+  it("erases an account's likes and rankings with its account", async () => {
+    const four = await person("sheet-four");
+    const added = await call(four.token, "PUT", `/lists/${list}/rankings/mine`, { tierLabels: ["S"], rows: [[3]], addedCards: [{ title: "Lion", imageUrl: PHOTO, credit: PHOTO_CREDIT }] });
+    assert.equal(added.status, 200, JSON.stringify(added));
+    const address = (added.body.addedCards as { imageUrl: string }[])[0].imageUrl;
+    assert.deepEqual((await call(four.token, "PUT", `/lists/${list}/rankings/${two.uid}/like`)).body, { likedByMe: true });
+    assert.deepEqual((await call(two.token, "PUT", `/lists/${list}/rankings/${four.uid}/like`)).body, { likedByMe: true });
+    const count = (await db.collection("publishedLists").doc(list).get()).get("rankingCount");
+    const twoLikes = (await db.collection("rankings").doc(`${list}_${two.uid}`).get()).get("likeCount");
+    assert.equal((await call(four.token, "DELETE", "/boards/account")).status, 204);
+    assert.equal((await db.collection("rankings").doc(`${list}_${four.uid}`).get()).exists, false);
+    assert.equal((await db.collection("publishedLists").doc(list).get()).get("rankingCount"), count - 1);
+    assert.equal((await db.collection("rankings").doc(`${list}_${two.uid}`).get()).get("likeCount"), twoLikes - 1);
+    assert.equal((await db.collection("rankingLikes").where("uid", "==", four.uid).get()).size, 0);
+    assert.equal((await db.collection("rankingLikes").where("rankedBy", "==", four.uid).get()).size, 0);
+    assert.equal((await db.collection("likeQuota").doc(four.uid).get()).exists, false);
+    assert.deepEqual(await filesIn(`ranking-${list}_${four.uid}`, address), []);
+    assert.equal(ids(await sheet(one.token)).includes(four.uid), false);
+  });
+
+  it("shows a topic's lists whatever section is asked with it", async () => {
+    const { topic } = await seed();
+    const published = await call(author.token, "POST", "/lists", { title: "Topic feed", category: "film_tv", topicId: topic.id, tiers: TIERS, items: [{ title: "Card", tierIndex: 0 }] });
+    assert.equal(published.status, 201, JSON.stringify(published));
+    for (const sort of ["recent", "popular"]) {
+      const withSection = await call(guest, "GET", `/lists?category=film_tv&topic=${topic.id}&sort=${sort}`);
+      const alone = await call(guest, "GET", `/lists?topic=${topic.id}&sort=${sort}`);
+      assert.equal(withSection.status, 200, JSON.stringify(withSection));
+      const named = (answer: typeof alone) => (answer.body.lists as { id: string }[]).map((one_) => one_.id);
+      assert.ok(named(withSection).includes(String(published.body.id)), sort);
+      assert.deepEqual(named(withSection), named(alone));
+    }
   });
 });
