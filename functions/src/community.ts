@@ -263,6 +263,7 @@ import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRev
 import { catalogueSourceOf, manualOf, type ManualAttribution } from "./pictureAttribution";
 import {
   cleanTopicName,
+  refusedTopicLocale,
   decideAttachment,
   decideTopicAction,
   decideTopicCreation,
@@ -4774,7 +4775,8 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   // Its translations at once, as `PATCH` takes them: a hundred new topics need no second call each.
   const names = source.names === undefined ? {} : readTopicNames(source.names);
   if (names === null) {
-    response.status(400).json({ error: "A translation is one to forty characters, in one of the app's languages", code: "INVALID", detail: "names" });
+    const locale = refusedTopicLocale(source.names);
+    response.status(400).json({ error: "A translation is one to forty characters, in one of the app's languages", code: "INVALID", detail: "names", ...(locale === null ? {} : { locale }) });
     return;
   }
   const asked = readTopicPictureId(source.pictureId);
@@ -4865,6 +4867,15 @@ async function editTopic(response: Response, identity: Identity, topicId: string
   const topic = knownTopic(topicId, stored);
   const edit = decideTopicEdit(topic, body);
   if (!edit.ok) {
+    if (edit.reason === "bad_name") {
+      response.status(400).json({
+        error: edit.detail === "name" ? "A topic name is one to forty characters" : "A translation is one to forty characters, in one of the app's languages",
+        code: "INVALID",
+        detail: edit.detail,
+        ...(edit.locale === undefined ? {} : { locale: edit.locale }),
+      });
+      return;
+    }
     return edit.reason === "bad_picture"
       ? refuseSection(response, { code: "BAD_PICTURE", why: "missing" })
       : refuseTopicAction(response, edit.reason);

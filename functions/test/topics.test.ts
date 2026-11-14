@@ -417,8 +417,8 @@ describe("decideTopicEdit", () => {
   });
 
   it("refuses a bad name or bad translations", () => {
-    assert.deepEqual(decideTopicEdit(approved, { name: "?" }), { ok: false, reason: "bad_name" });
-    assert.deepEqual(decideTopicEdit(approved, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name" });
+    assert.deepEqual(decideTopicEdit(approved, { name: "?" }), { ok: false, reason: "bad_name", detail: "name" });
+    assert.deepEqual(decideTopicEdit(approved, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name", detail: "names", locale: "xx" });
   });
 
   it("edits a waiting topic too, and nothing rejected or merged", () => {

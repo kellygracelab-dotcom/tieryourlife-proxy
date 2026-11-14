@@ -353,9 +353,24 @@ export function readTopicNames(value: unknown): Record<string, string> | null {
   return readNames(value, cleanTopicName);
 }
 
+/**
+ * Which language's translation `readTopicNames` refused, so a client can point
+ * at that field: the first one not of the app's languages or not a proper
+ * name. Null when the whole value is no set of translations at all.
+ */
+export function refusedTopicLocale(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  for (const [locale, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (readTopicNames({ [locale]: raw }) === null) return locale;
+  }
+  return null;
+}
+
 export type TopicEdit =
   | { ok: true; name?: string; nameLower?: string; names?: Record<string, string>; pictureId?: string | null }
-  | { ok: false; reason: "settled" | "bad_name" | "bad_picture" };
+  | { ok: false; reason: "settled" | "bad_picture" }
+  /** [detail] names the field; [locale] the translation, when it is one. */
+  | { ok: false; reason: "bad_name"; detail: "name" | "names"; locale?: string };
 
 /**
  * What a call says about a topic's picture: a picture id from the caller's
@@ -379,13 +394,16 @@ export function decideTopicEdit(topic: Pick<KnownTopic, "status">, body: unknown
   const edit: Extract<TopicEdit, { ok: true }> = { ok: true };
   if (source.name !== undefined) {
     const name = cleanTopicName(source.name);
-    if (name === null) return { ok: false, reason: "bad_name" };
+    if (name === null) return { ok: false, reason: "bad_name", detail: "name" };
     edit.name = name;
     edit.nameLower = name.toLowerCase();
   }
   if (source.names !== undefined) {
     const names = readTopicNames(source.names);
-    if (names === null) return { ok: false, reason: "bad_name" };
+    if (names === null) {
+      const locale = refusedTopicLocale(source.names);
+      return { ok: false, reason: "bad_name", detail: "names", ...(locale === null ? {} : { locale }) };
+    }
     edit.names = names;
   }
   const picture = readTopicPictureId(source.pictureId);
