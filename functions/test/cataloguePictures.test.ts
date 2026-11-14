@@ -134,7 +134,7 @@ describe("a Commons file", () => {
       LicenseUrl: { value: "http://creativecommons.org/licenses/by-sa/3.0" },
     } };
     assert.deepEqual(commonsDetails(page, info), {
-      author: "Von.grzanka (https://commons.wikimedia.org/wiki/User:Von.grzanka)",
+      author: "Von.grzanka",
       license: "CC BY-SA 3.0",
       licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0",
       link: "https://commons.wikimedia.org/?curid=4466700",
