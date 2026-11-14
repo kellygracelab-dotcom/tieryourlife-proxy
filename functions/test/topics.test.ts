@@ -40,8 +40,12 @@ describe("cleanTopicName", () => {
     assert.equal(cleanTopicName("  Kharkiv   restaurants "), "Kharkiv restaurants");
   });
 
-  it("refuses one character, and more than forty", () => {
-    assert.equal(cleanTopicName("K"), null);
+  it("takes one character, a Japanese 犬 or a Chinese 猫 a whole name, and refuses nothing at all or more than forty", () => {
+    assert.equal(cleanTopicName("犬"), "犬");
+    assert.equal(cleanTopicName(" 猫 "), "猫");
+    assert.equal(cleanTopicName("K"), "K");
+    assert.equal(cleanTopicName("   "), null);
+    assert.equal(cleanTopicName("!"), null);
     assert.equal(cleanTopicName("K".repeat(MAX_TOPIC_NAME_LENGTH + 1)), null);
     assert.equal(cleanTopicName("K".repeat(MAX_TOPIC_NAME_LENGTH)), "K".repeat(MAX_TOPIC_NAME_LENGTH));
   });
@@ -413,8 +417,8 @@ describe("decideTopicEdit", () => {
   });
 
   it("refuses a bad name or bad translations", () => {
-    assert.deepEqual(decideTopicEdit(approved, { name: "?" }), { ok: false, reason: "bad_name" });
-    assert.deepEqual(decideTopicEdit(approved, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name" });
+    assert.deepEqual(decideTopicEdit(approved, { name: "?" }), { ok: false, reason: "bad_name", detail: "name" });
+    assert.deepEqual(decideTopicEdit(approved, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name", detail: "names", locale: "xx" });
   });
 
   it("edits a waiting topic too, and nothing rejected or merged", () => {

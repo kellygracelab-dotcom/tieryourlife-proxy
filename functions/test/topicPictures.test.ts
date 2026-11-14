@@ -45,6 +45,12 @@ describe("a topic's picture", () => {
 
   it("refuses something that is not a picture id", () => {
     assert.deepEqual(decideTopicEdit({ status: "approved" }, { pictureId: "a/b" }), { ok: false, reason: "bad_picture" });
+    // Which field was refused, and which translation: a client points at it.
+    assert.deepEqual(decideTopicEdit({ status: "approved" }, { name: "?" }), { ok: false, reason: "bad_name", detail: "name" });
+    assert.deepEqual(decideTopicEdit({ status: "approved" }, { names: { ja: "犬", de: "!" } }), { ok: false, reason: "bad_name", detail: "names", locale: "de" });
+    assert.deepEqual(decideTopicEdit({ status: "approved" }, { names: { xx: "Food" } }), { ok: false, reason: "bad_name", detail: "names", locale: "xx" });
+    assert.deepEqual(decideTopicEdit({ status: "approved" }, { names: "Food" }), { ok: false, reason: "bad_name", detail: "names" });
+    assert.deepEqual(decideTopicEdit({ status: "approved" }, { names: { ja: "犬", uk: "Пес" } }).ok, true);
   });
 
   it("goes out on every topic as pictureUrl, null for a topic without one", () => {

@@ -280,6 +280,69 @@ export function stillToCopy(pictures: ShownPictures, switches: CopySwitches): st
 
 const COPY_WINDOW_MS = 60_000;
 const MAX_COPIES_PER_RUN = 2000;
+
+/**
+ * Lists a publication left with catalogue pictures it had no time to copy
+ * (Open Library answers slowly from here, a few seconds a cover): copied by
+ * `copyPicturesSoon` within the quarter of an hour, not by the next daily run.
+ * One document per list, keyed by its id; it goes once nothing is left to copy.
+ */
+export const PICTURE_COPY_QUEUE = "pictureCopyQueue";
+/** A queued list still not copied after this long is left to the daily upkeep. */
+const QUEUE_GIVE_UP_MS = 2 * 24 * 60 * 60 * 1000;
+
+/** Asks for [listId]'s catalogue pictures to be copied soon. Never fails the caller. */
+export async function queuePictureCopies(listId: string, left: number): Promise<void> {
+  await getFirestore().collection(PICTURE_COPY_QUEUE).doc(listId).set({ path: `publishedLists/${listId}`, left, queuedAt: Date.now() }).catch((error: unknown) => {
+    console.warn(`Picture copies for ${listId} not queued: ${String(error)}`);
+  });
+}
+
+/** What happens to a queued list now: copied, kept for the next turn, or let go. */
+export function queueVerdict(queuedAtMs: number, stillWanted: number, exists: boolean, nowMs: number): "done" | "again" | "give-up" {
+  if (!exists || stillWanted === 0) return "done";
+  return nowMs - queuedAtMs >= QUEUE_GIVE_UP_MS ? "give-up" : "again";
+}
+
+/** The queued lists' catalogue pictures copied, as the daily upkeep would, until [untilMs]. */
+export async function copyQueuedPictures(untilMs: number): Promise<Record<string, number>> {
+  const db = getFirestore();
+  const queued = await db.collection(PICTURE_COPY_QUEUE).limit(50).get();
+  const summary = { queued: queued.size, copied: 0, listsDone: 0, listsAgain: 0, givenUp: 0 };
+  if (queued.empty) return summary;
+  const switches = await copySwitches();
+  const tools = catalogueCopyTools(realOutsideTools("catalogue-upkeep"));
+  for (const entry of queued.docs) {
+    if (Date.now() > untilMs) break;
+    const ref = db.doc(String(entry.get("path")));
+    const doc = await ref.get();
+    let wanted = doc.exists ? stillToCopy(shownPictures(doc.data(), pictureDocOf(ref)), switches) : [];
+    if (wanted.length > 0) {
+      const copies = (await copyCataloguePictures(copyFolderOf(ref), wanted, tools, { withinMs: Math.max(5_000, Math.min(COPY_WINDOW_MS, untilMs - Date.now())) })).copies;
+      if (copies.size > 0) {
+        const written = await rewritePictures(ref, (pictures) => withCatalogueCopies(pictures as ShownPictures & Parameters<typeof withCatalogueCopies>[0], copies)).catch((error) => {
+          console.error(`Picture copies: ${ref.path} not written: ${(error as Error).message}`);
+          return false;
+        });
+        if (written) {
+          summary.copied += copies.size;
+          wanted = wanted.filter((url) => !copies.has(url));
+        }
+      }
+    }
+    const verdict = queueVerdict(Number(entry.get("queuedAt") ?? 0), wanted.length, doc.exists, Date.now());
+    if (verdict === "again") {
+      summary.listsAgain++;
+      continue;
+    }
+    if (verdict === "give-up") {
+      summary.givenUp++;
+      console.warn(`Picture copies: ${ref.path} still has ${wanted.length} catalogue pictures to copy after two days; left to the daily upkeep`);
+    } else summary.listsDone++;
+    await entry.ref.delete().catch(() => undefined);
+  }
+  return summary;
+}
 const MAX_REFRESHES_PER_RUN = 2000;
 /** A shared copy no board shows any more goes after this long: time enough for a board on its way to name it. */
 const SHARED_UNSHOWN_MS = 7 * 24 * 60 * 60 * 1000;

@@ -196,7 +196,8 @@ export function catalogueCopyTools(base: OutsideTools): OutsideTools {
   };
 }
 
-const CATALOGUE_COPYING_AT_ONCE = 8;
+// Open Library takes a few seconds a cover from here: a house list of 33 books did not fit 15 s eight at a time (14.11.2026).
+const CATALOGUE_COPYING_AT_ONCE = 16;
 const CATALOGUE_WINDOW_MS = 15_000;
 
 /** The copies made, by catalogue address; one not made is not there. `saved` are the files this attempt wrote. */

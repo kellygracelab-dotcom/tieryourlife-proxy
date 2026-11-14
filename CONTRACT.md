@@ -89,7 +89,7 @@ canonical Storage addresses, their shared catalogue copies included
 | A game on a board | 2–2000 cards, up to 14000 answers (full-size Swiss + refine), kept 30 days after its last write | `sync.ts` |
 | Follows of authors, of topics, of sections | 200 each | `MAX_FOLLOWING` |
 | Report note | 500 | `MAX_NOTE_LENGTH` |
-| Topic name | 2–40 characters, a letter or digit in it, refused otherwise | `topics.ts` |
+| Topic name, and each of its translations (`names`) | 1–40 characters (since 14.11.2026; one Han, kana or Hangul character such as 犬 is a whole name), a letter or digit in it, refused otherwise | `topics.ts` |
 | Waiting topics per account | 3 | `MAX_PENDING_TOPICS_PER_ACCOUNT` |
 | Section name | 2–24 characters (an emoji is one), a letter or digit in it, refused otherwise | `sections.ts` |
 | Waiting section proposals per account | 3 | `MAX_PENDING_SECTIONS_PER_ACCOUNT` |
@@ -272,7 +272,7 @@ Erasing an account takes its likes off the counts, and its rankings with their l
 
 **`POST /lists/topics`**: staff. Body `{name, section, names?, pictureId?, pictureAttribution?}`: an approved topic outright, in an open section. `names` (since 14.11.2026): its translations at once, as `PATCH` takes them, `{<locale>: <name>}` for the locales of **Locales** (`en` is `name`); an empty one is left out; found by search in every language as the name is. `201 Topic`. `400 {code: "INVALID", detail: "name" | "section" | "names"}`, `409 {code: "NAME_TAKEN", id, detail: id}`, `400 BAD_PICTURE`.
 
-**`PATCH /lists/topics/{id}`**: staff. Body `{name?, names?, pictureId?, pictureAttribution?}` (`pictureId: null` removes the picture; an empty translation removes it). `200 Topic`. `400 INVALID`, `400 BAD_PICTURE`, `400 BAD_ATTRIBUTION`, `409 NAME_TAKEN`, `409 SETTLED`.
+**`PATCH /lists/topics/{id}`**: staff. Body `{name?, names?, pictureId?, pictureAttribution?}` (`pictureId: null` removes the picture; an empty translation removes it). `200 Topic`. `400 INVALID`, `400 BAD_PICTURE`, `400 BAD_ATTRIBUTION`, `409 NAME_TAKEN`, `409 SETTLED`. A refused name or translation (since 14.11.2026): `400 {code: "INVALID", detail: "name"}`, or `400 {code: "INVALID", detail: "names", locale?}` with `locale` the first translation refused (a language not the app's, or not a proper name; absent when `names` is no object at all). `POST /lists/topics` answers a refused translation the same way.
 
 **A topic picture's credit** (since 14.11.2026): `pictureAttribution` in `POST` and `PATCH /lists/topics`, `{author?, license, licenseUrl?, link}` (`manual: true` may be sent or left out), by the rules of the house editor's credit (**Editor's credit** below: the same licences, `link` required, an author or licence left empty read from a Commons, Flickr or iNaturalist page). `null` takes it away. It is kept while the picture stays: a new picture sent without one, or the picture taken away, takes it away too. `Topic` carries it, as stored (`manual: true`), only while the topic has a picture. Refused: `400 {code: "BAD_ATTRIBUTION", reason, detail: "pictureAttribution"}`, `reason` as for a card.
 
