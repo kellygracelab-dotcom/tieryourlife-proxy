@@ -95,6 +95,49 @@ describe("eraseAccount", () => {
     assert.equal(fakes.db.get("bans/old1"), undefined);
   });
 
+  it("takes their likes off the counts, and their rankings with the likes on them and their folders", async () => {
+    seedErasable("old1");
+    const { db, log } = fakes;
+    db.seed("rankings/L1_old1", { listId: "L1", uid: "old1", likeCount: 1 });
+    db.seed("rankings/L2_other", { listId: "L2", uid: "other", likeCount: 2 });
+    db.seed("publishedLists/L1", { authorUid: "author", rankingCount: 1 });
+    db.seed("rankingLikes/fan:L1_old1", { rankingId: "L1_old1", listId: "L1", uid: "fan", rankedBy: "old1" });
+    db.seed("rankingLikes/old1:L2_other", { rankingId: "L2_other", listId: "L2", uid: "old1", rankedBy: "other" });
+    db.seed("likeQuota/old1", { events: [1] });
+    await eraseAccount("old1");
+    assert.equal(db.get("rankings/L1_old1"), undefined);
+    assert.equal(db.get("publishedLists/L1")?.rankingCount, 0);
+    assert.equal(db.get("rankingLikes/fan:L1_old1"), undefined);
+    assert.equal(db.get("rankingLikes/old1:L2_other"), undefined);
+    assert.equal(db.get("rankings/L2_other")?.likeCount, 1);
+    assert.equal(db.get("likeQuota/old1"), undefined);
+    assert.ok(log.includes("deleteFiles published/ranking-L1_old1/"));
+  });
+
+  it("takes their lists' rankings with them, and their photographs out of other people's copies", async () => {
+    seedErasable("old1");
+    const { db, log, files } = fakes;
+    const ORIGINAL = "OrigListAAAAAAAAAAAA";
+    const COPY = "CopyListBBBBBBBBBBBB";
+    const ART = `${ORIGINAL}-w-0123456789abcdef0123456789abcdef`;
+    const at = (folder: string, name: string) => `https://firebasestorage.googleapis.com/v0/b/fake-bucket/o/${encodeURIComponent(`published/${folder}/${name}`)}?alt=media`;
+    db.seed(`publishedLists/${ORIGINAL}`, { authorUid: "old1" });
+    db.seed(`rankings/${ORIGINAL}_reader`, { listId: ORIGINAL, uid: "reader" });
+    db.seed(`publishedLists/${COPY}`, { authorUid: "other", revision: 2, picturesFrom: [ORIGINAL], coverImageUrl: null, previewImages: [], items: [{ title: "photo", imageUrl: at(COPY, `${ORIGINAL}-pic1`) }, { title: "art", imageUrl: at(COPY, ART) }] });
+    db.seed("rankings/L9_reader", { listId: "L9", uid: "reader", picturesFrom: [ORIGINAL], addedCards: [{ title: "photo", imageUrl: at("ranking-L9_reader", `${ORIGINAL}-pic1`) }] });
+    files.push(`published/${COPY}/${ORIGINAL}-pic1`, `published/${COPY}/${ART}`, `published/ranking-L9_reader/${ORIGINAL}-pic1`);
+    await eraseAccount("old1");
+    const copy = db.get(`publishedLists/${COPY}`)!;
+    assert.deepEqual((copy.items as { imageUrl: string | null }[]).map((item) => item.imageUrl === null), [true, false]);
+    assert.equal(copy.revision, 3);
+    assert.equal((db.get("rankings/L9_reader")!.addedCards as { imageUrl: string | null }[])[0].imageUrl, null);
+    assert.ok(log.includes(`deleteFile published/${COPY}/${ORIGINAL}-pic1`));
+    assert.ok(log.includes(`deleteFile published/ranking-L9_reader/${ORIGINAL}-pic1`));
+    assert.ok(!log.includes(`deleteFile published/${COPY}/${ART}`));
+    assert.equal(db.get(`rankings/${ORIGINAL}_reader`), undefined);
+    assert.ok(log.includes(`deleteFiles published/ranking-${ORIGINAL}_reader/`));
+  });
+
   it("can be asked again after it finished", async () => {
     seedErasable("old1");
     await eraseAccount("old1");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { authorRoleOf, isModerator, lists, nextCursor, segmentsOf } from "../src/community";
+import { authorRoleOf, feedEqualities, isModerator, lists, nextCursor, segmentsOf } from "../src/community";
 
 describe("segmentsOf", () => {
   it("drops the function's own name, which Hosting puts first and a direct call does not", () => {
@@ -89,5 +89,18 @@ describe("isModerator", () => {
 describe("the lists function", () => {
   it("has the memory for pictures from other sites in flight beside a board", () => {
     assert.equal((lists as unknown as { __endpoint: { availableMemoryMb: number } }).__endpoint.availableMemoryMb, 512);
+  });
+});
+
+describe("feedEqualities", () => {
+  it("leaves the section out when a topic is asked: the website sends both, the app the topic alone, and both see the same lists", () => {
+    assert.deepEqual(feedEqualities({ category: "anime", author: null, topic: "T1" }), [["topicId", "T1"]]);
+    assert.deepEqual(feedEqualities({ category: null, author: null, topic: "T1" }), [["topicId", "T1"]]);
+  });
+
+  it("filters by the section, the author, or both, as before", () => {
+    assert.deepEqual(feedEqualities({ category: "anime", author: null, topic: null }), [["category", "anime"]]);
+    assert.deepEqual(feedEqualities({ category: "anime", author: "u1", topic: null }), [["category", "anime"], ["authorUid", "u1"]]);
+    assert.deepEqual(feedEqualities({ category: null, author: null, topic: null }), []);
   });
 });

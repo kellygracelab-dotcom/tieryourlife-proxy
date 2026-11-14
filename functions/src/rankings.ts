@@ -239,16 +239,14 @@ export function isOwnedRanking(ranking: { uid?: unknown }): boolean {
   return typeof ranking.uid === "string" && ranking.uid.length > 0;
 }
 
-/** The reader's own ranking ahead of everyone's, flagged, the rest as they came. */
-export function mineFirst<T extends { uid: string }>(rankings: T[], uid: string): (T & { mine: boolean })[] {
-  const mine = rankings.filter((one) => one.uid === uid).map((one) => ({ ...one, mine: true }));
-  const others = rankings.filter((one) => one.uid !== uid).map((one) => ({ ...one, mine: false }));
-  return [...mine, ...others];
-}
-
 export type RankingBody =
-  /** `rows` is null for a placing sent the old way, as a tier per card, which keeps no order within a tier. */
-  | { ok: true; arrangement: (number | null)[]; rows: number[][] | null; tierLabels: string[] }
+  /**
+   * `rows` is null for a placing sent the old way, as a tier per card, which
+   * keeps no order within a tier. `rows` and `arrangement` are about the
+   * list's own cards alone, which is all installed apps read; `allRows`, only
+   * when the reader added cards of their own, places those too, at `N+k`.
+   */
+  | { ok: true; arrangement: (number | null)[]; rows: number[][] | null; tierLabels: string[]; allRows?: number[][] }
   | { ok: false; detail: "tierLabels" | "rows" | "arrangement" };
 
 /**
@@ -278,6 +276,15 @@ export function arrangementFromRows(rows: readonly (readonly number[])[], itemCo
   return arrangement;
 }
 
+/** The cards of each tier in the list's order, from a tier (or null) per card: the rows a placing without its own order has. */
+export function rowsFromArrangement(arrangement: readonly (number | null)[], tiers: number): number[][] {
+  const rows: number[][] = Array.from({ length: tiers }, () => []);
+  arrangement.forEach((tier, at) => {
+    if (tier !== null && tier >= 0 && tier < tiers) rows[tier].push(at);
+  });
+  return rows;
+}
+
 /** Firestore keeps no array inside an array, so each row is stored as `{items}`, as the website stores its own. */
 export function rowsToDocument(rows: readonly (readonly number[])[]): { items: number[] }[] {
   return rows.map((row) => ({ items: [...row] }));
@@ -296,28 +303,33 @@ export function rowsFromDocument(stored: unknown): number[][] {
  * each a proper label, and the cards of each tier left to right (`rows`); or,
  * the old way, one tier or null per card in the list's order (`arrangement`),
  * which is still read when there are no rows. Rows win when both are sent.
+ * The reader's own [addedCount] cards follow the list's in `rows`, at `N+k`;
+ * the old way cannot place them, and leaves them unranked.
  */
-export function readRankingBody(body: unknown, itemCount: number): RankingBody {
+export function readRankingBody(body: unknown, itemCount: number, addedCount = 0): RankingBody {
   const source = (body ?? {}) as Record<string, unknown>;
   if (!Array.isArray(source.tierLabels) || source.tierLabels.length < 1 || source.tierLabels.length > MAX_TIERS_PER_LIST) {
     return { ok: false, detail: "tierLabels" };
   }
   const tierLabels = source.tierLabels.map(cleanTierLabel);
   if (tierLabels.some((label) => label === null)) return { ok: false, detail: "tierLabels" };
+  const labels = tierLabels as string[];
   if (source.rows !== undefined && source.rows !== null) {
-    const rows = readRows(source.rows, tierLabels.length, itemCount);
+    const rows = readRows(source.rows, labels.length, itemCount + addedCount);
     if (rows === null) return { ok: false, detail: "rows" };
-    return { ok: true, arrangement: arrangementFromRows(rows, itemCount), rows, tierLabels: tierLabels as string[] };
+    const listRows = addedCount === 0 ? rows : rows.map((row) => row.filter((item) => item < itemCount));
+    return { ok: true, arrangement: arrangementFromRows(listRows, itemCount), rows: listRows, tierLabels: labels, ...(addedCount > 0 ? { allRows: rows } : {}) };
   }
   if (source.arrangement === undefined || source.arrangement === null) return { ok: false, detail: "rows" };
   if (!Array.isArray(source.arrangement) || source.arrangement.length !== itemCount) {
     return { ok: false, detail: "arrangement" };
   }
-  const tiers = tierLabels.length;
+  const tiers = labels.length;
   const placed = (entry: unknown) =>
     entry === null || (typeof entry === "number" && Number.isInteger(entry) && entry >= 0 && entry < tiers);
   if (!source.arrangement.every(placed)) return { ok: false, detail: "arrangement" };
-  return { ok: true, arrangement: source.arrangement as (number | null)[], rows: null, tierLabels: tierLabels as string[] };
+  const arrangement = source.arrangement as (number | null)[];
+  return { ok: true, arrangement, rows: null, tierLabels: labels, ...(addedCount > 0 ? { allRows: rowsFromArrangement(arrangement, tiers) } : {}) };
 }
 
 export type RankingRefusal = "not_signed_in" | "banned" | "missing" | "own_list";
@@ -350,10 +362,11 @@ export function rankingPrecheck(
   caller: RankingCaller,
   list: { authorUid: string; underReview: boolean; itemCount: number } | null,
   body: unknown,
+  addedCount = 0,
 ): { ok: true } | { refused: RankingRefusal } | { invalid: string } {
   const refused = rankingRefusal(caller, list);
   if (refused !== null || list === null) return { refused: refused ?? "missing" };
-  const read = readRankingBody(body, list.itemCount);
+  const read = readRankingBody(body, list.itemCount, addedCount);
   return read.ok ? { ok: true } : { invalid: read.detail };
 }
 
@@ -362,30 +375,42 @@ export function rankingWrite(existed: boolean): { created: boolean; countChange:
   return existed ? { created: false, countChange: 0 } : { created: true, countChange: 1 };
 }
 
-/** When a ranking was last saved, as Firestore keeps it. */
-export interface RankingTime {
-  seconds: number;
-  nanoseconds: number;
-}
-
-const TIME_CURSOR = /^~(\d{1,12})\.(\d{1,9})$/;
+export const MAX_ADDED_CARDS = 50;
 
 /**
- * Where the next page of rankings carries on. After a ranking the page shows,
- * its id, as always. After one it does not, its time instead: a website
- * ranking's id is the code of its unlisted page, and a cursor would hand
- * that code to anybody reading the sheet.
+ * The cards a reader adds to their ranking of somebody's list, as the body of
+ * a list of one tier holding just them, so they are read by the very reader a
+ * published list's cards are (`decidePublish`): the same names, pictures,
+ * links, credits and limits. Where a card goes is the ranking's `rows`, so a
+ * card's own tier and source position are not read; nor is an editor's
+ * credit, which is the house's alone. Null for no cards; refused for anything
+ * but up to fifty of them.
  */
-export function rankingCursor(next: { id: string; shown: boolean; updatedAt: RankingTime | null } | null): string | null {
-  if (next === null) return null;
-  if (next.shown) return next.id;
-  return next.updatedAt === null ? null : `~${next.updatedAt.seconds}.${next.updatedAt.nanoseconds}`;
+export function addedCardsBody(raw: unknown): { ok: true; body: Record<string, unknown> | null; count: number } | { ok: false } {
+  if (raw === undefined || raw === null) return { ok: true, body: null, count: 0 };
+  if (!Array.isArray(raw) || raw.length > MAX_ADDED_CARDS) return { ok: false };
+  if (raw.length === 0) return { ok: true, body: null, count: 0 };
+  const items: Record<string, unknown>[] = [];
+  for (const card of raw) {
+    if (card === null || typeof card !== "object" || Array.isArray(card)) return { ok: false };
+    const { tierIndex: _tier, sourceIndex: _source, attribution, ...rest } = card as Record<string, unknown>;
+    const sent = attribution !== null && typeof attribution === "object" && !Array.isArray(attribution)
+      ? Object.fromEntries(Object.entries(attribution as Record<string, unknown>).filter(([key]) => key !== "manual"))
+      : null;
+    items.push({ ...rest, ...(sent === null ? {} : { attribution: sent }), tierIndex: null });
+  }
+  return {
+    ok: true,
+    body: { title: "Added cards", category: "other", tiers: [{ label: "Added", colorLight: "#000000", colorDark: "#000000" }], items },
+    count: items.length,
+  };
 }
 
-/** A cursor as `rankingCursor` wrote it: a ranking's id, or the time to carry on after. */
-export function readRankingCursor(after: string): { kind: "id"; id: string } | { kind: "time"; time: RankingTime } {
-  const match = TIME_CURSOR.exec(after);
-  return match === null
-    ? { kind: "id", id: after }
-    : { kind: "time", time: { seconds: Number(match[1]), nanoseconds: Number(match[2]) } };
+/**
+ * A new list made from somebody else's with other content is not published
+ * as a list of its own: the reader shows their ranking of that list instead,
+ * with any cards they added. The id of that list, or null when this may go out.
+ */
+export function rankInstead(publication: Publication): string | null {
+  return publication.kind === "list" && publication.basedOn !== null ? publication.basedOn.id : null;
 }

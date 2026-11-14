@@ -185,9 +185,9 @@ describe(`new-public-list HTTP quota (${limit === null ? "default OFF" : `demo N
       assert.equal((await call(person.token, "GET", `/boards/${body.boardUid}`)).body.rankingChoice, "private");
       assert.deepEqual(await events(person.uid), history);
       assert.equal((await lists(person.uid).get()).size, 0);
-      // A changed source copy creates an independent attributed list and therefore does consume the policy.
+      // A changed source copy is the reader's ranking to show, never a list of their own (since 14.11.2026).
       const derivative = await call(person.token, "POST", "/lists", { ...body, title: "Changed title" });
-      assert.equal(derivative.status, 409); assert.equal(derivative.body.code, "TOO_MANY_LISTS");
+      assert.equal(derivative.status, 409); assert.equal(derivative.body.code, "RANK_INSTEAD");
       assert.deepEqual(await events(person.uid), history);
     });
 

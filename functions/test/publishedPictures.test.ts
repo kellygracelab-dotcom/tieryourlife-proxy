@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addressOf, discardCopiesIn, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
+import { addressOf, discardCopiesIn, isPhotoCopiedFrom, withoutPhotosFrom, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
 import type { SafeSearchVerdict } from "../src/safety";
 
 describe("taking a list down", () => {
@@ -111,5 +111,30 @@ describe("asking Vision about many photographs", () => {
     assert.equal(verdicts[3], null);
     assert.equal(verdicts[17]?.racy, "LIKELY");
     assert.equal((await realSafeSearch(images, annotate))[3]?.adult, "UNKNOWN");
+  });
+});
+
+describe("an erased author's photographs in other people's copies", () => {
+  const ORIGINAL = "AAAAAAAAAAAAAAAAAAAA";
+  const at = (folder: string, name: string) => addressOf("b", `published/${folder}/${name}`);
+
+  it("are the copies of their own pictures, not of catalogue pictures or pictures from other sites", () => {
+    assert.equal(isPhotoCopiedFrom(`${ORIGINAL}-pic123_p_x`, ORIGINAL), true);
+    assert.equal(isPhotoCopiedFrom(`BBBBBBBBBBBBBBBBBBBB-${ORIGINAL}-pic123`, ORIGINAL), true);
+    assert.equal(isPhotoCopiedFrom(`${ORIGINAL}-w-0123456789abcdef0123456789abcdef`, ORIGINAL), false);
+    assert.equal(isPhotoCopiedFrom("pic123", ORIGINAL), false);
+    assert.equal(isPhotoCopiedFrom("CCCCCCCCCCCCCCCCCCCC-pic123", ORIGINAL), false);
+  });
+
+  it("go from the cards, the cover and the collage, which show no picture there", () => {
+    const photo = at("COPY", `${ORIGINAL}-pic123`);
+    const catalogue = at("COPY", `${ORIGINAL}-w-0123456789abcdef0123456789abcdef`);
+    const list = { items: [{ title: "a", imageUrl: photo }, { title: "b", imageUrl: catalogue }, { title: "c", imageUrl: null }], coverImageUrl: photo, previewImages: [photo, catalogue] };
+    assert.deepEqual(withoutPhotosFrom(list, "COPY", ORIGINAL), {
+      items: [{ title: "a", imageUrl: null }, { title: "b", imageUrl: catalogue }, { title: "c", imageUrl: null }],
+      coverImageUrl: null,
+      previewImages: [catalogue],
+    });
+    assert.equal(withoutPhotosFrom({ items: [{ imageUrl: catalogue }], coverImageUrl: null, previewImages: [] }, "COPY", ORIGINAL), null);
   });
 });

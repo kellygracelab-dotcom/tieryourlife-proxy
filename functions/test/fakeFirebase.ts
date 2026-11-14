@@ -116,6 +116,7 @@ export class FakeQuery {
 function matches(actual: unknown, filter: Filter): boolean {
   if (filter.op === "==") return actual === filter.value;
   if (filter.op === "<=") return typeof actual === "number" && actual <= (filter.value as number);
+  if (filter.op === "array-contains") return Array.isArray(actual) && actual.includes(filter.value);
   throw new Error(`The fake does not know ${filter.op}`);
 }
 
@@ -194,6 +195,8 @@ export interface Fakes {
   users: Map<string, FakeUser>;
   /** Every write, file removal and Auth deletion, in order. */
   log: string[];
+  /** The names of the files a bucket listing finds; none unless a test adds them. */
+  files: string[];
   restore: () => void;
 }
 
@@ -201,10 +204,15 @@ export function install(): Fakes {
   const db = new FakeDb();
   const users = new Map<string, FakeUser>();
   const log = db.log;
+  const files: string[] = [];
   const bucket = {
     name: "fake-bucket",
     async deleteFiles({ prefix }: { prefix: string }) {
       log.push(`deleteFiles ${prefix}`);
+    },
+    /** Files a test put in [files]; each one's removal is logged. */
+    async getFiles({ prefix }: { prefix: string }) {
+      return [files.filter((name) => name.startsWith(prefix)).map((name) => ({ name, async delete() { log.push(`deleteFile ${name}`); } }))];
     },
     file: (name: string) => ({
       async delete() {
@@ -228,5 +236,5 @@ export function install(): Fakes {
     mock.method(storageModule, "getStorage", () => ({ bucket: () => bucket })),
     mock.method(authModule, "getAuth", () => auth),
   ];
-  return { db, users, log, restore: () => mocks.forEach((one) => one.mock.restore()) };
+  return { db, users, log, files, restore: () => mocks.forEach((one) => one.mock.restore()) };
 }

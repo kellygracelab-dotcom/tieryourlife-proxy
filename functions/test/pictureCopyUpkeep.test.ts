@@ -137,3 +137,21 @@ describe("a board's catalogue pictures", () => {
     assert.deepEqual(pictureFields(shown, back, "board"), { items: board.items, coverImageUrl: POSTER, coverImageUrls: [POSTER, COMMONS] });
   });
 });
+
+describe("the cards a reader added to their ranking", () => {
+  const POSTER = "https://image.tmdb.org/t/p/w500/added.jpg";
+  const ranking = { listId: "L1", uid: "u1", rows: [{ items: [0] }], addedCards: [{ title: "Added", imageUrl: POSTER, attribution: { source: "tmdb" } }] };
+
+  it("are what an owned ranking shows, and are written back where they are, never as a snapshot", () => {
+    const shown = shownPictures(ranking, "ranking");
+    assert.deepEqual(shown, { items: ranking.addedCards, coverImageUrl: null, previewImages: [], itemsField: "addedCards" });
+    assert.deepEqual(stillToCopy(shown, { ...DEFAULT_COPY_SWITCHES, tmdb: true }), [POSTER]);
+    const after = { ...shown, items: [{ ...shown.items[0], imageUrl: "https://firebasestorage.googleapis.com/v0/b/b/o/published%2Franking-L1_u1%2Fw-1?alt=media" }] };
+    assert.deepEqual(Object.keys(pictureFields(shown, after, "ranking")), ["addedCards"]);
+  });
+
+  it("leave a website ranking's snapshot and a ranking without added cards as they were", () => {
+    assert.deepEqual(shownPictures({ snapshot: { items: [{ imageUrl: POSTER }] } }, "ranking").itemsField, undefined);
+    assert.deepEqual(shownPictures({ listId: "L1", uid: "u1" }, "ranking"), { items: [], coverImageUrl: null, previewImages: [] });
+  });
+});

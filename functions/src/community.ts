@@ -107,9 +107,8 @@ import {
   creditNeedsRewrite,
   decidePublication,
   isOwnedRanking,
-  mineFirst,
-  rankingCursor,
-  readRankingCursor,
+  addedCardsBody,
+  rankInstead,
   rankingPrecheck,
   rankingRefusal,
   rankingWrite,
@@ -127,6 +126,25 @@ import {
   type Publication,
   type SourceList,
 } from "./rankings";
+import {
+  authorRanking,
+  likeCursor,
+  likeId,
+  likeQuota,
+  likeRefusal,
+  LIKE_QUOTA,
+  MAX_RANKINGS_ORDERED,
+  RANKING_LIKES,
+  rankingFolderOf,
+  rankingIdOf,
+  rankingsPage,
+  readLikeCount,
+  readLikeCursor,
+  readLikeEvents,
+  type LikeRefusal,
+  type RankingKey,
+} from "./rankingLikes";
+import { discardRankingFolder, discardRankingRemains, discardRankingsOf } from "./rankingRemains";
 import {
   ACTIVITY_WINDOW_MS,
   answerFor,
@@ -507,6 +525,14 @@ interface StoredRanking {
   sourceVersion?: number;
   tierLabels: string[];
   updatedAt?: FirebaseFirestore.Timestamp;
+  /** How many people like it; kept for the order, never sent. Absent on rankings nobody has liked yet. */
+  likeCount?: number;
+  /** The reader's own cards, after the list's: `{title, imageUrl, credit?, attribution?}`. */
+  addedCards?: Record<string, unknown>[];
+  /** The rows with the added cards placed too, at `N+k`; kept only beside `addedCards`. */
+  allRows?: { items: number[] }[];
+  /** The lists whose published pictures the added cards hold copies of, as a list's `picturesFrom`. */
+  picturesFrom?: string[];
 }
 
 function refuse(response: Response, decision: Exclude<PublishDecision, { ok: true }>): void {
@@ -726,7 +752,7 @@ export const lists = onRequest(
         return await routeSections(request.method, segments.slice(1), query, request.body, response, identity);
       }
       if (segments[1] === RANKINGS_PATH && segments[0]) {
-        return await routeRankings(request.method, segments[0], segments[2] ?? "", query, request.body, response, identity);
+        return await routeRankings(request.method, segments[0], segments.slice(2), query, request.body, response, identity);
       }
       if (segments[0] === "classify" && segments.length === 1 && request.method === "POST") {
         return await classifyPublication(response, identity, request.body);
@@ -881,20 +907,28 @@ export function nextCursor(pageIds: string[], pageSize: number = FEED_PAGE_SIZE)
   return pageIds.length === pageSize ? pageIds[pageIds.length - 1] : null;
 }
 
+/**
+ * The fields the feed's lists must equal. A topic decides its lists' section
+ * itself, so a section asked with one is not asked: the website sends both,
+ * the app only the topic, and both are shown the same lists, on the indexes
+ * the topic has of its own.
+ */
+export function feedEqualities(filters: Pick<FeedFilters, "category" | "author" | "topic">): [field: string, value: string][] {
+  return [
+    ...(filters.category && !filters.topic ? [["category", filters.category] as [string, string]] : []),
+    ...(filters.author ? [["authorUid", filters.author] as [string, string]] : []),
+    ...(filters.topic ? [["topicId", filters.topic] as [string, string]] : []),
+  ];
+}
+
 async function readFeed(response: Response, identity: Identity, filters: FeedFilters): Promise<void> {
   if (filters.following) {
     return await readFollowingFeed(response, identity, filters);
   }
   const collection = getFirestore().collection(PUBLISHED);
   let query: FirebaseFirestore.Query = collection;
-  if (filters.category) {
-    query = query.where("category", "==", filters.category);
-  }
-  if (filters.author) {
-    query = query.where("authorUid", "==", filters.author);
-  }
-  if (filters.topic) {
-    query = query.where("topicId", "==", filters.topic);
+  for (const [field, value] of feedEqualities(filters)) {
+    query = query.where(field, "==", value);
   }
 
   // A search asks for one word and keeps what has the others (src/search.ts),
@@ -3453,10 +3487,16 @@ async function syncCredits(listId: string, anonymous: boolean, authorUid: string
 }
 
 /** What the deciding needs to know about the list a board was saved from. */
-type PublicationResolution = { publication: Publication; sourceId?: string; version?: number; sourceState?: string; boardUid?: string; lineageId?: string | null } | { code: "LIST_CHANGED" | "INVALID"; detail?: string; version?: number };
+type PublicationResolution = { publication: Publication; sourceId?: string; version?: number; sourceState?: string; boardUid?: string; lineageId?: string | null } | { code: "LIST_CHANGED" | "INVALID"; detail?: string; version?: number } | { code: "RANK_INSTEAD"; listId: string };
+
+const PUBLICATION_REFUSALS: Record<Extract<PublicationResolution, { code: string }>["code"], string> = {
+  INVALID: "Invalid publication origin",
+  LIST_CHANGED: "The original list changed. Load it again.",
+  RANK_INSTEAD: "That is somebody else's list: show your ranking of it instead",
+};
 
 function publicationRefused(response: Response, refusal: Extract<PublicationResolution, { code: string }>): void {
-  response.status(refusal.code === "INVALID" ? 400 : 409).json({ error: refusal.code === "INVALID" ? "Invalid publication origin" : "The original list changed. Load it again.", ...refusal });
+  response.status(refusal.code === "INVALID" ? 400 : 409).json({ error: PUBLICATION_REFUSALS[refusal.code], ...refusal });
 }
 
 function sourceList(id: string, data: StoredList): SourceList {
@@ -3493,6 +3533,9 @@ async function resolvePublication(identity: Identity, body: Record<string, unkno
     if (now !== undefined) item.imageUrl = now;
   }
   const publication = decidePublication({ takenFrom, source: original, callerUid: identity.uid, ...draft });
+  // Somebody else's list with other cards, title or tiers: a ranking of it, with cards added, not a list of one's own.
+  const instead = rankInstead(publication);
+  if (instead !== null) return { code: "RANK_INSTEAD", listId: instead };
   if (publication.kind === "ranking" && rankingRowsOver(publicationBaseline(original!, draft)!.items, draft.items, draft.tiers.length) === null) return { code: "INVALID", detail: "sourceIndex" };
   return { publication, ...lineage, ...(data === null ? {} : { sourceId: doc.id, version: currentVersion, sourceState: JSON.stringify(original) }) };
 }
@@ -3524,6 +3567,7 @@ async function rank(
   const list = db.collection(PUBLISHED).doc(listId);
   const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
   const face = await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid));
+  let hadAdded = false;
   const outcome = await db.runTransaction(async (transaction) => {
     const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
     if (boardUid) {
@@ -3537,6 +3581,8 @@ async function rank(
     if (baseline === null) return "changed";
     const rows = rankingRowsOver(baseline.items, draft.items, draft.tiers.length);
     if (rows === null) return "invalid";
+    // The list's own cards only: cards added earlier go, and their copies after.
+    hadAdded = Array.isArray(existing.get("addedCards"));
     transaction.set(ranking, {
       listId,
       uid: identity.uid,
@@ -3546,6 +3592,8 @@ async function rank(
       rows: rowsToDocument(rows),
       sourceVersion: version,
       tierLabels: draft.tiers.map((tier) => tier.label),
+      // Replacing a ranking keeps the likes it was given.
+      likeCount: readLikeCount(existing.get("likeCount")),
       updatedAt: FieldValue.serverTimestamp(),
     });
     if (!existing.exists) {
@@ -3554,106 +3602,261 @@ async function rank(
     return "saved";
   });
   if (outcome !== "saved") return publicationRefused(response, outcome === "changed" ? { code: "LIST_CHANGED" } : { code: "INVALID", detail: "sourceIndex" });
+  if (hadAdded) await discardRankingFolder(ranking.id);
   response.status(200).json({ id: listId, ranking: true });
 }
+
+/** Liking somebody's ranking: `/lists/{listId}/rankings/{uid}/like`. */
+const LIKE_PATH = "like";
 
 async function routeRankings(
   method: string,
   listId: string,
-  rest: string,
+  rest: string[],
   query: Record<string, unknown>,
   body: unknown,
   response: Response,
   identity: Identity,
 ): Promise<void> {
-  if (method === "GET" && rest === "") {
-    return await readRankings(response, identity, listId, singleParam(query.after));
+  if (method === "GET" && rest.length === 0) {
+    return await readRankings(response, identity, listId, singleParam(query.after), query.withAuthor === "1");
   }
-  if (method === "PUT" && rest === "mine") {
+  if (method === "PUT" && rest.length === 1 && rest[0] === "mine") {
     return await putMyRanking(response, identity, listId, body);
   }
-  if (method === "DELETE" && rest === "mine") {
+  if (method === "DELETE" && rest.length === 1 && rest[0] === "mine") {
     return await deleteMyRanking(response, identity, listId);
+  }
+  if ((method === "PUT" || method === "DELETE") && rest.length === 2 && rest[1] === LIKE_PATH) {
+    return await setLike(response, identity, listId, rest[0] ?? "", method === "PUT");
   }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
 }
 
 type RankingOutcome = { refused: "not_signed_in" | "banned" | "missing" | "own_list" } | { invalid: string } | { changed: true } | { created: boolean };
 
+function refuseRanking(response: Response, refused: Extract<RankingOutcome, { refused: string }>["refused"], ban: Ban | null): void {
+  switch (refused) {
+    case "not_signed_in":
+      response.status(403).json({ error: "Sign in to rank", code: "NOT_SIGNED_IN" });
+      return;
+    case "banned":
+      response.status(403).json({ error: "You cannot rank at the moment", ...noticeFor(ban as Ban) });
+      return;
+    case "missing":
+      response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+      return;
+    case "own_list":
+      response.status(409).json({ error: "That list is yours", code: "OWN_LIST" });
+      return;
+  }
+}
+
+function invalidRanking(response: Response, detail: string): void {
+  response.status(400).json({ error: "That placing does not fit the list", code: "INVALID", detail });
+}
+
 /**
  * A reader putting their own placing of somebody's list in its rankings
- * sheet, or replacing it. Everything is judged again inside the transaction
- * that writes it, against the list as it is then, and the list's count goes
- * up once, for a ranking that was not there before.
+ * sheet, or replacing it, with cards of their own added if they like. Their
+ * pictures are copied first, into the ranking's own folder, as a published
+ * list's are; then everything is judged again inside the transaction that
+ * writes it, against the list as it is then, and the list's count goes up
+ * once, for a ranking that was not there before. Copies the new ranking no
+ * longer shows go after it is written.
  */
 async function putMyRanking(response: Response, identity: Identity, listId: string, body: unknown): Promise<void> {
   const ban = identity.isAnonymous ? null : await readBan(identity);
   const caller = { uid: identity.uid, isAnonymous: identity.isAnonymous, banned: isBanned(ban, Date.now()) };
   const db = getFirestore();
   const list = readTakenFrom(listId) === null ? null : db.collection(PUBLISHED).doc(listId);
-  const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
-  // Judged once before the face is fetched, so a refusal costs no fetch, and again in the transaction.
+  const rankingId = rankingIdOf(listId, identity.uid);
+  const ranking = db.collection(RANKINGS).doc(rankingId);
+  // Judged once before the face and the pictures are fetched, so a refusal costs no fetch, and again in the transaction.
   const before = list === null ? null : await list.get();
   const seen = before?.exists ? (before.data() as StoredList) : null;
   const askedVersion = (body as { version?: unknown } | null)?.version;
+  const added = addedCardsBody((body as { addedCards?: unknown } | null)?.addedCards);
+  const addedCount = added.ok ? added.count : 0;
   const first = rankingPrecheck(
     caller,
     seen === null ? null : { authorUid: seen.authorUid, underReview: seen.underReview === true, itemCount: (seen.items ?? []).length },
     body,
+    addedCount,
   );
-  if ("ok" in first && askedVersion !== undefined && (!Number.isSafeInteger(askedVersion) || (askedVersion as number) < 0)) return publicationRefused(response, { code: "INVALID", detail: "version" });
-  if ("ok" in first && seen !== null && askedVersion !== undefined && askedVersion !== (seen.updatedAt?.toMillis() ?? 0)) return publicationRefused(response, { code: "LIST_CHANGED", version: seen.updatedAt?.toMillis() ?? 0 });
-  const face = "ok" in first ? await checkedFace(identity.uid, identity.picture, realOutsideTools(identity.uid)) : null;
-  const outcome = !("ok" in first) ? first : await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
-    const [source, existing] = list === null ? [null, null] : await Promise.all([transaction.get(list), transaction.get(ranking)]);
-    const data = source?.exists ? (source.data() as StoredList) : null;
-    const refused = rankingRefusal(caller, data === null ? null : { authorUid: data.authorUid, underReview: data.underReview === true });
-    if (refused !== null || data === null || list === null) return { refused: refused ?? "missing" };
-    if (askedVersion !== undefined && askedVersion !== (data.updatedAt?.toMillis() ?? 0)) return { changed: true };
-    const read = readRankingBody(body, (data.items ?? []).length);
-    if (!read.ok) return { invalid: read.detail };
-    const write = rankingWrite(existing?.exists === true);
-    transaction.set(ranking, {
-      listId,
-      uid: identity.uid,
-      authorName: identity.name ?? "Anonymous",
-      authorPhotoUrl: face,
-      arrangement: read.arrangement,
-      ...(read.rows === null ? {} : { rows: rowsToDocument(read.rows) }),
-      tierLabels: read.tierLabels,
-      sourceVersion: data.updatedAt?.toMillis() ?? 0,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    if (write.countChange > 0) transaction.update(list, { rankingCount: FieldValue.increment(write.countChange) });
-    return { created: write.created };
-  });
+  if ("refused" in first) return refuseRanking(response, first.refused, ban);
+  if (!added.ok) return invalidRanking(response, "addedCards");
+  if ("invalid" in first) return invalidRanking(response, first.invalid);
+  if (askedVersion !== undefined && (!Number.isSafeInteger(askedVersion) || (askedVersion as number) < 0)) return publicationRefused(response, { code: "INVALID", detail: "version" });
+  if (seen !== null && askedVersion !== undefined && askedVersion !== (seen.updatedAt?.toMillis() ?? 0)) return publicationRefused(response, { code: "LIST_CHANGED", version: seen.updatedAt?.toMillis() ?? 0 });
 
-  if ("refused" in outcome) {
-    switch (outcome.refused) {
-      case "not_signed_in":
-        response.status(403).json({ error: "Sign in to rank", code: "NOT_SIGNED_IN" });
-        return;
-      case "banned":
-        response.status(403).json({ error: "You cannot rank at the moment", ...noticeFor(ban as Ban) });
-        return;
-      case "missing":
-        response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
-        return;
-      case "own_list":
-        response.status(409).json({ error: "That list is yours", code: "OWN_LIST" });
-        return;
-    }
+  // The added cards are read as a published list's cards are.
+  let draft: PublishDraft | null = null;
+  if (added.body !== null) {
+    const decision = decidePublish({ body: added.body, isAnonymous: false, listsAlreadyPublished: 0, uploaderUid: identity.uid });
+    if (!decision.ok) return invalidRanking(response, "addedCards");
+    draft = decision.draft;
   }
-  if ("invalid" in outcome) {
-    response.status(400).json({ error: "That placing does not fit the list", code: "INVALID", detail: outcome.invalid });
+  const folderId = rankingFolderOf(rankingId);
+  const tools = realOutsideTools(identity.uid);
+  const pictures: AddedPictures = draft === null
+    ? { ok: true, cards: [], picturesFrom: [], saved: [] }
+    : await addedPictures(identity, folderId, draft, (await ranking.get()).get("addedCards"), tools);
+  if (!pictures.ok) {
+    response.status(pictures.status).json(pictures.body);
     return;
   }
-  if ("changed" in outcome) return publicationRefused(response, { code: "LIST_CHANGED" });
+  const face = await checkedFace(identity.uid, identity.picture, tools);
+
+  let outcome: RankingOutcome = { changed: true };
+  let shownBefore: string[] = [];
+  await removeUnlessWritten(pictures.saved, (path) => tools.remove(path), async () => {
+    outcome = await db.runTransaction(async (transaction): Promise<RankingOutcome> => {
+      const [source, existing] = list === null ? [null, null] : await Promise.all([transaction.get(list), transaction.get(ranking)]);
+      const data = source?.exists ? (source.data() as StoredList) : null;
+      const refused = rankingRefusal(caller, data === null ? null : { authorUid: data.authorUid, underReview: data.underReview === true });
+      if (refused !== null || data === null || list === null) return { refused: refused ?? "missing" };
+      if (askedVersion !== undefined && askedVersion !== (data.updatedAt?.toMillis() ?? 0)) return { changed: true };
+      const read = readRankingBody(body, (data.items ?? []).length, addedCount);
+      if (!read.ok) return { invalid: read.detail };
+      const write = rankingWrite(existing?.exists === true);
+      const stored = {
+        listId,
+        uid: identity.uid,
+        authorName: identity.name ?? "Anonymous",
+        authorPhotoUrl: face,
+        arrangement: read.arrangement,
+        ...(read.rows === null ? {} : { rows: rowsToDocument(read.rows) }),
+        tierLabels: read.tierLabels,
+        sourceVersion: data.updatedAt?.toMillis() ?? 0,
+        // Replacing a ranking keeps the likes it was given.
+        likeCount: readLikeCount(existing?.get("likeCount")),
+        ...(pictures.cards.length === 0 ? {} : {
+          addedCards: pictures.cards,
+          allRows: rowsToDocument(read.allRows ?? []),
+          picturesFrom: pictures.picturesFrom,
+        }),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (!snapshotFits(stored)) return { invalid: "addedCards" };
+      shownBefore = addedCardUrls(existing?.get("addedCards"));
+      transaction.set(ranking, stored);
+      if (write.countChange > 0) transaction.update(list, { rankingCount: FieldValue.increment(write.countChange) });
+      return { created: write.created };
+    });
+    return "created" in outcome ? outcome : null;
+  });
+
+  const result = outcome as RankingOutcome;
+  if ("refused" in result) return refuseRanking(response, result.refused, ban);
+  if ("invalid" in result) return invalidRanking(response, result.invalid);
+  if ("changed" in result) return publicationRefused(response, { code: "LIST_CHANGED" });
+  // The copies the earlier version showed and this one does not; another attempt's files are not among them.
+  await discardUnusedPublished(
+    folderId,
+    publishedNamesIn(folderId, pictures.cards.map((card) => card.imageUrl)),
+    publishedNamesIn(folderId, shownBefore),
+  );
   const fresh = await ranking.get();
-  response.status(200).json({ ...toRanking(fresh.data() as StoredRanking), created: outcome.created });
+  response.status(200).json({ ...toRanking(fresh.data() as StoredRanking, { mine: true, likedByMe: false }), created: result.created });
 }
 
-function toRanking(data: StoredRanking) {
+/** The picture addresses stored added cards show. */
+function addedCardUrls(stored: unknown): string[] {
+  return (Array.isArray(stored) ? stored : []).flatMap((card) => {
+    const url = (card as { imageUrl?: unknown } | null)?.imageUrl;
+    return typeof url === "string" ? [url] : [];
+  });
+}
+
+type AddedCard = { title: string; imageUrl: string | null; credit?: string; attribution?: Record<string, unknown> };
+type AddedPictures =
+  | { ok: true; cards: AddedCard[]; picturesFrom: string[]; saved: string[] }
+  | { ok: false; status: number; body: Record<string, unknown> };
+
+/**
+ * The added cards' pictures, copied into the ranking's own folder the way a
+ * published list's are: each credited; a catalogue's copied where
+ * `config/pictureCopies` says; a picture from another site, or one of the
+ * reader's own, after SafeSearch; another list's copy copied again. Copies
+ * the earlier version holds are kept rather than made again. A refusal
+ * leaves nothing behind and says which added card it was.
+ */
+async function addedPictures(identity: Identity, folderId: string, draft: PublishDraft, previousCards: unknown, tools: ReturnType<typeof realOutsideTools>): Promise<AddedPictures> {
+  const folder = `published/${folderId}/`;
+  const nameSuffix = `_p_${randomUUID()}`;
+  const previousPictures = { items: addedCardUrls(previousCards).map((imageUrl) => ({ imageUrl })), coverImageUrl: null, previewImages: [] };
+  const outsideUrls = outsideAddressesIn(settle(draft, new Map()), folderId, tools.bucket);
+  const committed = committedOutsideCopies(previousPictures, outsideUrls, folder, tools.bucket);
+
+  const before = attributionsByPicture(previousCards);
+  const cards: CardPicture[] = draft.items.map((item) => {
+    // Only a picture of the person's own folder can say it came from another site.
+    const { web, manual: _manual, ...sent } = item.sent ?? {};
+    const told = { ...sent, ...(web && item.pictureId !== null ? { web } : {}) };
+    // An editor's credit alone is not an attribution sent back.
+    const sentBack = Object.keys(item.sent ?? {}).some((key) => key !== "manual");
+    return {
+      imageUrl: item.imageUrl,
+      ...(item.credit ? { credit: item.credit } : {}),
+      ...(sentBack ? { sent: told } : {}),
+      ...(item.imageUrl !== null && before.has(storageMediaUrl(item.imageUrl)) ? { previous: before.get(storageMediaUrl(item.imageUrl)) } : {}),
+    };
+  });
+  const files = commonsFilesOf(cards);
+  const commons = files.length > 0 && !isDemoEmulator() ? await askCommonsFully(files) : { found: new Map() };
+  const attributions = attributionsOf(cards, commons.found);
+  draft.items.forEach((item, at) => {
+    const attribution = attributions[at];
+    if (attribution) item.attribution = attribution;
+  });
+  const catalogueUrls = copiesWanted(cards, attributions, await copySwitches());
+  const catalogueCommitted = committedOutsideCopies(previousPictures, catalogueUrls, folder, tools.bucket);
+
+  const [outside, catalogue] = await Promise.all([
+    copyOutside(folder, outsideUrls, tools, { nameSuffix, committed }),
+    copyCataloguePictures(folder, catalogueUrls, catalogueCopyTools(tools), { nameSuffix, committed: catalogueCommitted }),
+  ]);
+  const removeAll = (paths: readonly string[]) => Promise.all(paths.map((path) => tools.remove(path).catch(() => undefined)));
+  if (!outside.ok) {
+    await removeAll(catalogue.saved);
+    if ("overDailyLimit" in outside) return { ok: false, status: 429, body: { error: "Too many pictures from other sites today", code: "WEB_PICTURES_DAILY_LIMIT" } };
+    return { ok: false, status: 422, body: { error: "That picture cannot go in the feed", code: "PICTURE_REFUSED", because: outside.refused.because, addedIndex: draft.items.findIndex((item) => item.imageUrl === outside.refused.url) } };
+  }
+
+  const saved = [...outside.saved, ...catalogue.saved];
+  const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
+  try {
+    const outcomes = await copyForPublication(identity.uid, folderId, picturesWanted(draft), undefined, copies);
+    const refused = outcomes.find((one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing");
+    if (refused) {
+      await removeAll(saved);
+      return { ok: false, status: 422, body: { error: "That picture cannot go in the feed", code: "PICTURE_REFUSED", because: refused.because, addedIndex: draft.items.findIndex((item) => item.pictureId === refused.id) } };
+    }
+    const addresses = new Map(outcomes.filter((one) => one.ok).map((one) => [one.id, (one as { address: string }).address]));
+    const adopted = await adoptForeignCopies(folderId, settle(draft, addresses), copies);
+    const shown = withCatalogueCopies(withCopies(adopted.list, outside.copies), catalogue.copies);
+    const picturesFrom = await withTheirSources([...new Set([...adopted.picturesFrom, ...sourcesInNames(publishedNamesIn(folderId, shown.items.map((item) => item.imageUrl)))])]);
+    return {
+      ok: true,
+      cards: shown.items.map((item) => ({
+        title: item.title,
+        imageUrl: item.imageUrl,
+        ...(item.credit ? { credit: item.credit } : {}),
+        ...(item.attribution ? { attribution: item.attribution as unknown as Record<string, unknown> } : {}),
+      })),
+      picturesFrom,
+      saved,
+    };
+  } catch (error) {
+    await removeAll(saved);
+    throw error;
+  }
+}
+
+/** A ranking as everybody reads it; `mine` and `likedByMe` are the reader's own. How many like it is nobody's to know. */
+function toRanking(data: StoredRanking, viewer: { mine: boolean; likedByMe: boolean }) {
+  const added = Array.isArray(data.addedCards) && data.addedCards.length > 0 ? data.addedCards : null;
   return {
     uid: data.uid,
     authorName: data.authorName,
@@ -3662,60 +3865,150 @@ function toRanking(data: StoredRanking) {
     rows: rowsFromDocument(data.rows),
     tierLabels: data.tierLabels ?? [],
     updatedAtMs: data.updatedAt?.toMillis() ?? 0,
+    mine: viewer.mine,
+    isAuthor: false,
+    likedByMe: viewer.likedByMe,
+    ...(added === null ? {} : {
+      addedCards: added.map((card) => ({
+        title: typeof card.title === "string" ? card.title : "",
+        imageUrl: typeof card.imageUrl === "string" ? card.imageUrl : null,
+        ...(card.attribution ? { attribution: card.attribution } : {}),
+        ...(typeof card.credit === "string" ? { credit: card.credit } : {}),
+      })),
+      allRows: rowsFromDocument(data.allRows),
+    }),
   };
 }
 
-/** Newest first, a page at a time, the reader's own ahead of the page it would otherwise sit in. */
-async function readRankings(response: Response, identity: Identity, listId: string, after: string | null): Promise<void> {
+/**
+ * The people who ranked a list: with `withAuthor`, the author's own placing
+ * first; then the most liked first, the newest first among equals, the
+ * reader's own in its place. The order is worked out here, from three small
+ * fields of each ranking, and the page's rankings are read after; the
+ * website's visitors' rankings, which have no account behind them, are left
+ * out before anything is counted, so nothing about them reaches a cursor.
+ */
+async function readRankings(response: Response, identity: Identity, listId: string, after: string | null, withAuthor: boolean): Promise<void> {
   const db = getFirestore();
-  const collection = db.collection(RANKINGS);
-  let ordered: FirebaseFirestore.Query = collection.where("listId", "==", listId).orderBy("updatedAt", "desc");
-  const cursor = after ? readRankingCursor(after) : null;
-  if (cursor?.kind === "time") {
-    ordered = ordered.startAfter(new Timestamp(cursor.time.seconds, cursor.time.nanoseconds));
-  } else if (cursor?.kind === "id") {
-    const previous = await collection.doc(cursor.id).get();
-    if (!previous.exists) {
-      response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
+  const cursor = after === null ? null : readLikeCursor(after);
+  if (after !== null && cursor === null) {
+    response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
+    return;
+  }
+  let author: ReturnType<typeof authorRanking> | null = null;
+  if (withAuthor && after === null) {
+    const doc = readTakenFrom(listId) === null ? null : await db.collection(PUBLISHED).doc(listId).get();
+    const data = doc?.exists ? (doc.data() as StoredList) : null;
+    // A hidden list is as hidden here as when it is opened (`readOne`).
+    const own = data !== null && !identity.isAnonymous && identity.uid === data.authorUid;
+    if (data === null || (data.underReview === true && !own && !(await isModeratorNow(identity)))) {
+      response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
       return;
     }
-    ordered = ordered.startAfter(previous);
+    author = authorRanking(data, data.updatedAt?.toMillis() ?? 0, identity);
   }
-  // Left out before the page is counted, so neither takes a place in it: the
-  // website's visitors' rankings, which have no account behind them, and the
-  // reader's own, which leads the first page and would repeat on a later one.
-  const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
-    const data = doc.data() as StoredRanking;
-    return isOwnedRanking(data) && data.uid !== identity.uid;
-  };
-  const [page, mine] = await Promise.all([
-    // Carries on past a long run of visitors' rankings rather than ending
-    // there: a visitor's ranking's id says nothing about anybody.
-    fillVisible(
-      async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(RANKINGS_PAGE_SIZE).get()).docs,
-      shown,
-      RANKINGS_PAGE_SIZE,
-      { resumeFromHidden: true },
-    ),
-    after === null ? collection.doc(`${listId}_${identity.uid}`).get() : null,
+  const collection = db.collection(RANKINGS);
+  const placed = await collection.where("listId", "==", listId).orderBy("updatedAt", "desc").select("uid", "likeCount", "updatedAt").limit(MAX_RANKINGS_ORDERED).get();
+  const keys: RankingKey[] = placed.docs.filter((doc) => isOwnedRanking(doc.data())).map((doc) => {
+    const at = doc.get("updatedAt") as Timestamp | undefined;
+    return { id: doc.id, likeCount: readLikeCount(doc.get("likeCount")), seconds: at?.seconds ?? 0, nanoseconds: at?.nanoseconds ?? 0 };
+  });
+  const { page, next } = rankingsPage(keys, cursor, RANKINGS_PAGE_SIZE);
+  const [docs, likes] = await Promise.all([
+    page.length === 0 ? [] : db.getAll(...page.map((key) => collection.doc(key.id))),
+    page.length === 0 || identity.isAnonymous ? [] : db.getAll(...page.map((key) => db.collection(RANKING_LIKES).doc(likeId(identity.uid, key.id)))),
   ]);
-  const rankings = page.rows.map((doc) => toRanking(doc.data() as StoredRanking));
-  const withMine = mine?.exists ? [toRanking(mine.data() as StoredRanking), ...rankings] : rankings;
+  const liked = new Set(page.filter((_, at) => likes[at]?.exists === true).map((key) => key.id));
+  const rankings = docs.filter((doc) => doc.exists && isOwnedRanking(doc.data() ?? {})).map((doc) => {
+    const data = doc.data() as StoredRanking;
+    return toRanking(data, { mine: !identity.isAnonymous && data.uid === identity.uid, likedByMe: liked.has(doc.id) });
+  });
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
-    rankings: mineFirst(withMine, identity.uid),
-    nextCursor: rankingCursor(
-      page.next === null
-        ? null
-        : { id: page.next.id, shown: shown(page.next), updatedAt: (page.next.get("updatedAt") as Timestamp | undefined) ?? null },
-    ),
+    rankings: author === null ? rankings : [author, ...rankings],
+    nextCursor: next === null ? null : likeCursor(next),
   });
 }
 
+type LikeOutcome = { refused: LikeRefusal } | { retryAt: number } | { likedByMe: boolean };
+
+/**
+ * A like of somebody's ranking given or taken back, with the ranking's count
+ * in the same transaction, so the count is the number of likes there are.
+ * One per account and ranking: asking again for what is already so changes
+ * nothing and costs nothing of the hour's allowance.
+ */
+async function setLike(response: Response, identity: Identity, listId: string, ownerUid: string, liked: boolean): Promise<void> {
+  const ban = identity.isAnonymous ? null : await readBan(identity);
+  const caller = { uid: identity.uid, isAnonymous: identity.isAnonymous, banned: isBanned(ban, Date.now()) };
+  const db = getFirestore();
+  const rankingId = rankingIdOf(listId, ownerUid);
+  const known = readTakenFrom(listId) !== null && isUid(ownerUid);
+  const early = likeRefusal(caller, { uid: ownerUid, list: null, rankingExists: false });
+  const outcome: LikeOutcome = caller.isAnonymous || caller.banned || !known
+    ? { refused: early ?? "missing" }
+    : await db.runTransaction(async (transaction): Promise<LikeOutcome> => {
+        const rankingRef = db.collection(RANKINGS).doc(rankingId);
+        const likeRef = db.collection(RANKING_LIKES).doc(likeId(identity.uid, rankingId));
+        const quotaRef = db.collection(LIKE_QUOTA).doc(identity.uid);
+        const [list, ranking, like, quota] = await Promise.all([
+          transaction.get(db.collection(PUBLISHED).doc(listId)), transaction.get(rankingRef), transaction.get(likeRef), transaction.get(quotaRef),
+        ]);
+        const listData = list.exists ? (list.data() as StoredList) : null;
+        const refused = likeRefusal(caller, {
+          uid: ownerUid,
+          list: listData === null ? null : { authorUid: listData.authorUid, underReview: listData.underReview === true },
+          rankingExists: ranking.exists && isOwnedRanking(ranking.data() ?? {}),
+        });
+        if (refused !== null) return { refused };
+        if (like.exists === liked) return { likedByMe: liked };
+        const allowance = likeQuota(readLikeEvents(quota.get("events")), Date.now());
+        if (!allowance.allowed) return { retryAt: allowance.retryAt };
+        transaction.set(quotaRef, { events: allowance.events });
+        const count = readLikeCount(ranking.get("likeCount"));
+        if (liked) {
+          transaction.set(likeRef, { rankingId, listId, uid: identity.uid, rankedBy: ownerUid, at: FieldValue.serverTimestamp() });
+          transaction.update(rankingRef, { likeCount: count + 1 });
+        } else {
+          transaction.delete(likeRef);
+          transaction.update(rankingRef, { likeCount: Math.max(0, count - 1) });
+        }
+        return { likedByMe: liked };
+      });
+
+  response.setHeader("Cache-Control", "no-store");
+  if ("likedByMe" in outcome) {
+    response.status(200).json({ likedByMe: outcome.likedByMe });
+    return;
+  }
+  if ("retryAt" in outcome) {
+    response.setHeader("Retry-After", String(Math.max(1, Math.ceil((outcome.retryAt - Date.now()) / 1000))));
+    response.status(429).json({ error: "Too many likes this hour", code: "LIKE_LIMIT", retryAt: outcome.retryAt });
+    return;
+  }
+  switch (outcome.refused) {
+    case "not_signed_in":
+      response.status(403).json({ error: "Sign in to like", code: "NOT_SIGNED_IN" });
+      return;
+    case "banned":
+      response.status(403).json({ error: "You cannot like at the moment", ...noticeFor(ban as Ban) });
+      return;
+    case "missing":
+      response.status(404).json({ error: "No such ranking", code: "NOT_FOUND" });
+      return;
+    case "own":
+    case "author":
+      response.status(409).json({ error: "That one cannot be liked", code: "CANNOT_LIKE", detail: outcome.refused });
+      return;
+  }
+}
+
+/** Withdrawing one's ranking: the ranking, then the likes it was given and the copies of its added cards' pictures. */
 async function deleteMyRanking(response: Response, identity: Identity, listId: string): Promise<void> {
   const db = getFirestore();
   const list = db.collection(PUBLISHED).doc(listId);
-  const ranking = db.collection(RANKINGS).doc(`${listId}_${identity.uid}`);
+  const rankingId = rankingIdOf(listId, identity.uid);
+  const ranking = db.collection(RANKINGS).doc(rankingId);
   await db.runTransaction(async (transaction) => {
     const [source, existing] = await Promise.all([transaction.get(list), transaction.get(ranking)]);
     if (!existing.exists) {
@@ -3727,24 +4020,9 @@ async function deleteMyRanking(response: Response, identity: Identity, listId: s
       transaction.update(list, { rankingCount: Math.max(0, count - 1) });
     }
   });
+  // Asked again after a withdrawal cut short, this finishes it.
+  await discardRankingRemains(rankingId);
   response.status(204).send();
-}
-
-/**
- * A list that is gone takes the app's rankings of it with it; nobody can open
- * them without it. The website's rankings, kept by code and without an
- * account, are the website's: its pages outlive the list.
- */
-async function discardRankings(listId: string): Promise<void> {
-  const db = getFirestore();
-  const carrying = (await db.collection(RANKINGS).where("listId", "==", listId).get()).docs.filter((doc) =>
-    isOwnedRanking(doc.data()),
-  );
-  for (const part of chunked(carrying, WRITES_PER_BATCH)) {
-    const batch = db.batch();
-    part.forEach((doc) => batch.delete(doc.ref));
-    await batch.commit();
-  }
 }
 
 function refuseTopicRequest(response: Response, reason: "both" | "bad_name" | "bad_id"): void {
@@ -3980,7 +4258,7 @@ async function unpublish(response: Response, identity: Identity, id: string, byl
   }
   await batch.commit();
   await discardPublished(id);
-  await discardRankings(id);
+  await discardRankingsOf(id);
   response.status(204).send();
 }
 

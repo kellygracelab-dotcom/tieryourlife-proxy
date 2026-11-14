@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "../src/adminLists";
 import { authorsToAsk } from "../src/anonymous";
-import { isOwnedRanking, rankingCursor, readRankingCursor } from "../src/rankings";
+import { isOwnedRanking } from "../src/rankings";
 import { keepingOnlyIfWritten, replacedSectionPicture, replacedTopicPicture, storedPathOf } from "../src/sectionPictures";
 import {
   builtInRecord,
@@ -243,26 +243,6 @@ describe("finishCallOf", () => {
       body: { section: "food" },
     });
     assert.equal("finish" in sectionView(stuck, { uid: "me", moderator: false }, noStats(stuck.id), false), false);
-  });
-});
-
-describe("the rankings cursor", () => {
-  const time = { seconds: 1_790_000_000, nanoseconds: 123_456_000 };
-
-  it("is the id of a ranking the page shows", () => {
-    assert.equal(rankingCursor({ id: "list_uid", shown: true, updatedAt: time }), "list_uid");
-    assert.equal(rankingCursor(null), null);
-  });
-
-  it("is a time, never the code, after a website ranking the page hides", () => {
-    const cursor = rankingCursor({ id: "SECRETCODE", shown: false, updatedAt: time });
-    assert.equal(cursor, "~1790000000.123456000");
-    assert.ok(!(cursor ?? "").includes("SECRETCODE"));
-    assert.deepEqual(readRankingCursor(cursor as string), { kind: "time", time });
-  });
-
-  it("reads anything else as a ranking's id", () => {
-    assert.deepEqual(readRankingCursor("list_uid"), { kind: "id", id: "list_uid" });
   });
 });
 
