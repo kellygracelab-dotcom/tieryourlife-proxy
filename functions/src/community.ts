@@ -260,7 +260,7 @@ import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from 
 import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import { manualCredits } from "./manualAttribution";
 import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
-import { catalogueSourceOf, manualOf, type ManualAttribution } from "./pictureAttribution";
+import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit, type ManualAttribution } from "./pictureAttribution";
 import {
   cleanTopicName,
   refusedTopicLocale,
@@ -620,7 +620,7 @@ interface StoredTopic {
   /** Public, at topics/{id}/{pictureId}; absent or null for a topic without one. */
   picture?: SectionPicture | null;
   /** The staff's credit for the picture, kept while the picture stays; null or absent for none. */
-  pictureAttribution?: ManualAttribution | null;
+  pictureAttribution?: ManualAttribution | CatalogueCredit | null;
 }
 
 function knownTopic(id: string, data: StoredTopic): KnownTopic {
@@ -657,12 +657,22 @@ export function toTopic(id: string, data: StoredTopic, following: boolean, reade
  * decided (its page read for an author or licence left empty), "cleared" for
  * `null` or `manual: false`, undefined when the body says nothing. `manual: true`
  * may be left out. A credit sent back as [known] is kept without being read again.
+ * A picture from a catalogue (a franchise's poster, cover or game art) has no
+ * licence to name: a credit with none whose page is that title's on TMDB,
+ * AniList, IGDB, Steam or Open Library is kept as the catalogue's, as a card's
+ * is (`{source, link, id?}`, not manual; any author sent goes). Since 14.11.2026.
  */
-async function topicCredit(raw: unknown, known: ManualAttribution | null | undefined): Promise<ManualAttribution | "cleared" | undefined | { error: string }> {
+async function topicCredit(raw: unknown, known: ManualAttribution | CatalogueCredit | null | undefined): Promise<ManualAttribution | CatalogueCredit | "cleared" | undefined | { error: string }> {
   if (raw === undefined) return undefined;
   if (raw === null) return "cleared";
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const sent = raw as Record<string, unknown>;
+    const licence = typeof sent.license === "string" ? sent.license.trim() : sent.license ?? "";
+    const catalogue = sent.manual !== false && licence === "" && (sent.licenseUrl ?? "") === "" ? catalogueTitleCredit(sent.link) : null;
+    if (catalogue !== null) return catalogue;
+  }
   const asked = typeof raw === "object" && !Array.isArray(raw) && (raw as Record<string, unknown>).manual === undefined ? { ...(raw as object), manual: true } : raw;
-  const [credit] = await manualCredits([asked], [known]);
+  const [credit] = await manualCredits([asked], [known !== null && known !== undefined && "manual" in known ? known : null]);
   if (credit === null || credit === undefined) return { error: "NO_LINK" };
   return credit as ManualAttribution | "cleared" | { error: string };
 }

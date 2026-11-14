@@ -251,6 +251,14 @@ describe("the proxy under the demo emulators", () => {
     assert.deepEqual(made.body.pictureAttribution, { author: "Jane Doe", license: "CC BY-SA 4.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/", link: "https://example.com/photos/1", manual: true });
     const renamed = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { names: { de: "Bewertetes Thema" } });
     assert.deepEqual(renamed.body.pictureAttribution, made.body.pictureAttribution);
+    // A franchise's poster names no licence: credited to its title's catalogue page, kept as the catalogue's.
+    const titled = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { pictureAttribution: { manual: true, author: "", license: "", link: "https://www.themoviedb.org/collection/10-star-wars-collection?language=ru" } });
+    assert.equal(titled.status, 200, JSON.stringify(titled.body));
+    assert.deepEqual(titled.body.pictureAttribution, { source: "tmdb", link: "https://www.themoviedb.org/collection/10" });
+    const unlicensed = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { pictureAttribution: { link: "https://example.com/photos/2" } });
+    assert.deepEqual([unlicensed.status, unlicensed.body.code, unlicensed.body.reason], [400, "BAD_ATTRIBUTION", "NO_LICENSE"]);
+    const sentBack = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { names: { de: "Bewertetes Thema 2" }, pictureAttribution: titled.body.pictureAttribution });
+    assert.deepEqual(sentBack.body.pictureAttribution, titled.body.pictureAttribution);
     const bare = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { pictureId: null });
     assert.deepEqual([bare.status, bare.body.pictureUrl, bare.body.pictureAttribution], [200, null, undefined]);
   });
