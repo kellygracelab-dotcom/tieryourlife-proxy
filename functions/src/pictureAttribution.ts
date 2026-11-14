@@ -185,6 +185,68 @@ export function sourceLink(source: AttributionSource, raw: unknown): string | nu
   return page.path.test(path) ? `https://${page.host}${path}` : null;
 }
 
+/** A topic's picture credited to the catalogue title it shows: its page, and the id where the catalogue's hits carry one. No author or licence. */
+export interface CatalogueCredit {
+  source: "tmdb" | "anilist" | "igdb" | "steam" | "openlibrary";
+  link: string;
+  id?: string;
+}
+
+// The title pages a topic's picture may be credited to, as a browser shows
+// them (a slug, a language or a trailing slash at most), and the page and id
+// each is kept as.
+const TITLE_PAGES: readonly { source: CatalogueCredit["source"]; hosts: readonly string[]; path: RegExp; page: (m: RegExpExecArray) => string; id: (m: RegExpExecArray) => string | null }[] = [
+  {
+    source: "tmdb",
+    hosts: ["www.themoviedb.org", "themoviedb.org"],
+    path: /^\/(movie|tv|collection)\/(\d{1,10})(?:-[^/]*)?$/,
+    page: (m) => `https://www.themoviedb.org/${m[1]}/${m[2]}`,
+    id: (m) => (m[1] === "collection" ? null : `tmdb:${m[1]}:${m[2]}`),
+  },
+  {
+    source: "anilist",
+    hosts: ["anilist.co", "www.anilist.co"],
+    path: /^\/(anime|manga)\/(\d{1,10})(?:\/[^/]*)?$/,
+    page: (m) => `https://anilist.co/${m[1]}/${m[2]}`,
+    id: (m) => `anilist:${m[2]}`,
+  },
+  { source: "igdb", hosts: ["www.igdb.com", "igdb.com"], path: /^\/games\/([a-z0-9-]{1,200})$/, page: (m) => `https://www.igdb.com/games/${m[1]}`, id: () => null },
+  {
+    source: "steam",
+    hosts: ["store.steampowered.com"],
+    path: /^\/app\/(\d{1,10})(?:\/[^/]*)?$/,
+    page: (m) => `https://store.steampowered.com/app/${m[1]}`,
+    id: (m) => `steam:${m[1]}`,
+  },
+  {
+    source: "openlibrary",
+    hosts: ["openlibrary.org", "www.openlibrary.org"],
+    path: /^\/works\/(OL\d{1,12}W)(?:\/[^/]*)?$/,
+    page: (m) => `https://openlibrary.org/works/${m[1]}`,
+    id: (m) => `openlibrary:${m[1]}`,
+  },
+];
+
+/**
+ * [raw] as the catalogue title page a topic's picture is credited to (TMDB
+ * movie, series or collection; AniList anime or manga; IGDB or Steam game;
+ * Open Library work), kept without its slug, language or query; null for any
+ * other address.
+ */
+export function catalogueTitleCredit(raw: unknown): CatalogueCredit | null {
+  const url = typeof raw === "string" && raw.length <= MAX_LINK_LENGTH ? parsed(raw.trim()) : null;
+  if (url === null) return null;
+  const path = url.pathname.replace(/\/+$/, "");
+  for (const one of TITLE_PAGES) {
+    if (!one.hosts.includes(url.hostname)) continue;
+    const match = one.path.exec(path);
+    if (match === null) return null;
+    const id = one.id(match);
+    return { source: one.source, link: one.page(match), ...(id === null ? {} : { id }) };
+  }
+  return null;
+}
+
 const INATURALIST_PHOTO = /^\/photos\/(\d{1,12})\/(?:original|large|medium|small|square|thumb)\.(jpe?g|png|gif|webp)$/i;
 
 /** The page an address says itself, where it does. */

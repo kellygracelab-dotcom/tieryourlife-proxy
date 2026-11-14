@@ -5,7 +5,7 @@
  * `community.ts` does the reads and writes.
  */
 import { OTHER, readNames } from "./sections";
-import type { ManualAttribution } from "./pictureAttribution";
+import type { CatalogueCredit, ManualAttribution } from "./pictureAttribution";
 import { isPictureId } from "./safety";
 
 export const MIN_TOPIC_NAME_LENGTH = 1;
@@ -64,8 +64,11 @@ export interface Topic {
   mergedInto: string | null;
   /** The topic's own picture, public, or null for none. */
   pictureUrl: string | null;
-  /** Whose the picture is and under what licence, as the staff gave it (as a house list's `coverAttribution`); only with a picture. */
-  pictureAttribution?: ManualAttribution;
+  /**
+   * Whose the picture is and under what licence, as the staff gave it (as a house list's `coverAttribution`),
+   * or the catalogue title it comes from (`{source, link, id?}`, as a card's); only with a picture.
+   */
+  pictureAttribution?: ManualAttribution | CatalogueCredit;
 }
 
 /** Who is reading a topic. */
