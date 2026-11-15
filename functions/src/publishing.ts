@@ -58,6 +58,8 @@ export interface PublishedItem {
   credit?: string;
   /** Where the picture came from and whom it names (`pictureAttribution.ts`); absent for a person's own photo and on lists from before. */
   attribution?: PictureAttribution;
+  /** Which part of the card's picture shows (`coverFocus.ts`); absent for the default. */
+  pictureFocus?: CoverFocus;
 }
 
 /**
@@ -77,6 +79,8 @@ export interface DraftItem {
   sent?: { link?: string; originalUrl?: string; web?: true; id?: string; manual?: Record<string, unknown> };
   /** Set by the publisher once it knows; `settle` stores it. */
   attribution?: PictureAttribution;
+  /** Which part of the card's picture shows; null for the default, undefined when not sent (`keptPictureFocus`). */
+  pictureFocus?: CoverFocus | null;
 }
 
 export interface PublishDraft {
@@ -295,7 +299,10 @@ export function decidePublish({
       return { ok: false, reason: "invalid", detail: "Invalid sourceIndex" };
     }
     const sent = sentAttribution(item.attribution);
+    const pictureFocus = item.pictureFocus === undefined ? undefined : readFocus(item.pictureFocus);
+    if (pictureFocus === "invalid") return { ok: false, reason: "invalid", detail: `items[].pictureFocus: ${FOCUS_RANGE}` };
     items.push({
+      ...(pictureFocus === undefined ? {} : { pictureFocus }),
       title: itemTitle ?? "",
       imageUrl,
       pictureId,
@@ -363,6 +370,7 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
     tierIndex: item.tierIndex,
     ...(item.credit ? { credit: item.credit } : {}),
     ...(item.attribution ? { attribution: item.attribution } : {}),
+    ...(item.pictureFocus ? { pictureFocus: item.pictureFocus } : {}),
   }));
 
   return {
@@ -382,6 +390,29 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
     coverFocus: draft.coverFocus,
     tierColors: draft.tierColors,
   };
+}
+
+/**
+ * Each card's picture focus after a publication: the one sent (none for
+ * null), and for a card sent without the field (a client from before it) the
+ * one a card of the same picture had before. A card without a picture has none.
+ */
+export function keptPictureFocus<T extends { imageUrl: string | null; pictureFocus?: CoverFocus }>(
+  items: readonly T[],
+  draft: readonly Pick<DraftItem, "pictureFocus">[],
+  previous: readonly unknown[] | undefined,
+): T[] {
+  const before = new Map<string, CoverFocus>();
+  for (const raw of previous ?? []) {
+    const one = raw as { imageUrl?: unknown; pictureFocus?: CoverFocus } | null;
+    if (one && typeof one.imageUrl === "string" && one.pictureFocus && !before.has(one.imageUrl)) before.set(one.imageUrl, one.pictureFocus);
+  }
+  return items.map((item, at) => {
+    const { pictureFocus: _settled, ...rest } = item;
+    const sent = draft.length === items.length ? draft[at]?.pictureFocus : undefined;
+    const focus = item.imageUrl === null ? null : sent === undefined ? before.get(item.imageUrl) ?? null : sent;
+    return (focus === null ? rest : { ...rest, pictureFocus: focus }) as T;
+  });
 }
 
 /**

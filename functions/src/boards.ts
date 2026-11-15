@@ -364,6 +364,7 @@ async function write(
     const previous = stored ? await storedGame(transaction, ref, stored) : undefined;
     const decision = decideStore({ body, nowMs: now, storedCoverPictureId: stored?.coverPictureId ?? null,
       storedCoverFocus: stored?.coverFocus ?? null,
+      storedPictureFocus: new Map((stored?.items ?? []).filter((item) => item.pictureFocus !== undefined).map((item) => [item.uid, item.pictureFocus!])),
       storedOrigin: { ...(stored?.origin ? { origin: stored.origin } : {}), ...(stored?.takenFrom ? { takenFrom: stored.takenFrom } : {}), ...(stored?.rankingChoice ? { rankingChoice: stored.rankingChoice } : {}) },
       storedSourceIndexes: new Map((stored?.items ?? []).filter((item) => item.sourceIndex !== undefined).map((item) => [item.uid, item.sourceIndex!])),
       isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });
