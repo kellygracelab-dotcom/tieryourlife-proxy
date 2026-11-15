@@ -351,6 +351,15 @@ describe("search hits", () => {
     assert.equal(game.attribution?.link, "https://www.igdb.com/games/elden-ring");
     const [wrong] = igdbHits([{ id: 1, name: "Elden Ring", url: "https://evil.example/", cover: { image_id: "co4jni" } }]);
     assert.deepEqual(wrong.attribution, { source: "igdb", id: "igdb:1" });
+    // How many ratings IGDB counts, as a whole number, only when it counts some.
+    const rated = igdbHits([
+      { id: 2, name: "Pokémon Red", total_rating_count: 312.4, cover: { image_id: "co1" } },
+      { id: 3, name: "Pokémon Stadium", total_rating_count: 0, cover: { image_id: "co2" } },
+      { id: 4, name: "Pokémon Snap", cover: { image_id: "co3" } },
+      { id: 5, name: "Pokémon X", total_rating_count: "many", cover: { image_id: "co4" } },
+    ]);
+    assert.deepEqual(rated.map((hit) => hit.popularity), [312, undefined, undefined, undefined]);
+    assert.deepEqual(rated.map((hit) => "popularity" in hit), [true, false, false, false]);
     const [steam] = steamHits([1245620], { response: { store_items: [{ appid: 1245620, name: "Elden Ring", assets: { asset_url_format: "steam/apps/1245620/${FILENAME}", library_capsule_2x: "library_600x900_2x.jpg" } }] } });
     assert.equal(steam.attribution?.link, "https://store.steampowered.com/app/1245620");
     const [book] = openLibraryHits({ docs: [{ title: "Dune", key: "/works/OL893415W", cover_i: 1 }] });

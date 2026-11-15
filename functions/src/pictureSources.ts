@@ -29,6 +29,12 @@ export interface PictureHit {
   credit?: string;
   /** The same, as fields, with the picture's page at its source: a card keeps it as its own `attribution`. */
   attribution?: Omit<PictureAttribution, "originalUrl">;
+  /**
+   * How many ratings the catalogue counts for it (IGDB's `total_rating_count`, since 15.11.2026), a whole
+   * number above 0; absent when it counts none. A client may take the most rated of several near matches,
+   * the main game of a series.
+   */
+  popularity?: number;
   /** Another name the catalogue found it by ("Cat" for the domestic cat): ranked like the title, never sent. */
   alias?: string;
 }
@@ -270,7 +276,7 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
 export const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
 
 /** IGDB's games: its cover is always upright, and a game without one is not asked for. */
-export const IGDB_QUERY_FIELDS = "name,url,first_release_date,cover.image_id,cover.width,cover.height";
+export const IGDB_QUERY_FIELDS = "name,url,first_release_date,total_rating_count,cover.image_id,cover.width,cover.height";
 
 export function igdbHits(body: unknown): PictureHit[] {
   return rows(body).flatMap((row): PictureHit[] => {
@@ -282,7 +288,12 @@ export function igdbHits(body: unknown): PictureHit[] {
     const year = typeof row.first_release_date === "number" ? String(new Date(row.first_release_date * 1000).getUTCFullYear()) : null;
     const page = text(row.url);
     const link = page !== null && /^https:\/\/www\.igdb\.com\/games\/[a-z0-9-]{1,200}$/.test(page) ? page : null;
-    return [{ id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game", attribution: { source: "igdb", ...(link ? { link } : {}), id: `igdb:${row.id}` } }];
+    const rated = typeof row.total_rating_count === "number" && Number.isFinite(row.total_rating_count) && row.total_rating_count > 0 ? Math.round(row.total_rating_count) : null;
+    return [{
+      id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game",
+      attribution: { source: "igdb", ...(link ? { link } : {}), id: `igdb:${row.id}` },
+      ...(rated === null ? {} : { popularity: rated }),
+    }];
   });
 }
 
