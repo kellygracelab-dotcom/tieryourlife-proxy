@@ -16,6 +16,7 @@ import { getStorage } from "firebase-admin/storage";
 import type { Identity } from "./auth";
 import { askCommons } from "./cataloguePictures";
 import { isDemoEmulator, STUB_PICTURE } from "./emulator";
+import { askObservation, observationIdOf, observationPhoto, photoIdOf, type ObservationAsk } from "./inaturalistObservations";
 import {
   attributionOf,
   catalogueSourceOf,
@@ -62,6 +63,31 @@ export function readLinkRequest(body: unknown): LinkRequest {
   return { url: picture, catalogue: catalogueSourceOf(picture), link, credit: credit || null };
 }
 
+export type LinkAsked = Exclude<LinkRequest, { error: string }>;
+
+/**
+ * [asked] with what its iNaturalist observation says. An observation page,
+ * pasted as the address, stands for its photo (the first with an open licence,
+ * or else the first) with the credit iNaturalist writes for it; a photo's
+ * address sent without a credit, with its observation page as `link`, gets
+ * that photo's credit. Anything else is left as it is, and nothing is asked.
+ */
+export async function withObservation(asked: LinkAsked, ask: ObservationAsk): Promise<LinkAsked | { error: "NOT_A_PICTURE" | "UNREACHABLE" }> {
+  const pasted = observationIdOf(asked.url);
+  if (pasted !== null) {
+    const body = await ask(pasted).then((found) => ({ found }), () => null);
+    if (body === null) return { error: "UNREACHABLE" };
+    const photo = observationPhoto(body.found, null);
+    if (photo === null) return { error: "NOT_A_PICTURE" };
+    return { url: photo.imageUrl, catalogue: "inaturalist", link: asked.link, credit: asked.credit ?? photo.credit };
+  }
+  const photoId = asked.catalogue === "inaturalist" && asked.credit === null ? photoIdOf(asked.url) : null;
+  const observation = photoId === null ? null : observationIdOf(asked.link);
+  if (observation === null) return asked;
+  const photo = observationPhoto(await ask(observation).catch(() => null), photoId);
+  return photo?.credit ? { ...asked, credit: photo.credit } : asked;
+}
+
 /** A catalogue's own address, answered as it is: the page it names, or the one sent when it is that catalogue's. */
 export function catalogueAnswer(url: string, link: string | null, credit: string | null, commons?: Parameters<typeof attributionOf>[1]["commons"]): PictureAttribution | null {
   const found = attributionOf(url, { credit: credit ?? undefined, sentLink: link, commons });
@@ -94,12 +120,11 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
     response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
     return;
   }
-  const asked = readLinkRequest(body);
-  if ("error" in asked) {
-    refuse(response, asked.error === "NO_URL" ? 400 : 422, asked.error);
+  const read = readLinkRequest(body);
+  if ("error" in read) {
+    refuse(response, read.error === "NO_URL" ? 400 : 422, read.error);
     return;
   }
-  const credit = asked.credit ? { credit: asked.credit } : {};
   response.setHeader("Cache-Control", "no-store");
   const uid = identity.uid;
   const db = getFirestore();
@@ -107,6 +132,14 @@ export async function routeLinkPicture(body: unknown, response: Response, identi
   // How many of today's fetches are used, as last read or written: every answer from here says what is left.
   let used: number | undefined;
   const quota = () => ({ quota: linkQuota(used, Date.now()) });
+  // An iNaturalist observation is asked for, not counted: the emulator asks nothing.
+  const asked = await withObservation(read, isDemoEmulator() ? () => Promise.reject(new Error("emulator")) : askObservation);
+  if ("error" in asked) {
+    used = (await usage.get().catch(() => null))?.get("count") as number | undefined;
+    refuse(response, 422, asked.error, quota());
+    return;
+  }
+  const credit = asked.credit ? { credit: asked.credit } : {};
 
   if (asked.catalogue !== null) {
     const file = commonsFileOf(asked.url);
