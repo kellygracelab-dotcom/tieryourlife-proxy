@@ -370,6 +370,9 @@ async function write(
       isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });
     if (!decision.ok) return { rejection: decision };
     // Catalogue pictures shown from our shared copies, when the board still fits; revision and fingerprint stay the device's.
+    // A legacy writer's state is fingerprinted as sent: whether this write's copies come out as the last one's (the
+    // switch, the window, the allowance of forty) must not turn its retry into a conflict (15.11.2026).
+    const sent = decision.board;
     const pictured = withBoardCopies(decision.board, copies);
     const moved = pictured !== decision.board && fitsWithCopies(pictured) ? copiesShown(decision.board, pictured, copies) : new Map<string, string>();
     if (moved.size > 0) decision.board = pictured;
@@ -379,7 +382,7 @@ async function write(
     const before = livePlay(playFromDocument(previous), now);
     const play = playAfterWrite(source, before);
     const changedGame = JSON.stringify(before) !== JSON.stringify(play);
-    const fingerprint = preservedPlayFingerprint(source, decision.board, play);
+    const fingerprint = preservedPlayFingerprint(source, sent, play);
     const changedMetadata = originState(stored) !== originState(decision.board);
     const verdict = decideWrite(stored ? { revision: stored.revision, fingerprint: stored.fingerprint ?? null } : null,
       source.basedOn, changedGame || changedMetadata ? null : fingerprint);
