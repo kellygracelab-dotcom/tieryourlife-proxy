@@ -4,7 +4,7 @@
  * as a label everyone can see. Pure, like the rest of the deciding here;
  * `community.ts` does the reads and writes.
  */
-import { mergeNames, OTHER, readNames } from "./sections";
+import { graphemeCount, mergeNames, OTHER, readNames } from "./sections";
 import type { CatalogueCredit, ManualAttribution } from "./pictureAttribution";
 import type { CoverFocus } from "./coverFocus";
 import { isPictureId } from "./safety";
@@ -98,7 +98,8 @@ export function mayKnowProposer(topic: { createdBy: string; proposedAnonymously?
 export function cleanTopicName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const collapsed = value.replace(/\s+/g, " ").trim();
-  if (collapsed.length < MIN_TOPIC_NAME_LENGTH || collapsed.length > MAX_TOPIC_NAME_LENGTH) return null;
+  const length = graphemeCount(collapsed);
+  if (length < MIN_TOPIC_NAME_LENGTH || length > MAX_TOPIC_NAME_LENGTH) return null;
   return /[\p{L}\p{N}]/u.test(collapsed) ? collapsed : null;
 }
 

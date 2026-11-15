@@ -10,6 +10,7 @@ import {
   builtInRecord,
   checkName,
   cleanSectionName,
+  graphemeCount,
   collageImage,
   countWithout,
   decideDeletion,
@@ -153,10 +154,16 @@ describe("cleanSectionName", () => {
     assert.equal(cleanSectionName("  Street    food "), "Street food");
   });
 
-  it("is two to twenty-four characters, counting an emoji as one", () => {
-    assert.equal(cleanSectionName("S"), null);
+  it("is one to twenty-four characters as a reader counts them: 車 is a name, an emoji with its modifiers one", () => {
+    assert.equal(cleanSectionName("車"), "車");
+    assert.equal(cleanSectionName("S"), "S");
+    assert.equal(cleanSectionName("   "), null);
     assert.equal(cleanSectionName("S".repeat(MAX_SECTION_NAME_LENGTH + 1)), null);
     assert.equal(cleanSectionName(`${"S".repeat(MAX_SECTION_NAME_LENGTH - 1)}🍜`), `${"S".repeat(MAX_SECTION_NAME_LENGTH - 1)}🍜`);
+    // A thumb with its skin tone is two code points and one character; a decomposed é is two and one.
+    assert.equal(cleanSectionName(`${"S".repeat(MAX_SECTION_NAME_LENGTH - 1)}👍🏽`), `${"S".repeat(MAX_SECTION_NAME_LENGTH - 1)}👍🏽`);
+    assert.equal(graphemeCount("e\u0301"), 1);
+    assert.equal(graphemeCount("車と猫"), 3);
   });
 
   it("wants a letter or a digit somewhere, in any script", () => {
@@ -181,7 +188,9 @@ describe("visible text", () => {
   });
 
   it("counts only what can be seen towards a name's length", () => {
-    assert.equal(cleanSectionName("A\u200B\u200B\u200B"), null);
+    // One letter is a name now; the zero-width spaces do not make it longer, and alone they are none.
+    assert.equal(cleanSectionName("A\u200B\u200B\u200B"), "A");
+    assert.equal(cleanSectionName("\u200B\u200B"), null);
   });
 
   it("slugs what can be seen", () => {
@@ -313,7 +322,7 @@ describe("decideProposal", () => {
   });
 
   it("refuses a name that is not one", () => {
-    assert.deepEqual(propose({ name: "x" }), { ok: false, code: "BAD_NAME" });
+    assert.deepEqual(propose({ name: "!" }), { ok: false, code: "BAD_NAME" });
   });
 
   it("refuses a name another section goes by, saying which", () => {
@@ -749,7 +758,8 @@ describe("checkName", () => {
   });
 
   it("says when what was typed is not a name at all", () => {
-    assert.deepEqual(checkName("x", sections), { free: false, code: "BAD_NAME" });
+    assert.deepEqual(checkName("?", sections), { free: false, code: "BAD_NAME" });
+    assert.deepEqual(checkName("車", sections), { free: true });
     assert.deepEqual(checkName(undefined, sections), { free: false, code: "BAD_NAME" });
   });
 });

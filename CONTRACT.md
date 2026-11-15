@@ -92,9 +92,9 @@ canonical Storage addresses, their shared catalogue copies included
 | A game on a board | 2–2000 cards, up to 14000 answers (full-size Swiss + refine), kept 30 days after its last write | `sync.ts` |
 | Follows of authors, of topics, of sections | 200 each | `MAX_FOLLOWING` |
 | Report note | 500 | `MAX_NOTE_LENGTH` |
-| Topic name, and each of its translations (`names`) | 1–40 characters (since 14.11.2026; one Han, kana or Hangul character such as 犬 is a whole name), a letter or digit in it, refused otherwise | `topics.ts` |
+| Topic name, and each of its translations (`names`) | 1–40 characters as a reader counts them (since 14.11.2026; one Han, kana or Hangul character such as 犬 is a whole name; grapheme clusters since 15.11.2026), a letter or digit in it, refused otherwise | `topics.ts` |
 | Waiting topics per account | 3 | `MAX_PENDING_TOPICS_PER_ACCOUNT` |
-| Section name | 2–24 characters (an emoji is one), a letter or digit in it, refused otherwise | `sections.ts` |
+| Section name, and each of its translations (`names`) | 1–24 characters as a reader counts them (since 15.11.2026: grapheme clusters, so 車 is a whole name and an emoji with its modifiers or a letter with its accents is one), a letter or digit in it, refused otherwise (`400 BAD_NAME`) | `sections.ts` |
 | Waiting section proposals per account | 3 | `MAX_PENDING_SECTIONS_PER_ACCOUNT` |
 | Section proposals per account per 24 h | 10 | `MAX_PROPOSALS_PER_DAY` |
 | Decline note | 300 | `MAX_DECLINE_NOTE_LENGTH` |
@@ -491,7 +491,7 @@ A client shows TMDB's own notice and logo wherever any card's `source` is `tmdb`
 
 **Topic** `{id, name, names, section, status: "pending" | "approved" | "rejected" | "merged", listCount, followerCount, following, createdBy?, mergedInto, pictureUrl, pictureAttribution?, pictureFocus?}`. `pictureFocus` (**Cover focus**): only while there is a picture. `pictureAttribution`: the staff's credit for the picture, or the catalogue title it comes from (**A topic picture's credit** above), only while there is a picture. `createdBy` goes only to its proposer and staff, and for a topic first named by an anonymous list only to its proposer and the owner.
 
-**SectionView** `{id, name, names, icon, pictureUrl, pictureFocus?, tint, topicBg, topicIcon, status: "approved" | "pending" | "declined" | "merged", builtIn, hidden, rank, approvedAt, listCount, lists30d, newThisWeek, followerCount, following, collage}`. Each colour is `{light, dark}`; `collage` is four picture addresses or none. `pictureFocus` (**Cover focus**) only with a `pictureUrl` the viewer is given.
+**SectionView** `{id, name, names, icon, pictureUrl, pictureFocus?, tint, topicBg, topicIcon, status: "approved" | "pending" | "declined" | "merged", builtIn, hidden, rank, approvedAt, listCount, lists30d, newThisWeek, followerCount, following, collage}`. Each colour is `{light, dark}`; `collage` is four picture addresses or none. `pictureFocus` (**Cover focus**) only with a `pictureUrl` the viewer is given. `listCount`, `lists30d`, `newThisWeek` and `collage` are counted from the published lists and kept up to ten minutes; since 15.11.2026 every successful call that can move a list (a publication, a change, a removal, a report or moderation verb, an editorial, topic, section or admin change) makes every instance count afresh within about fifteen seconds.
 - Its proposer, while it is not approved, also gets `fileUnder`, `proposerUid`, `declineNote`, `mergedInto`, `mergedTopicId` and `waitingLists`.
 - Staff get those and `proposerName`, `palette`, `unfinished`, `finish?`, `withdrawn`, `createdAt`, `decidedAt`, `decidedBy`, and on the queue `nameClash`: `null`, `{kind: "topic", id, name, section, sectionName}` or `{kind: "section", id, name}`.
 

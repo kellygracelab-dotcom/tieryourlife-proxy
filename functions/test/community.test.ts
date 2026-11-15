@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { authorRoleOf, feedEqualities, isModerator, lists, nextCursor, segmentsOf } from "../src/community";
+import { authorRoleOf, feedEqualities, isModerator, lists, movesLists, nextCursor, segmentsOf } from "../src/community";
 
 describe("segmentsOf", () => {
   it("drops the function's own name, which Hosting puts first and a direct call does not", () => {
@@ -102,5 +102,34 @@ describe("feedEqualities", () => {
     assert.deepEqual(feedEqualities({ category: "anime", author: null, topic: null }), [["category", "anime"]]);
     assert.deepEqual(feedEqualities({ category: "anime", author: "u1", topic: null }), [["category", "anime"], ["authorUid", "u1"]]);
     assert.deepEqual(feedEqualities({ category: null, author: null, topic: null }), []);
+  });
+});
+
+describe("movesLists", () => {
+  it("is every call that can add, change or remove a list in a section's counts, and no read or personal call", () => {
+    const moves = (method: string, path: string, verb: string | null = null, aboutAPerson = false) => movesLists(method, segmentsOf(path), verb, aboutAPerson);
+    assert.equal(moves("POST", "/lists"), true);
+    assert.equal(moves("PUT", "/lists/abcdefghij0123456789"), true);
+    assert.equal(moves("DELETE", "/lists/abcdefghij0123456789"), true);
+    for (const verb of ["report", "takedown", "dismiss", "move"]) assert.equal(moves("POST", `/lists/abcdefghij0123456789/${verb}`, verb), true, verb);
+    assert.equal(moves("PUT", "/lists/editorial/abcdefghij0123456789"), true);
+    assert.equal(moves("POST", "/lists/topics/abc/merge"), true);
+    assert.equal(moves("POST", "/lists/sections/cars/follow"), true);
+    assert.equal(moves("POST", "/lists/admin/lists/move"), true);
+
+    assert.equal(moves("GET", "/lists"), false);
+    assert.equal(moves("GET", "/lists/sections"), false);
+    assert.equal(moves("HEAD", "/lists/editorial"), false);
+    assert.equal(moves("OPTIONS", "/lists"), false);
+    assert.equal(moves("POST", "/lists/pictures/keep"), false);
+    assert.equal(moves("POST", "/lists/search-misses"), false);
+    assert.equal(moves("PUT", "/lists/moderators/u1"), false);
+    assert.equal(moves("PUT", "/lists/bans/u1"), false);
+    assert.equal(moves("POST", "/lists/classify"), false);
+    assert.equal(moves("PUT", "/lists/abcdefghij0123456789/rankings/mine"), false);
+    assert.equal(moves("PUT", "/lists/abcdefghij0123456789/rankings/u1/like"), false);
+    assert.equal(moves("POST", "/lists/abcdefghij0123456789/taken", "taken"), false);
+    assert.equal(moves("POST", "/lists/follow/u1", null, true), false);
+    assert.equal(moves("PUT", "/lists/face", null, true), false);
   });
 });
