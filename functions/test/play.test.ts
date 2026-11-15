@@ -53,7 +53,9 @@ describe("readPlay", () => {
   });
 
   it("reads each kind, two cards and sixty-four", () => {
-    for (const kind of ["swiss", "hill", "bracket"]) assert.equal(readPlay(play({ kind }))?.kind, kind);
+    for (const kind of ["swiss", "hill", "bracket", "smart"]) assert.equal(readPlay(play({ kind }))?.kind, kind);
+    assert.equal(readPlay(play({ kind: "Smart" })), null);
+    assert.equal(readPlay(play({ kind: "elo" })), null);
     assert.ok(readPlay(play({ count: 2, ids: ["a", "b"], history: [[0, 1, 0]] })));
     const many = Array.from({ length: MAX_PLAY_CARDS }, (_, at) => `item-${at}`);
     assert.ok(readPlay(play({ count: MAX_PLAY_CARDS, ids: many })));

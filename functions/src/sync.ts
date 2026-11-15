@@ -111,7 +111,12 @@ export interface StoredBoard extends OriginMetadata {
   anonymous?: true;
 }
 
-export const PLAY_KINDS = ["swiss", "hill", "bracket"] as const;
+/**
+ * The games: Losers stay ("swiss"), King of the hill, Bracket, and since 15.11.2026 the smart game, which asks only
+ * about cards that could still change tier and stays within Losers stay's duels. A client that does not know a kind
+ * reads the board's game as none and sends it back as it came (Android 521 and 530 keep it as raw JSON).
+ */
+export const PLAY_KINDS = ["swiss", "hill", "bracket", "smart"] as const;
 export type PlayKind = (typeof PLAY_KINDS)[number];
 
 /** A cloud game can contain every live card of a supported board. */
