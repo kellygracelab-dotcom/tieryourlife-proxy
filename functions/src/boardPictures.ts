@@ -10,13 +10,13 @@
  * would read to it as a change made elsewhere (two boards where it has one).
  */
 import { getStorage } from "firebase-admin/storage";
-import { copyCataloguePictures, withCatalogueCopies } from "./cataloguePictures";
+import { copyCataloguePictures, SHARED_COPIES, withCatalogueCopies } from "./cataloguePictures";
 import { outsideName, type OutsideTools } from "./outsidePictures";
 import type { PictureAttribution } from "./pictureAttribution";
 import { addressOf } from "./publishedPictures";
 import { MAX_BOARD_BYTES } from "./sync";
 
-export const SHARED_COPIES = "published/catalogue/";
+export { SHARED_COPIES } from "./cataloguePictures";
 
 /** Room left under a board's limit after its pictures move to us, so the device can send it back as it is. */
 export const BOARD_COPY_MARGIN_BYTES = 50_000;

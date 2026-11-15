@@ -9,12 +9,14 @@
  * the next publication copies it. The house's publications do not: they wait
  * until Commons has answered and every copy is made (`community.ts`).
  */
+import { getStorage } from "firebase-admin/storage";
 import { E2E_NOT_COPIED_PHOTO, isDemoEmulator, SAFE_VERDICT } from "./emulator";
-import { copyOutside, type OutsideTools } from "./outsidePictures";
+import { copyOutside, outsideName, type FetchedPicture, type OutsideTools } from "./outsidePictures";
 import {
   attributionOf,
   catalogueSourceOf,
   cleanAttribution,
+  commonsDirectThumb,
   commonsFileOf,
   copyNameOf,
   copySourceOf,
@@ -178,22 +180,146 @@ export async function askCommonsFully(files: readonly string[]): Promise<{ found
 }
 
 /**
+ * One folder of catalogue copies shared by everybody, `published/catalogue/`,
+ * each named by its catalogue address (`outsideName`): the boards' copies
+ * (`boardPictures.ts`), and the copies a house publication made in an attempt
+ * that did not go through, kept for the next. One that no board shows is
+ * removed by the daily upkeep after a week (`pictureCopyUpkeep.ts`).
+ */
+export const SHARED_COPIES = "published/catalogue/";
+
+/** The shared folder as copying uses it, so a test can hand it another. */
+export interface SharedCopies {
+  /** The picture kept under [name], or null when there is none. */
+  read(name: string): Promise<{ bytes: Buffer; type: string } | null>;
+  /** Moves the file at [path] to [name] in the shared folder; when one is there already, [path] is only removed. */
+  keep(path: string, name: string): Promise<void>;
+}
+
+export function storageShared(): SharedCopies {
+  const bucket = () => getStorage().bucket();
+  return {
+    read: async (name) => {
+      const file = bucket().file(SHARED_COPIES + name);
+      const [there] = await file.exists();
+      if (!there) return null;
+      const [[bytes], [meta]] = await Promise.all([file.download(), file.getMetadata()]);
+      return { bytes, type: String(meta.contentType ?? "") };
+    },
+    keep: async (path, name) => {
+      const [there] = await bucket().file(SHARED_COPIES + name).exists();
+      if (there) await bucket().file(path).delete();
+      else await bucket().file(path).move(SHARED_COPIES + name);
+    },
+  };
+}
+
+/** Wikimedia's pictures copied at once by one publication: a burst of 16 got 429s (15.11.2026). */
+export const WIKIMEDIA_AT_ONCE = 4;
+/** The first wait after a 429 that names no time; each next one twice as long, up to the last. */
+const WIKIMEDIA_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000];
+/** The catalogues whose licence lets a copy be kept without a time limit, so one made earlier serves as well as a new one. */
+const OPENLY_LICENSED: ReadonlySet<string> = new Set(["wikimedia", "inaturalist"]);
+const WIKIMEDIA_HOSTS: ReadonlySet<string> =new Set(["commons.wikimedia.org", "upload.wikimedia.org", "thumb.wikimedia.org"]);
+
+/** At most [atOnce] of the jobs run at a time; the others wait their turn. */
+export function oneAtATime(atOnce: number): <T>(job: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiting: (() => void)[] = [];
+  return async (job) => {
+    if (running >= atOnce) await new Promise<void>((resolve) => waiting.push(resolve));
+    running++;
+    try {
+      return await job();
+    } finally {
+      running--;
+      waiting.shift()?.();
+    }
+  };
+}
+
+/** Waits [ms]; false as soon as [stop] says the time is up. */
+function pause(ms: number, stop: AbortSignal): Promise<boolean> {
+  if (stop.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const done = (waited: boolean) => {
+      clearTimeout(timer);
+      stop.removeEventListener("abort", aborted);
+      resolve(waited);
+    };
+    const aborted = () => done(false);
+    const timer = setTimeout(() => done(true), Math.max(0, ms));
+    stop.addEventListener("abort", aborted, { once: true });
+  });
+}
+
+export type Download = (url: URL, stop: AbortSignal) => Promise<FetchedPicture & { retryAtMs?: number }>;
+
+/** Where a catalogue picture is copied from: Commons at its 500 px thumbnail directly, then through `Special:FilePath`. */
+export function copySourcesOf(original: string): string[] {
+  const from = copySourceOf(original);
+  if (from === null) return [];
+  const file = commonsFileOf(original);
+  const direct = file === null ? null : commonsDirectThumb(file, 500);
+  return direct === null ? [from] : [direct, from];
+}
+
+/**
  * Copying as for pictures from other sites, but from the catalogue's smaller
  * picture, without SafeSearch (catalogue art was shown as it is before) and
  * outside the person's daily count of pictures from other sites.
+ *
+ * A copy already in the shared folder is taken from there, and Wikimedia is
+ * asked [WIKIMEDIA_AT_ONCE] pictures at a time: a 429 is waited out (its
+ * Retry-After, or else one, two, four, eight seconds) while the window lasts.
  */
-export function catalogueCopyTools(base: OutsideTools): OutsideTools {
+export function catalogueCopyTools(
+  base: OutsideTools,
+  { shared = storageShared(), download = downloadPicture as Download }: { shared?: SharedCopies; download?: Download } = {},
+): OutsideTools {
+  const wikimedia = oneAtATime(WIKIMEDIA_AT_ONCE);
+  const politely = (source: string, stop: AbortSignal) => wikimedia(async () => {
+    for (let tries = 0; ; tries++) {
+      const got = await download(new URL(source), stop);
+      if (!("error" in got) || got.error !== "SOURCE_BUSY") return got;
+      const backoff = WIKIMEDIA_BACKOFF_MS[Math.min(tries, WIKIMEDIA_BACKOFF_MS.length - 1)]!;
+      if (!(await pause(Math.max(backoff, (got.retryAtMs ?? 0) - Date.now()), stop))) return got;
+    }
+  });
   return {
     ...base,
     fetch: async (url, stop) => {
       if (isDemoEmulator()) return url === E2E_NOT_COPIED_PHOTO ? { error: "UNREACHABLE" } : base.fetch(url, stop);
-      const from = copySourceOf(url);
-      return from === null ? { error: "NOT_ALLOWED" } : downloadPicture(new URL(from), stop);
+      const sources = copySourcesOf(url);
+      if (sources.length === 0) return { error: "NOT_ALLOWED" };
+      // Only an openly licensed picture is taken from a copy made before: a TMDB copy's days are counted from its own fetch.
+      const kept = OPENLY_LICENSED.has(catalogueSourceOf(url) ?? "") ? await shared.read(outsideName(url)).catch(() => null) : null;
+      if (kept !== null) return kept;
+      let got: FetchedPicture = { error: "UNREACHABLE" };
+      for (const source of sources) {
+        got = WIKIMEDIA_HOSTS.has(new URL(source).hostname) ? await politely(source, stop) : await download(new URL(source), stop);
+        // A busy Wikimedia is busy by either way in; only a picture not found one way is looked for the other.
+        if (!("error" in got) || got.error === "SOURCE_BUSY" || stop.aborted) return got;
+      }
+      return got;
     },
     lookAt: async () => SAFE_VERDICT,
     reserve: async () => true,
     giveBack: async () => undefined,
   };
+}
+
+/**
+ * The copies a house publication made in an attempt that did not go through,
+ * moved to the shared folder for the next attempt, which takes them from there
+ * instead of asking the catalogue again. A file that cannot be moved is removed.
+ */
+export async function keepCopiesForLater(saved: readonly string[], shared: SharedCopies = storageShared(), remove: (path: string) => Promise<void> = (path) => getStorage().bucket().file(path).delete().then(() => undefined)): Promise<void> {
+  await Promise.all(saved.map(async (path) => {
+    const name = /\/(w-[0-9a-f]{32})(?:_p_[a-f0-9-]{36})?$/.exec(path)?.[1];
+    if (name !== undefined && await shared.keep(path, name).then(() => true, () => false)) return;
+    await remove(path).catch(() => undefined);
+  }));
 }
 
 // Open Library takes a few seconds a cover from here: a house list of 33 books did not fit 15 s eight at a time (14.11.2026).

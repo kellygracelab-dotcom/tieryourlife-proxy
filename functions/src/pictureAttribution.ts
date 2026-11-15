@@ -366,6 +366,23 @@ export function commonsThumb(file: string, width: number): string {
   return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=${width}`;
 }
 
+/**
+ * A Commons file's thumbnail at [width], asked for where Wikimedia keeps it:
+ * one request where `Special:FilePath` takes three, and none to
+ * commons.wikimedia.org, which answers a burst of copies with 429 (15.11.2026).
+ * MediaWiki files a name under the first one and two hex digits of its md5; an
+ * SVG's thumbnail is a PNG. Null for any other kind, whose thumbnail is named
+ * otherwise: `Special:FilePath` finds those.
+ */
+export function commonsDirectThumb(file: string, width: number): string | null {
+  const name = file.replace(/ /g, "_");
+  const kind = /\.([A-Za-z]+)$/.exec(name)?.[1]?.toLowerCase();
+  if (kind === undefined || !["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(kind)) return null;
+  const hash = createHash("md5").update(name, "utf8").digest("hex");
+  const path = encodeURIComponent(name);
+  return `https://thumb.wikimedia.org/wikipedia/commons/thumb/${hash[0]}/${hash.slice(0, 2)}/${path}/${width}px-${path}${kind === "svg" ? ".png" : ""}`;
+}
+
 /** The width a card asks a Commons file at, as search hits do: `Special:FilePath` serves its 960 px thumbnail. */
 export const COMMONS_CARD_WIDTH = 600;
 /** The widest `Special:FilePath` a card keeps as sent: wider is bytes nobody sees. */
