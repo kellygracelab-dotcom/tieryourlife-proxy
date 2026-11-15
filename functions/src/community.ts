@@ -1481,28 +1481,20 @@ async function approvedSections(): Promise<SectionRecord[]> {
  * write the moment, and an instance whose counts are older reads them again.
  */
 const SECTION_COUNTS = "config/sectionCounts";
-/** An instance asks whether its counts are older at most this often, and only while somebody reads them. */
-const SECTION_COUNTS_CHECK_MS = 15_000;
-let countsCheckedAtMs = 0;
-let countsReadFromMs = 0;
-
+/** The stamp the kept counts were read under: another instance's change writes a new one. */
+let countsStamp: number | undefined;
 async function currentStats(): Promise<StatsRead> {
-  const now = Date.now();
-  if (now - countsCheckedAtMs >= SECTION_COUNTS_CHECK_MS) {
-    countsCheckedAtMs = now;
-    const changed = await getFirestore().doc(SECTION_COUNTS).get().then((doc) => doc.get("changedAtMs") as unknown, () => undefined);
-    if (typeof changed === "number" && changed >= countsReadFromMs) sectionStats.invalidate();
-  }
+  // One small read on every counts read, so a list moved on any instance shows on every one at once.
+  const stamp = await getFirestore().doc(SECTION_COUNTS).get().then((doc) => doc.get("changes") as unknown, () => undefined);
+  const known = typeof stamp === "number" ? stamp : undefined;
+  if (known !== undefined && known !== countsStamp) sectionStats.invalidate();
   return await sectionStats.get(async () => {
-    const started = Date.now();
     const sections = await approvedSections();
     const stats = await Promise.all(sections.map((one) => readOneSection(one.id)));
-    countsReadFromMs = started;
+    if (known !== undefined) countsStamp = known;
     return { readAtMs: Date.now(), stats: new Map(stats.map((one) => [one.id, one])) };
   });
 }
-
-/** Whether a request may move lists into or out of a section: what `noteSectionCountsAfter` is for. */
 export function movesLists(method: string, segments: readonly string[], verb: string | null, aboutAPerson: boolean): boolean {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
   if ([TOPICS_PATH, EDITORIAL_PATH, SECTIONS_PATH, ADMIN_PATH].includes(segments[0] ?? "")) return true;
@@ -1523,7 +1515,7 @@ function noteSectionCountsAfter(response: Response): void {
     const send = () => (end as (...rest: unknown[]) => Response).apply(this, args);
     if (response.statusCode < 200 || response.statusCode >= 300) return send();
     sectionStats.invalidate();
-    void getFirestore().doc(SECTION_COUNTS).set({ changedAtMs: Date.now() }, { merge: true }).catch(() => undefined).finally(send);
+    void getFirestore().doc(SECTION_COUNTS).set({ changes: FieldValue.increment(1), changedAtMs: Date.now() }, { merge: true }).catch(() => undefined).finally(send);
     return this;
   } as typeof response.end;
 }
