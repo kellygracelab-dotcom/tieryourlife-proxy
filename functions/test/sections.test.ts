@@ -1139,8 +1139,8 @@ describe("TimedCache", () => {
 
 describe("editing a waiting section", () => {
   it("may change how it reads and looks, never its place or visibility", () => {
-    assert.deepEqual([...PENDING_EDIT_FIELDS], ["name", "names", "icon", "pictureId", "tint"]);
-    assert.deepEqual([...APPROVED_EDIT_FIELDS], ["name", "names", "icon", "rank", "hidden", "pictureId", "tint"]);
+    assert.deepEqual([...PENDING_EDIT_FIELDS], ["name", "names", "icon", "pictureId", "pictureFocus", "tint"]);
+    assert.deepEqual([...APPROVED_EDIT_FIELDS], ["name", "names", "icon", "rank", "hidden", "pictureId", "pictureFocus", "tint"]);
   });
 
   it("names the field that has to wait for approval", () => {

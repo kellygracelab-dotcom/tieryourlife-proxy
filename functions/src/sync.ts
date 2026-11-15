@@ -14,6 +14,7 @@ import { chosenPictures } from "./publishing";
 import { createHash } from "node:crypto";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
 import { originAfterWrite, sourceIndexAfterWrite, type OriginMetadata } from "./boardOrigin";
+import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
 export const MAX_BOARD_BYTES = 700_000;
@@ -94,6 +95,8 @@ export interface StoredBoard extends OriginMetadata {
   coverPictureId?: string;
   /** The pictures chosen for the cover collage, in their order; empty when the cards' art decides. */
   coverImageUrls: string[];
+  /** Which part of the single cover (`coverImageUrl` or `coverPictureId`) shows (`coverFocus.ts`); absent for the centre. */
+  coverFocus?: CoverFocus;
   authorName: string | null;
   publishedId: string | null;
   /** When the whole board went to the trash, or null while it is in use. */
@@ -290,7 +293,7 @@ export function playAfterWrite(source: Record<string, unknown>, previous: Play |
 /** A legacy writer's hash omits retained state. Make the full content visible to upgraded clients. */
 export function preservedPlayFingerprint(source: Record<string, unknown>, board: StoredBoard, play: Play | null): string | null {
   const preservedGame = !Object.hasOwn(source, "play") && play !== null && (play.count > 64 || play.history.length > 2000);
-  const metadata = ["origin", "takenFrom", "rankingChoice"] as const;
+  const metadata = ["origin", "takenFrom", "rankingChoice", "coverFocus"] as const;
   const sentItems = new Map(((source.items as Record<string, unknown>[] | undefined) ?? []).map((item) => [item.uid, item.sourceIndex]));
   const retainedMetadata = metadata.some((key) => JSON.stringify(source[key] ?? null) !== JSON.stringify(board[key] ?? null)) ||
     board.items.some((item) => item.sourceIndex !== undefined && sentItems.get(item.uid) !== item.sourceIndex);
@@ -373,6 +376,8 @@ export interface StoreInput {
   nowMs: number;
   /** The cover picture already kept for this board, if any. */
   storedCoverPictureId?: string | null;
+  /** The cover focus already kept for this board, if any. */
+  storedCoverFocus?: CoverFocus | null;
   storedOrigin?: OriginMetadata;
   storedSourceIndexes?: ReadonlyMap<string, number>;
 }
@@ -395,12 +400,29 @@ export function settleCoverPicture(
   return choseAnother ? null : stored;
 }
 
+/**
+ * The focus a write keeps for its single cover: the one sent, none for null,
+ * and for a writer that leaves the field out (every client from before it)
+ * the stored one while the board still has a single cover. A writer that
+ * changes the cover sends the field, null for the centre.
+ */
+export function settleCoverFocus(
+  source: Record<string, unknown>,
+  board: Pick<StoredBoard, "coverImageUrl" | "coverPictureId">,
+  stored: CoverFocus | null,
+): CoverFocus | null | "invalid" {
+  if (source.coverFocus !== undefined) return readFocus(source.coverFocus);
+  const singleCover = board.coverImageUrl !== null || board.coverPictureId !== undefined;
+  return singleCover ? stored : null;
+}
+
 export function decideStore({
   body,
   isAnonymous,
   boardsAlreadyKept,
   nowMs,
   storedCoverPictureId = null,
+  storedCoverFocus = null,
   storedOrigin = {},
   storedSourceIndexes = new Map(),
 }: StoreInput): StoreDecision {
@@ -541,6 +563,9 @@ export function decideStore({
   if (source.anonymous === true) board.anonymous = true;
   const coverPictureId = settleCoverPicture(source, board.coverImageUrls, storedCoverPictureId);
   if (coverPictureId !== null) board.coverPictureId = coverPictureId;
+  const coverFocus = settleCoverFocus(source, board, storedCoverFocus);
+  if (coverFocus === "invalid") return { ok: false, reason: "invalid", detail: `coverFocus: ${FOCUS_RANGE}` };
+  if (coverFocus !== null) board.coverFocus = coverFocus;
   if (Buffer.byteLength(JSON.stringify(board), "utf8") > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
   }

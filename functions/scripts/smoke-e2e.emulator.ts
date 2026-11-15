@@ -263,6 +263,68 @@ describe("the proxy under the demo emulators", () => {
     assert.deepEqual([bare.status, bare.body.pictureUrl, bare.body.pictureAttribution], [200, null, undefined]);
   });
 
+  it("keeps which part of a cover shows on boards, lists, topics and sections, the centre when none", async () => {
+    const focus = { x: 0.5, y: 0.2, zoom: 1.5 };
+    const RANGE = "A focus is {x, y, zoom}: x and y from 0 to 1, zoom from 1 to 4";
+    const author = await newAuthor("focus");
+    const poster = "https://image.tmdb.org/t/p/w500/focusSmoke.jpg";
+    const board = { title: "Focused board", fingerprint: "focus-1", coverImageUrl: poster, tiers: [{ ...TIER, uid: "tier-1", position: 0 }], items: [] };
+    // Boards: kept as sent, refused out of range, kept for a writer from before that leaves it out, gone on null.
+    assert.equal((await call(author, "PUT", "/boards/focused", { ...board, coverFocus: focus })).status, 200);
+    assert.deepEqual((await call(author, "GET", "/boards/focused")).body.coverFocus, focus);
+    const wide = await call(author, "PUT", "/boards/focused", { ...board, fingerprint: "focus-2", basedOn: 1, coverFocus: { x: 0.5, y: 0.5, zoom: 4.5 } });
+    assert.deepEqual([wide.status, wide.body.code, wide.body.error], [400, "INVALID", `coverFocus: ${RANGE}`]);
+    assert.equal((await call(author, "PUT", "/boards/focused", { ...board, title: "Renamed by an old phone", fingerprint: "focus-3", basedOn: 1 })).status, 200);
+    assert.deepEqual((await call(author, "GET", "/boards/focused")).body.coverFocus, focus);
+    assert.equal((await call(author, "PUT", "/boards/focused", { ...board, fingerprint: "focus-4", basedOn: 2, coverFocus: null })).status, 200);
+    assert.equal("coverFocus" in (await call(author, "GET", "/boards/focused")).body, false);
+    // Lists: told on the card and the page with the cover.
+    const published = await call(author, "POST", "/lists", {
+      title: "Focused list", category: "film_tv", tiers: [TIER], items: [{ title: "Arrival", imageUrl: poster }], coverImageUrl: poster, coverFocus: focus,
+    });
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    assert.deepEqual((await call(author, "GET", `/lists/${published.body.id}`)).body.coverFocus, focus);
+    const plain = await call(author, "POST", "/lists", { title: "Unfocused list", category: "film_tv", tiers: [TIER], items: [{ title: "Arrival", imageUrl: poster }], coverImageUrl: poster });
+    assert.equal("coverFocus" in (await call(author, "GET", `/lists/${plain.body.id}`)).body, false);
+    const badList = await call(author, "POST", "/lists", { title: "Bad focus", category: "film_tv", tiers: [TIER], items: [{ title: "Arrival" }], coverFocus: { x: -1, y: 0, zoom: 1 } });
+    assert.deepEqual([badList.status, badList.body.code], [400, "INVALID"]);
+
+    // Topics and sections: staff set it with the picture; a new picture without one goes back to the centre.
+    const owner = await ownerToken();
+    const { owner: { uid } } = await seed();
+    const bucket = getStorage(initializeApp({ projectId: PROJECT }, "smoke-focus-pictures")).bucket(`${PROJECT}.appspot.com`);
+    const stamp = Date.now().toString(36);
+    const [first, second, third, fourth] = ["a", "b", "c", "d"].map((letter) => `focus-${letter}-${stamp}`);
+    for (const id of [first, second, third, fourth]) {
+      await bucket.file(`users/${uid}/pictures/${id}`).save(blankPng(960, 600), { contentType: "image/png", resumable: false });
+    }
+    const badTopic = await call(owner, "POST", "/lists/topics", { name: `Bad focus ${stamp}`, section: "anime", pictureId: first, pictureFocus: { x: 0.5, y: 0.5 } });
+    assert.deepEqual([badTopic.status, badTopic.body.code, badTopic.body.detail, badTopic.body.error], [400, "INVALID", "pictureFocus", RANGE]);
+    const topic = await call(owner, "POST", "/lists/topics", { name: `Focused topic ${stamp}`, section: "anime", pictureId: first, pictureFocus: focus });
+    assert.equal(topic.status, 201, JSON.stringify(topic.body));
+    assert.deepEqual(topic.body.pictureFocus, focus);
+    const moved = await call(owner, "PATCH", `/lists/topics/${topic.body.id}`, { pictureFocus: { x: 0.3, y: 0.3, zoom: 1 } });
+    assert.deepEqual([moved.status, moved.body.pictureFocus], [200, { x: 0.3, y: 0.3, zoom: 1 }]);
+    const renamed = await call(owner, "PATCH", `/lists/topics/${topic.body.id}`, { names: { de: "Fokussiert" } });
+    assert.deepEqual(renamed.body.pictureFocus, { x: 0.3, y: 0.3, zoom: 1 });
+    const repictured = await call(owner, "PATCH", `/lists/topics/${topic.body.id}`, { pictureId: second });
+    assert.deepEqual([repictured.status, repictured.body.pictureFocus], [200, undefined]);
+    const together = await call(owner, "PATCH", `/lists/topics/${topic.body.id}`, { pictureId: first, pictureFocus: focus });
+    assert.deepEqual(together.body.pictureFocus, focus);
+    const centred = await call(owner, "PATCH", `/lists/topics/${topic.body.id}`, { pictureFocus: null });
+    assert.deepEqual([centred.status, centred.body.pictureFocus], [200, undefined]);
+
+    const section = await call(owner, "POST", "/lists/sections", { name: `Focus ${stamp}`.slice(0, 24), icon: "movie", pictureId: third, pictureFocus: focus });
+    assert.equal(section.status, 201, JSON.stringify(section.body));
+    assert.deepEqual(section.body.pictureFocus, focus);
+    const badSection = await call(owner, "PATCH", `/lists/sections/${section.body.id}`, { pictureFocus: { x: 0.5, y: 0.5, zoom: 0.5 } });
+    assert.deepEqual([badSection.status, badSection.body.code, badSection.body.detail, badSection.body.error], [400, "INVALID", "pictureFocus", RANGE]);
+    const sectionMoved = await call(owner, "PATCH", `/lists/sections/${section.body.id}`, { pictureFocus: { x: 0.7, y: 0.4, zoom: 2 } });
+    assert.deepEqual([sectionMoved.status, sectionMoved.body.pictureFocus], [200, { x: 0.7, y: 0.4, zoom: 2 }]);
+    const sectionRepictured = await call(owner, "PATCH", `/lists/sections/${section.body.id}`, { pictureId: fourth });
+    assert.deepEqual([sectionRepictured.status, sectionRepictured.body.pictureFocus], [200, undefined]);
+  });
+
   it("shows a board's catalogue pictures from one shared copy, the device's fingerprint and revision kept", async () => {
     const poster = "https://image.tmdb.org/t/p/w500/boardCopySmoke.jpg";
     const switches = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-board-copy")).doc("config/pictureCopies");

@@ -126,6 +126,7 @@ export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Dat
     category: data.category ?? null,
     coverImageUrl: data.coverImageUrl ?? null,
     coverImageUrls: data.coverImageUrls ?? [],
+    ...(data.coverFocus ? { coverFocus: data.coverFocus } : {}),
     authorName: data.authorName ?? null,
     publishedId: data.publishedId ?? null,
     deletedAt: data.deletedAt ?? null,
@@ -362,6 +363,7 @@ async function write(
     const stored = existing.exists ? existing.data() as BoardDocument : null;
     const previous = stored ? await storedGame(transaction, ref, stored) : undefined;
     const decision = decideStore({ body, nowMs: now, storedCoverPictureId: stored?.coverPictureId ?? null,
+      storedCoverFocus: stored?.coverFocus ?? null,
       storedOrigin: { ...(stored?.origin ? { origin: stored.origin } : {}), ...(stored?.takenFrom ? { takenFrom: stored.takenFrom } : {}), ...(stored?.rankingChoice ? { rankingChoice: stored.rankingChoice } : {}) },
       storedSourceIndexes: new Map((stored?.items ?? []).filter((item) => item.sourceIndex !== undefined).map((item) => [item.uid, item.sourceIndex!])),
       isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });

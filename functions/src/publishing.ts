@@ -9,6 +9,7 @@ import { readAnonymous } from "./anonymous";
 import { isDeezerPicture } from "./pictureSources";
 import { MAX_CREDIT_LENGTH } from "./pictureCredit";
 import { storageMediaUrl } from "./publicMedia";
+import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 export { MAX_CREDIT_LENGTH } from "./pictureCredit";
 
 /**
@@ -89,6 +90,8 @@ export interface PublishDraft {
   coverPictureId: string | null;
   /** The pictures the author chose for the collage, in their order; empty when the cards' art decides. */
   coverImageUrls: string[];
+  /** Which part of the single cover shows (`coverFocus.ts`); null for the centre, undefined when not sent. */
+  coverFocus: CoverFocus | null | undefined;
   tierColors: string[];
   /**
    * Whether to publish without the author's name: true or false when the
@@ -108,6 +111,8 @@ export interface PublishedList {
   coverImageUrl: string | null;
   /** Enough card art for the feed to draw a mosaic without opening the list. */
   previewImages: string[];
+  /** Which part of [coverImageUrl] shows; null for the centre. */
+  coverFocus: CoverFocus | null | undefined;
   /** The author's palette, for a card that has neither a cover nor card art. */
   tierColors: string[];
 }
@@ -316,6 +321,10 @@ export function decidePublish({
     return { ok: false, reason: "too_large", detail: "Too many of your own photographs" };
   }
 
+  // Not sent (a client from before it) is told apart from null, so a republish of the same cover keeps it.
+  const coverFocus = source.coverFocus === undefined ? undefined : readFocus(source.coverFocus);
+  if (coverFocus === "invalid") return { ok: false, reason: "invalid", detail: `coverFocus: ${FOCUS_RANGE}` };
+
   const draft: PublishDraft = {
     title,
     titleLower: title.toLowerCase(),
@@ -325,6 +334,7 @@ export function decidePublish({
     coverImageUrl: publicImageUrl(source.coverImageUrl),
     coverPictureId,
     coverImageUrls,
+    coverFocus,
     tierColors: tiers.slice(0, MAX_TIER_COLORS).map((tier) => tier.colorLight),
     anonymous: readAnonymous(source.anonymous),
   };
@@ -369,6 +379,7 @@ export function settle(draft: PublishDraft, addresses: Map<string, string>): Pub
         .map((item) => item.imageUrl)
         .filter((url): url is string => url !== null)
         .slice(0, MAX_PREVIEW_IMAGES),
+    coverFocus: draft.coverFocus,
     tierColors: draft.tierColors,
   };
 }
