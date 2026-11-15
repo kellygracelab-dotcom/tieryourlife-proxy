@@ -1804,7 +1804,7 @@ type SectionRefusal = ProposalRefusal | EditRefusal | { code: "BAD_PICTURE"; why
 function refuseSection(response: Response, refusal: SectionRefusal): void {
   switch (refusal.code) {
     case "BAD_NAME":
-      response.status(400).json({ error: "A section name is one to twenty-four characters", code: refusal.code });
+      response.status(400).json({ error: "A section name is one to twenty-four characters", code: refusal.code, detail: refusal.detail });
       return;
     case "NAME_TAKEN":
       response.status(400).json({
@@ -2158,7 +2158,7 @@ async function createSection(response: Response, identity: Identity, body: unkno
   if (!read.ok) return refuseSection(response, read);
   const { edits } = read;
   const name = edits.name;
-  if (name === undefined) return refuseSection(response, { code: "BAD_NAME" });
+  if (name === undefined) return refuseSection(response, { code: "BAD_NAME", detail: "name" });
 
   const sections = await readAllSections();
   const names = namesAfter({ name, names: {} }, edits);

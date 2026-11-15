@@ -94,7 +94,7 @@ canonical Storage addresses, their shared catalogue copies included
 | Report note | 500 | `MAX_NOTE_LENGTH` |
 | Topic name, and each of its translations (`names`) | 1–40 characters as a reader counts them (since 14.11.2026; one Han, kana or Hangul character such as 犬 is a whole name; grapheme clusters since 15.11.2026), a letter or digit in it, refused otherwise | `topics.ts` |
 | Waiting topics per account | 3 | `MAX_PENDING_TOPICS_PER_ACCOUNT` |
-| Section name, and each of its translations (`names`) | 1–24 characters as a reader counts them (since 15.11.2026: grapheme clusters, so 車 is a whole name and an emoji with its modifiers or a letter with its accents is one), a letter or digit in it, refused otherwise (`400 BAD_NAME`) | `sections.ts` |
+| Section name, and each of its translations (`names`) | 1–24 characters as a reader counts them (since 15.11.2026: grapheme clusters, so 車 is a whole name and an emoji with its modifiers or a letter with its accents is one), a letter or digit in it, refused otherwise: `400 {error, code: "BAD_NAME", detail}`, `detail` (since 15.11.2026) the field that failed, `"name"`, `"names.<locale>"` (an unknown language or an improper translation, e.g. `"names.ja"`) or `"names"` (not an object), on a proposal, a creation and a change alike | `sections.ts` |
 | Waiting section proposals per account | 3 | `MAX_PENDING_SECTIONS_PER_ACCOUNT` |
 | Section proposals per account per 24 h | 10 | `MAX_PROPOSALS_PER_DAY` |
 | Decline note | 300 | `MAX_DECLINE_NOTE_LENGTH` |
