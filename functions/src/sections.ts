@@ -3,6 +3,7 @@
  * proposed by somebody and approved by a moderator, the way topics are. Pure,
  * like the rest of the deciding here; `community.ts` does the reads and writes.
  */
+import { readFocus, type CoverFocus } from "./coverFocus";
 import { isHexColour, type ColourPair, type SectionColours } from "./sectionColours";
 import { isPictureId } from "./safety";
 
@@ -231,6 +232,8 @@ export interface SectionRecord {
   names: Record<string, string>;
   icon: string;
   picture: SectionPicture | null;
+  /** Which part of the picture shows, the waiting proposal's picture until approval (`coverFocus.ts`); absent or null for the centre. */
+  pictureFocus?: CoverFocus | null;
   tint: ColourPair;
   topicBg: ColourPair;
   topicIcon: ColourPair;
@@ -487,6 +490,8 @@ export interface SectionEdits {
   hidden?: boolean;
   /** A picture from the caller's own folder, or null to take the section's picture away. */
   pictureId?: string | null;
+  /** Which part of the picture shows, or null for the centre. */
+  pictureFocus?: CoverFocus | null;
   /** A light tint the owner or a moderator chose; the rest is derived from it. */
   tint?: string;
 }
@@ -536,6 +541,11 @@ export function readSectionEdits(
     if (source.pictureId !== null && !isPictureId(source.pictureId)) return { ok: false, code: "BAD_PICTURE", why: "missing" };
     edits.pictureId = source.pictureId;
   }
+  if (allowed.includes("pictureFocus") && sent("pictureFocus")) {
+    const focus = readFocus(source.pictureFocus);
+    if (focus === "invalid") return { ok: false, code: "INVALID", detail: "pictureFocus" };
+    edits.pictureFocus = focus;
+  }
   if (allowed.includes("tint") && sent("tint")) {
     if (!isHexColour(source.tint)) return { ok: false, code: "INVALID", detail: "A tint is one hex colour, #RRGGBB" };
     edits.tint = source.tint.toUpperCase();
@@ -544,10 +554,10 @@ export function readSectionEdits(
 }
 
 /** What the owner may change on an approved section. */
-export const APPROVED_EDIT_FIELDS: readonly EditField[] = ["name", "names", "icon", "rank", "hidden", "pictureId", "tint"];
+export const APPROVED_EDIT_FIELDS: readonly EditField[] = ["name", "names", "icon", "rank", "hidden", "pictureId", "pictureFocus", "tint"];
 
 /** What the owner may change on a proposal still waiting: how it reads and looks. Its place and visibility come with approval. */
-export const PENDING_EDIT_FIELDS: readonly EditField[] = ["name", "names", "icon", "pictureId", "tint"];
+export const PENDING_EDIT_FIELDS: readonly EditField[] = ["name", "names", "icon", "pictureId", "pictureFocus", "tint"];
 
 /** A field sent for a waiting section that only an approved one has, if any. */
 export function notYetEditable(status: SectionStatus, body: unknown): "rank" | "hidden" | null {
@@ -989,6 +999,8 @@ export interface SectionView {
   names: Record<string, string>;
   icon: string;
   pictureUrl: string | null;
+  /** Which part of [pictureUrl] shows (`coverFocus.ts`); only with a picture, absent for the centre. */
+  pictureFocus?: CoverFocus;
   tint: ColourPair;
   topicBg: ColourPair;
   topicIcon: ColourPair;
@@ -1055,16 +1067,18 @@ export function sectionView(
   const proposal = section.status !== "approved";
   const proposer = section.proposerUid !== null && section.proposerUid === viewer.uid;
   const mayKnow = proposer || viewer.moderator;
+  const pictureUrl = section.status === "approved"
+    ? section.picture?.url ?? null
+    : mayKnow
+      ? section.proposalPictureUrl
+      : null;
   const view: SectionView = {
     id: section.id,
     name: section.name,
     names: section.names,
     icon: section.icon,
-    pictureUrl: section.status === "approved"
-      ? section.picture?.url ?? null
-      : mayKnow
-        ? section.proposalPictureUrl
-        : null,
+    pictureUrl,
+    ...(pictureUrl !== null && section.pictureFocus ? { pictureFocus: section.pictureFocus } : {}),
     tint: section.tint,
     topicBg: section.topicBg,
     topicIcon: section.topicIcon,

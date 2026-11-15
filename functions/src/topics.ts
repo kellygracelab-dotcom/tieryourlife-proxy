@@ -6,6 +6,7 @@
  */
 import { OTHER, readNames } from "./sections";
 import type { CatalogueCredit, ManualAttribution } from "./pictureAttribution";
+import type { CoverFocus } from "./coverFocus";
 import { isPictureId } from "./safety";
 
 export const MIN_TOPIC_NAME_LENGTH = 1;
@@ -69,6 +70,8 @@ export interface Topic {
    * or the catalogue title it comes from (`{source, link, id?}`, as a card's); only with a picture.
    */
   pictureAttribution?: ManualAttribution | CatalogueCredit;
+  /** Which part of the picture shows (`coverFocus.ts`); only with a picture, absent for the centre. */
+  pictureFocus?: CoverFocus;
 }
 
 /** Who is reading a topic. */

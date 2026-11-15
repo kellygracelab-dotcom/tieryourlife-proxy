@@ -261,6 +261,7 @@ import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import { manualCredits } from "./manualAttribution";
 import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
 import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit, type ManualAttribution } from "./pictureAttribution";
+import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 import {
   cleanTopicName,
   refusedTopicLocale,
@@ -473,6 +474,8 @@ interface StoredList {
   coverImageUrl: string | null;
   /** The house editor's credit for [coverImageUrl] (`manualAttribution.ts`); a house list's only. */
   coverAttribution?: ManualAttribution;
+  /** Which part of [coverImageUrl] shows (`coverFocus.ts`); absent or null for the centre. */
+  coverFocus?: CoverFocus | null;
   previewImages: string[];
   tierColors: string[];
   /** The topic this list carries, if any; the name is copied so a card needs no second read. */
@@ -588,6 +591,7 @@ export function toSummary(
     category: data.category ?? "other",
     itemCount: data.itemCount,
     coverImageUrl: webPicture(data.coverImageUrl),
+    ...(data.coverFocus && webPicture(data.coverImageUrl) !== null ? { coverFocus: data.coverFocus } : {}),
     previewImages: (data.previewImages ?? []).filter((url) => webPicture(url) !== null),
     tierColors: data.tierColors ?? [],
     topicId: data.topicId ?? null,
@@ -621,6 +625,8 @@ interface StoredTopic {
   picture?: SectionPicture | null;
   /** The staff's credit for the picture, kept while the picture stays; null or absent for none. */
   pictureAttribution?: ManualAttribution | CatalogueCredit | null;
+  /** Which part of the picture shows (`coverFocus.ts`), kept while the picture stays; null or absent for the centre. */
+  pictureFocus?: CoverFocus | null;
 }
 
 function knownTopic(id: string, data: StoredTopic): KnownTopic {
@@ -649,6 +655,7 @@ export function toTopic(id: string, data: StoredTopic, following: boolean, reade
     mergedInto: data.mergedInto ?? null,
     pictureUrl: data.picture?.url ?? null,
     ...(data.picture?.url && data.pictureAttribution ? { pictureAttribution: data.pictureAttribution } : {}),
+    ...(data.picture?.url && data.pictureFocus ? { pictureFocus: data.pictureFocus } : {}),
   };
 }
 
@@ -1194,6 +1201,7 @@ interface StoredSection {
   proposerName?: string | null;
   proposalPicture?: string | null;
   proposalPictureUrl?: string | null;
+  pictureFocus?: CoverFocus | null;
   palette?: string[];
   unfinished?: boolean;
   decidedAs?: string | null;
@@ -1229,6 +1237,7 @@ function sectionRecord(id: string, data: StoredSection): SectionRecord {
     proposerName: data.proposerName ?? null,
     proposalPicture: data.proposalPicture ?? null,
     proposalPictureUrl: data.proposalPictureUrl ?? null,
+    ...(data.pictureFocus ? { pictureFocus: data.pictureFocus } : {}),
     palette: data.palette ?? [],
     unfinished: data.unfinished === true,
     decidedAs: TOPIC_DECISIONS.find((one) => one === data.decidedAs) ?? null,
@@ -1265,6 +1274,7 @@ function newSectionDocument(record: SectionRecord): Record<string, unknown> {
     proposerName: record.proposerName,
     proposalPicture: record.proposalPicture,
     proposalPictureUrl: record.proposalPictureUrl,
+    ...(record.pictureFocus ? { pictureFocus: record.pictureFocus } : {}),
     palette: record.palette,
     unfinished: record.unfinished,
     declineNote: record.declineNote,
@@ -1755,7 +1765,11 @@ function refuseSection(response: Response, refusal: SectionRefusal): void {
       response.status(429).json({ error: "That is enough proposals for one day", code: refusal.code });
       return;
     case "INVALID":
-      response.status(400).json({ error: refusal.detail, code: refusal.code, detail: refusal.detail });
+      response.status(400).json({
+        error: refusal.detail === "pictureFocus" ? FOCUS_RANGE : refusal.detail,
+        code: refusal.code,
+        detail: refusal.detail,
+      });
       return;
   }
 }
@@ -2056,6 +2070,7 @@ function editFields(edits: SectionEdits): Record<string, unknown> {
   if (edits.icon !== undefined) fields.icon = edits.icon;
   if (edits.rank !== undefined) fields.rank = edits.rank;
   if (edits.hidden !== undefined) fields.hidden = edits.hidden;
+  if (edits.pictureFocus !== undefined) fields.pictureFocus = edits.pictureFocus;
   return fields;
 }
 
@@ -2069,7 +2084,7 @@ async function staffView(response: Response, identity: Identity, id: string, sta
 async function createSection(response: Response, identity: Identity, body: unknown): Promise<void> {
   const role = await roleFor(response, identity, "create");
   if (role === null) return;
-  const read = readSectionEdits(body, ["name", "names", "icon", "rank", "pictureId", "tint"]);
+  const read = readSectionEdits(body, ["name", "names", "icon", "rank", "pictureId", "pictureFocus", "tint"]);
   if (!read.ok) return refuseSection(response, read);
   const { edits } = read;
   const name = edits.name;
@@ -2100,6 +2115,7 @@ async function createSection(response: Response, identity: Identity, body: unkno
       picture: picture?.ok && pictureId !== undefined
         ? { url: addressOf(bucket, sectionPicturePath(id, pictureId)), width: picture.width, height: picture.height }
         : null,
+      ...(picture?.ok && pictureId !== undefined && edits.pictureFocus ? { pictureFocus: edits.pictureFocus } : {}),
       status: "approved",
       approvedAtMs: now,
       decidedAtMs: now,
@@ -2323,6 +2339,10 @@ async function editSection(response: Response, identity: Identity, id: string, b
     Object.assign(update, "colours" in picture ? picture.colours : {}, { picture: { url, width: picture.width, height: picture.height } });
   } else if (pictureId === null) {
     update.picture = null;
+  }
+  // The focus goes with the picture: a new one sent without a focus, or none, shows from the centre.
+  if (edits.pictureFocus === undefined && pictureId !== undefined && found.pictureFocus && (copied !== null || pictureId === null)) {
+    update.pictureFocus = null;
   }
   // A new picture on any section but a built-in already brought its colours, the chosen tint among them.
   if (edits.tint !== undefined && (waiting || typeof pictureId !== "string" || found.builtIn)) {
@@ -2932,6 +2952,21 @@ export function coverCreditFields(
   return previous?.coverAttribution ? { coverAttribution: FieldValue.delete() } : {};
 }
 
+/**
+ * The focus a publication keeps for its cover: the one sent (null for the
+ * centre), and for a client that sends none the one before while the cover
+ * stays the same; none without a cover.
+ */
+export function coverFocusAfter(
+  sent: CoverFocus | null | undefined,
+  coverImageUrl: string | null,
+  previous: Pick<StoredList, "coverImageUrl" | "coverFocus"> | null,
+): CoverFocus | null {
+  if (coverImageUrl === null) return null;
+  if (sent !== undefined) return sent;
+  return previous?.coverFocus && previous.coverImageUrl === coverImageUrl ? previous.coverFocus : null;
+}
+
 async function publish(
   response: Response,
   identity: Identity,
@@ -3258,6 +3293,7 @@ async function publish(
       itemCount: list.items.length,
       coverImageUrl: list.coverImageUrl,
       ...coverCreditFields(coverManual, list.coverImageUrl, previous),
+      coverFocus: coverFocusAfter(list.coverFocus, list.coverImageUrl, previous),
       previewImages: list.previewImages,
       // Whose published pictures this list holds copies of, so taking that list
       // down for its pictures takes them out of the copies too.
@@ -4791,6 +4827,8 @@ async function createTopic(response: Response, identity: Identity, body: unknown
   }
   const asked = readTopicPictureId(source.pictureId);
   if (!asked.ok) return refuseSection(response, { code: "BAD_PICTURE", why: "missing" });
+  const pictureFocus = readFocus(source.pictureFocus);
+  if (pictureFocus === "invalid") return void response.status(400).json({ error: FOCUS_RANGE, code: "INVALID", detail: "pictureFocus" });
   const credit = typeof asked.pictureId === "string" ? await topicCredit(source.pictureAttribution, null) : undefined;
   if (credit !== undefined && typeof credit === "object" && "error" in credit) return badTopicCredit(response, credit.error);
   const pictureAttribution = typeof credit === "object" ? credit : null;
@@ -4806,6 +4844,7 @@ async function createTopic(response: Response, identity: Identity, body: unknown
     transaction.set(ref, {
       picture: picture?.picture ?? null,
       ...(picture !== null && pictureAttribution !== null ? { pictureAttribution } : {}),
+      ...(picture !== null && pictureFocus !== null ? { pictureFocus } : {}),
       name: decision.name,
       nameLower: decision.nameLower,
       names,
@@ -4909,6 +4948,9 @@ async function editTopic(response: Response, identity: Identity, topicId: string
   if (edit.name !== undefined || edit.names !== undefined) {
     Object.assign(update, searchFieldsFor([edit.name ?? stored.name, ...Object.values(edit.names ?? stored.names ?? {})]));
   }
+  const sentFocus = (body as Record<string, unknown> | null)?.pictureFocus;
+  const pictureFocus = readFocus(sentFocus);
+  if (pictureFocus === "invalid") return void response.status(400).json({ error: FOCUS_RANGE, code: "INVALID", detail: "pictureFocus" });
   const credit = await topicCredit((body as Record<string, unknown> | null)?.pictureAttribution, stored.pictureAttribution);
   if (credit !== undefined && typeof credit === "object" && "error" in credit) return badTopicCredit(response, credit.error);
   // A new picture is copied before the decision and removed again if the edit does not land.
@@ -4926,6 +4968,9 @@ async function editTopic(response: Response, identity: Identity, topicId: string
   const pictureChanged = pictureAfter !== (stored.picture?.url ?? null);
   if (typeof credit === "object" && pictureAfter !== null) update.pictureAttribution = credit;
   else if (credit === "cleared" || ((pictureChanged || pictureAfter === null) && stored.pictureAttribution)) update.pictureAttribution = null;
+  // The focus goes with the picture too: a new one without a focus, or none, shows from the centre.
+  if (sentFocus !== undefined && pictureAfter !== null) update.pictureFocus = pictureFocus;
+  else if ((pictureChanged || pictureAfter === null) && stored.pictureFocus) update.pictureFocus = null;
 
   type Saved = { replaced: string | null } | "settled" | { taken: string };
   const saved = await keepingOnlyIfWritten(copied, () => db.runTransaction(async (transaction): Promise<Saved> => {
