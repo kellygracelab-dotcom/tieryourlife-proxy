@@ -75,7 +75,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 14;
+const CACHE_SHAPE = 15;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -487,18 +487,32 @@ export async function igdbAccess(id: string, secret: string): Promise<string> {
   return igdbToken.value;
 }
 
-async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
+export async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
   const id = igdbClientId.value().trim();
   const secret = igdbClientSecret.value().trim();
   if (!id || !secret) return { hits: [], hasMore: false };
   const typed = input.typed.replace(/["\\]/g, " ").trim();
-  const query = `search "${typed}"; fields ${IGDB_QUERY_FIELDS}; where cover != null & version_parent = null; limit ${IGDB_PAGE}; offset ${(input.page - 1) * IGDB_PAGE};`;
-  const body = await getJson("https://api.igdb.com/v4/games", {
-    method: "POST",
-    headers: { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" },
-    body: query,
-  });
-  return { hits: igdbHits(body), hasMore: Array.isArray(body) && body.length >= IGDB_PAGE };
+  const headers = { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" };
+  const ask = (query: string) => getJson("https://api.igdb.com/v4/games", { method: "POST", headers, body: query });
+  const [body, rated] = await Promise.all([
+    ask(`search "${typed}"; fields ${IGDB_QUERY_FIELDS}; where cover != null & version_parent = null; limit ${IGDB_PAGE}; offset ${(input.page - 1) * IGDB_PAGE};`),
+    // IGDB's search ranks by text alone: "Mario" finds Mario & Luigi, not Super Mario Bros. The most rated games
+    // with the name in theirs come along on the first page (Web's request of 15.11.2026).
+    input.page === 1
+      ? ask(`fields ${IGDB_QUERY_FIELDS}; where name ~ *"${typed}"* & cover != null & version_parent = null & total_rating_count > 0; sort total_rating_count desc; limit ${IGDB_MOST_RATED};`)
+        .then(igdbHits, unlessRefused((): PictureHit[] => []))
+      : Promise.resolve([]),
+  ]);
+  return { hits: withMostRated(igdbHits(body), rated), hasMore: Array.isArray(body) && body.length >= IGDB_PAGE };
+}
+
+/** The most rated games added to a search's first page. */
+const IGDB_MOST_RATED = 10;
+
+/** [searched] in IGDB's order, then those of [rated] it lacks, most rated first. */
+export function withMostRated(searched: readonly PictureHit[], rated: readonly PictureHit[]): PictureHit[] {
+  const ids = new Set(searched.map((hit) => hit.id));
+  return [...searched, ...rated.filter((hit) => !ids.has(hit.id))];
 }
 
 /** IGDB's games called exactly this, oldest first: the original, which its search can rank below the remakes. */

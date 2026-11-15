@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import * as emulator from "../src/emulator";
-import { igdbClientId, igdbClientSecret, igdbNamed } from "../src/pictureSearch";
+import { askIgdb, igdbClientId, igdbClientSecret, igdbNamed } from "../src/pictureSearch";
 
 const CLIENT_ID = "test-client-id";
 const CLIENT_SECRET = "test+secret&= /?ü";
@@ -44,6 +44,51 @@ describe("IGDB's Twitch app token", () => {
 
     assert.deepEqual(asked, ["https://id.twitch.tv/oauth2/token", "https://api.igdb.com/v4/games"]);
     assert.deepEqual(hits.map((hit) => hit.id), ["igdb:7331"]);
+  });
+
+  it("adds the most rated games with the name in theirs to a search's first page, without repeats", async () => {
+    const bodies: string[] = [];
+    mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.url === "https://id.twitch.tv/oauth2/token") return Response.json({ access_token: ACCESS_TOKEN, expires_in: 60 });
+      const body = await request.text();
+      bodies.push(body);
+      if (body.startsWith("search ")) {
+        return Response.json([
+          { id: 1, name: "Mario & Luigi: Partners in Time", total_rating_count: 90, cover: { image_id: "co1" } },
+          { id: 2, name: "Super Mario Odyssey", total_rating_count: 2000, cover: { image_id: "co2" } },
+        ]);
+      }
+      return Response.json([
+        { id: 3, name: "Super Mario Bros.", total_rating_count: 2500, cover: { image_id: "co3" } },
+        { id: 2, name: "Super Mario Odyssey", total_rating_count: 2000, cover: { image_id: "co2" } },
+      ]);
+    });
+    const input = { typed: 'Mar"io', scope: "games" as const, language: "en", page: 1, forcedWeb: false, quick: false, uid: "u" };
+
+    const first = await askIgdb(input);
+    assert.deepEqual(first.hits.map((hit) => hit.id), ["igdb:1", "igdb:2", "igdb:3"]);
+    assert.equal(bodies.length, 2);
+    const rated = bodies.find((body) => !body.startsWith("search "))!;
+    assert.match(rated, /where name ~ \*"Mar io"\* & cover != null & version_parent = null & total_rating_count > 0; sort total_rating_count desc; limit 10;/);
+
+    bodies.length = 0;
+    await askIgdb({ ...input, page: 2 });
+    assert.equal(bodies.length, 1, "the next page asks only the search");
+  });
+
+  it("keeps the search when the most rated cannot be read, and rests when IGDB refuses", async () => {
+    let refuse = 400;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.url === "https://id.twitch.tv/oauth2/token") return Response.json({ access_token: ACCESS_TOKEN, expires_in: 60 });
+      if ((await request.text()).startsWith("search ")) return Response.json([{ id: 1, name: "Mario Kart 8", cover: { image_id: "co1" } }]);
+      return new Response("no", { status: refuse });
+    });
+    const input = { typed: "Mario", scope: "games" as const, language: "en", page: 1, forcedWeb: false, quick: false, uid: "u" };
+    assert.deepEqual((await askIgdb(input)).hits.map((hit) => hit.id), ["igdb:1"]);
+    refuse = 429;
+    await assert.rejects(askIgdb(input));
   });
 
   it("reports a refused token by host and status without exposing credentials or the response body", async () => {
