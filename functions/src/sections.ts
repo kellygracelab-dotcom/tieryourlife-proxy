@@ -386,6 +386,28 @@ export function readNames(
 }
 
 /**
+ * An edit's translations laid over the stored ones, language by language
+ * (Content's report of 15.11.2026: an editor that sent one language wiped the
+ * rest): a language sent replaces its translation, one sent empty or null
+ * takes it away, and every language not sent stays. Null when [raw] is no set
+ * of translations `readNames` takes.
+ */
+export function mergeNames(
+  stored: Readonly<Record<string, string>>,
+  raw: unknown,
+  clean: (raw: unknown) => string | null = cleanSectionName,
+): Record<string, string> | null {
+  const sent = readNames(raw, clean);
+  if (sent === null) return null;
+  const merged: Record<string, string> = { ...stored };
+  for (const locale of Object.keys(raw as Record<string, unknown>)) {
+    if (Object.hasOwn(sent, locale)) merged[locale] = sent[locale];
+    else delete merged[locale];
+  }
+  return merged;
+}
+
+/**
  * The section, approved or waiting, that already goes by one of these names
  * in any language. Declined and merged ones have given their names up.
  */
@@ -508,6 +530,8 @@ export type EditRefusal =
 export function readSectionEdits(
   body: unknown,
   allowed: readonly EditField[],
+  /** A stored section's translations, which the sent ones are laid over (`mergeNames`); none for a new section. */
+  storedNames?: Readonly<Record<string, string>>,
 ): { ok: true; edits: SectionEdits } | ({ ok: false } & EditRefusal) {
   const source = (body ?? {}) as Record<string, unknown>;
   const sent = (field: string) => source[field] !== undefined;
@@ -519,7 +543,7 @@ export function readSectionEdits(
     edits.name = name;
   }
   if (allowed.includes("names") && sent("names")) {
-    const names = readNames(source.names);
+    const names = storedNames === undefined ? readNames(source.names) : mergeNames(storedNames, source.names);
     if (names === null) return { ok: false, code: "BAD_NAME" };
     edits.names = names;
   }

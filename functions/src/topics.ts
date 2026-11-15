@@ -4,7 +4,7 @@
  * as a label everyone can see. Pure, like the rest of the deciding here;
  * `community.ts` does the reads and writes.
  */
-import { OTHER, readNames } from "./sections";
+import { mergeNames, OTHER, readNames } from "./sections";
 import type { CatalogueCredit, ManualAttribution } from "./pictureAttribution";
 import type { CoverFocus } from "./coverFocus";
 import { isPictureId } from "./safety";
@@ -394,7 +394,8 @@ export function readTopicPictureId(value: unknown): { ok: true; pictureId: strin
  * a topic still waiting or approved. A name already taken is the caller's to
  * find out, against the stored topics and their reservations.
  */
-export function decideTopicEdit(topic: Pick<KnownTopic, "status">, body: unknown): TopicEdit {
+/** [topic]'s stored translations are what the sent ones are laid over (`mergeNames`). */
+export function decideTopicEdit(topic: Pick<KnownTopic, "status"> & { names: Readonly<Record<string, string>> }, body: unknown): TopicEdit {
   if (topic.status !== "pending" && topic.status !== "approved") return { ok: false, reason: "settled" };
   const source = (body ?? {}) as Record<string, unknown>;
   const edit: Extract<TopicEdit, { ok: true }> = { ok: true };
@@ -405,7 +406,8 @@ export function decideTopicEdit(topic: Pick<KnownTopic, "status">, body: unknown
     edit.nameLower = name.toLowerCase();
   }
   if (source.names !== undefined) {
-    const names = readTopicNames(source.names);
+    // Laid over the stored translations: the languages not sent stay.
+    const names = mergeNames(topic.names, source.names, cleanTopicName);
     if (names === null) {
       const locale = refusedTopicLocale(source.names);
       return { ok: false, reason: "bad_name", detail: "names", ...(locale === null ? {} : { locale }) };
