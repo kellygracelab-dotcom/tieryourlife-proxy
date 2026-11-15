@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { cropOf, defaultFocus, readFocus, type CoverFocus, type Crop } from "../src/coverFocus";
 import { decideStore, settleCoverFocus, settlePictureFocus } from "../src/sync";
 import { decidePublish, keptPictureFocus, settle } from "../src/publishing";
-import { catalogueCreditOf, coverFocusAfter, toSummary, toTopic } from "../src/community";
+import { catalogueCreditOf, coverFocusAfter, previewFocusOf, toSummary, toTopic } from "../src/community";
 import { newSection, readSectionEdits, sectionView, type SectionRecord } from "../src/sections";
 
 interface Vectors {
@@ -248,5 +248,20 @@ describe("a house list cover credited to its catalogue", () => {
     assert.equal(catalogueCreditOf({ manual: false, link: "https://www.themoviedb.org/movie/603" }), null);
     assert.equal(catalogueCreditOf({ link: "https://example.com/603" }), null);
     assert.equal(catalogueCreditOf(null), null);
+  });
+});
+
+describe("a feed card's collage focus", () => {
+  it("gives each collage picture its card's focus, one for one, and nothing when none has one", () => {
+    const items = [{ imageUrl: "https://a", pictureFocus: FOCUS }, { imageUrl: "https://b" }, { imageUrl: "https://a", pictureFocus: { x: 0, y: 0, zoom: 1 } }];
+    assert.deepEqual(previewFocusOf(["https://b", "https://a", "https://other"], items), { previewFocus: [null, FOCUS, null] });
+    assert.deepEqual(previewFocusOf(["https://b"], items), {});
+    assert.deepEqual(previewFocusOf([], undefined), {});
+    const stored = {
+      title: "Films", titleLower: "films", authorUid: "a", authorName: "A", authorPhotoUrl: null, category: "film_tv",
+      itemCount: 3, tiers: [{ label: "S" }], items, coverImageUrl: null, previewImages: ["https://a", "http://not-web", "https://b"], tierColors: [],
+    };
+    const summary = toSummary("l", stored as never);
+    assert.deepEqual([summary.previewImages, summary.previewFocus], [["https://a", "https://b"], [FOCUS, null]]);
   });
 });

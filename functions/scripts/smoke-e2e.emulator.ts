@@ -307,6 +307,8 @@ describe("the proxy under the demo emulators", () => {
     const cardList = await call(author, "POST", "/lists", { title: "Focused card list", category: "film_tv", tiers: [TIER], items: [{ title: "Arrival", imageUrl: poster, pictureFocus: focus }] });
     assert.equal(cardList.status, 201, JSON.stringify(cardList.body));
     assert.deepEqual(((await call(author, "GET", `/lists/${cardList.body.id}`)).body.items as { pictureFocus?: unknown }[])[0]?.pictureFocus, focus);
+    // The feed's collage cells carry their cards' focus, one for one.
+    assert.deepEqual((await call(author, "GET", `/lists/${cardList.body.id}`)).body.previewFocus, [focus]);
 
     // Topics and sections: staff set it with the picture; a new picture without one goes back to the centre.
     const owner = await ownerToken();
