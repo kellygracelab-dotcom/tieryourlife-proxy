@@ -53,7 +53,8 @@ describe("readPlay", () => {
   });
 
   it("reads each kind, two cards and sixty-four", () => {
-    for (const kind of ["swiss", "hill", "bracket", "smart"]) assert.equal(readPlay(play({ kind }))?.kind, kind);
+    for (const kind of ["swiss", "hill", "bracket"]) assert.equal(readPlay(play({ kind }))?.kind, kind);
+    assert.equal(readPlay(play({ kind: "smart", refine: false, tiers: 3 }))?.kind, "smart");
     assert.equal(readPlay(play({ kind: "Smart" })), null);
     assert.equal(readPlay(play({ kind: "elo" })), null);
     assert.ok(readPlay(play({ count: 2, ids: ["a", "b"], history: [[0, 1, 0]] })));
@@ -171,6 +172,33 @@ describe("decideStore and the weight of a game", () => {
   it("keeps a game that fits", () => {
     const decision = store({ ...heavyBoard(20_000), play: play() });
     assert.equal(decision.ok && decision.board.play?.kind, "swiss");
+  });
+});
+
+describe("the smart game's tiers", () => {
+  const smart = (some: Record<string, unknown> = {}) => play({ kind: "smart", refine: false, tiers: 3, ...some });
+
+  it("is part of the game, one to count, kept in place after startedAt", () => {
+    assert.deepEqual(readPlay(smart()), smart());
+    assert.deepEqual(Object.keys(readPlay(smart({ scope: ["tier-1"], keepTier: true, tiers: 4 }))!), ["kind", "count", "seed", "refine", "ids", "history", "round", "startedAt", "tiers", "scope", "keepTier"]);
+    assert.equal(readPlay(smart({ tiers: 1 }))?.tiers, 1);
+    assert.equal(readPlay(smart({ tiers: 4 }))?.tiers, 4);
+  });
+
+  it("makes a smart game without a whole number from one to count no game", () => {
+    for (const tiers of [undefined, null, 0, 5, 2.5, "3", -1]) assert.equal(readPlay(smart({ tiers })), null, String(tiers));
+    const dropped = store(board({ play: smart({ tiers: 0 }) }));
+    assert.equal(dropped.ok && dropped.board.play, undefined, "a write sending it is refused 400 INVALID (boards.ts)");
+  });
+
+  it("is left out of another kind's game, as any key it does not have", () => {
+    assert.deepEqual(readPlay(play({ tiers: 3 })), play());
+    assert.equal(readPlay(play({ kind: "hill", tiers: 99 }))?.tiers, undefined);
+  });
+
+  it("travels through the stored form and back", () => {
+    const kept = playFromDocument(playToDocument(readPlay(smart())!, NOW));
+    assert.deepEqual(kept?.play, smart());
   });
 });
 

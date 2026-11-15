@@ -83,7 +83,7 @@ describe("the proxy under the demo emulators", () => {
     const cards = ["c1", "c2", "c3", "c4"].map((uid, position) => ({ uid, tierUid: "t1", position, title: `Card ${uid}` }));
     const base = { title: "Smart board", tiers: [{ ...TIER, uid: "t1", position: 0 }], items: cards };
     const game = (kind: string) => ({ kind, count: 4, seed: 7, refine: false, ids: ["c1", "c2", "c3", "c4"], history: [[0, 1, 0], [2, 3, null]], round: 1, startedAt: Date.now() - 1000 });
-    const smart = game("smart");
+    const smart = { ...game("smart"), tiers: 2 };
     const hill = game("hill");
     assert.equal((await call(author, "PUT", `/boards/smart-${stamp}`, { ...base, fingerprint: "smart-1", play: smart })).status, 200);
     assert.equal((await call(author, "PUT", `/boards/hill-${stamp}`, { ...base, fingerprint: "hill-1", play: hill })).status, 200);
@@ -95,7 +95,8 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(after.status, 200);
     assert.deepEqual((await call(author, "GET", `/boards/smart-${stamp}`)).body.play, smart);
     assert.deepEqual((await call(author, "GET", `/boards/hill-${stamp}`)).body.play, hill);
-    // A kind nobody knows is refused, not stored for clients to choke on.
+    // A smart game without its tiers, and a kind nobody knows, are refused, not stored for clients to choke on.
+    assert.equal((await call(author, "PUT", `/boards/smart-${stamp}`, { ...base, fingerprint: "smart-3", basedOn: 2, play: game("smart") })).status, 400);
     const unknown = await call(author, "PUT", `/boards/smart-${stamp}`, { ...base, fingerprint: "smart-3", basedOn: 2, play: game("elo") });
     assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
   });

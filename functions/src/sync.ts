@@ -146,6 +146,12 @@ export interface Play {
   history: PlayOutcome[];
   round: number;
   startedAt: number;
+  /**
+   * The smart game only, and always there: how many tiers it sorts the cards into, 1 to `count`, fixed when it
+   * starts (the board's tiers then; `count` for a game kept in one tier), as the seed is, so a tier edited
+   * mid-game or a board not yet synced cannot give two devices different next pairs. Absent for the other kinds.
+   */
+  tiers?: number;
   /** The tiers the cards were drawn from, by uid; absent when the game is over the whole board. */
   scope?: string[];
   /** The result goes back into the one tier it came from rather than across the board; only ever true. */
@@ -190,6 +196,8 @@ export function readPlay(value: unknown): Play | null {
   if (history.some((one) => one === null)) return null;
   const scope = playScope(source);
   if (scope === null) return null;
+  // Required for the smart game; another kind's is not part of it and is left out, as any unknown key is.
+  if (kind === "smart" && !isInteger(source.tiers, 1, count)) return null;
   return {
     kind,
     count,
@@ -199,6 +207,7 @@ export function readPlay(value: unknown): Play | null {
     history: history as PlayOutcome[],
     round: source.round,
     startedAt: source.startedAt,
+    ...(kind === "smart" ? { tiers: source.tiers as number } : {}),
     ...scope,
   };
 }
