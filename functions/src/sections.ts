@@ -397,6 +397,24 @@ export function readNames(
 }
 
 /**
+ * Which field of a set of translations `readNames` refuses, for the form to
+ * show the error by it: "names" when it is no set, else "names.<locale>" of
+ * the first unknown language or improper name. Null when it takes them.
+ */
+export function refusedNamesField(
+  value: unknown,
+  clean: (raw: unknown) => string | null = cleanSectionName,
+): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "names";
+  for (const [locale, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!(SECTION_LOCALES as readonly string[]).includes(locale)) return `names.${locale}`;
+    if (raw === null || (typeof raw === "string" && raw.trim() === "")) continue;
+    if (clean(raw) === null) return `names.${locale}`;
+  }
+  return null;
+}
+
+/**
  * An edit's translations laid over the stored ones, language by language
  * (Content's report of 15.11.2026: an editor that sent one language wiped the
  * rest): a language sent replaces its translation, one sent empty or null
@@ -475,8 +493,11 @@ export function pickSectionId(name: string, taken: ReadonlySet<string>, random: 
   }
 }
 
+/** Which field: "name", "names" or "names.<locale>". */
+export type NameRefusal = { code: "BAD_NAME"; detail: string };
+
 export type ProposalRefusal =
-  | { code: "BAD_NAME" }
+  | NameRefusal
   | { code: "NAME_TAKEN"; id: string }
   | { code: "BAD_ICON" }
   | { code: "BAD_FILE_UNDER" }
@@ -502,7 +523,7 @@ export interface ProposalInput {
 export function decideProposal({ body, callerUid, sections }: ProposalInput): ProposalDecision {
   const source = (body ?? {}) as Record<string, unknown>;
   const name = cleanSectionName(source.name);
-  if (name === null) return { ok: false, code: "BAD_NAME" };
+  if (name === null) return { ok: false, code: "BAD_NAME", detail: "name" };
   const clash = findClash([name], sections, null);
   if (clash !== null) return { ok: false, code: "NAME_TAKEN", id: clash };
   const icon = source.icon === undefined || source.icon === null ? DEFAULT_ICON : source.icon;
@@ -532,7 +553,7 @@ export interface SectionEdits {
 export type EditField = keyof SectionEdits;
 
 export type EditRefusal =
-  | { code: "BAD_NAME" }
+  | NameRefusal
   | { code: "BAD_ICON" }
   | { code: "BAD_PICTURE"; why: "missing" }
   | { code: "INVALID"; detail: string };
@@ -550,12 +571,12 @@ export function readSectionEdits(
 
   if (allowed.includes("name") && sent("name")) {
     const name = cleanSectionName(source.name);
-    if (name === null) return { ok: false, code: "BAD_NAME" };
+    if (name === null) return { ok: false, code: "BAD_NAME", detail: "name" };
     edits.name = name;
   }
   if (allowed.includes("names") && sent("names")) {
     const names = storedNames === undefined ? readNames(source.names) : mergeNames(storedNames, source.names);
-    if (names === null) return { ok: false, code: "BAD_NAME" };
+    if (names === null) return { ok: false, code: "BAD_NAME", detail: refusedNamesField(source.names) ?? "names" };
     edits.names = names;
   }
   if (allowed.includes("icon") && sent("icon")) {

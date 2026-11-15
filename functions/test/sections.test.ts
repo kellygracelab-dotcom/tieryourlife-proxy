@@ -11,6 +11,7 @@ import {
   checkName,
   cleanSectionName,
   graphemeCount,
+  refusedNamesField,
   collageImage,
   countWithout,
   decideDeletion,
@@ -322,7 +323,7 @@ describe("decideProposal", () => {
   });
 
   it("refuses a name that is not one", () => {
-    assert.deepEqual(propose({ name: "!" }), { ok: false, code: "BAD_NAME" });
+    assert.deepEqual(propose({ name: "!" }), { ok: false, code: "BAD_NAME", detail: "name" });
   });
 
   it("refuses a name another section goes by, saying which", () => {
@@ -435,8 +436,15 @@ describe("readSectionEdits", () => {
   });
 
   it("refuses what is not one", () => {
-    assert.deepEqual(readSectionEdits({ name: "!" }, ["name"]), { ok: false, code: "BAD_NAME" });
-    assert.deepEqual(readSectionEdits({ names: { xx: "Food" } }, ["names"]), { ok: false, code: "BAD_NAME" });
+    assert.deepEqual(readSectionEdits({ name: "!" }, ["name"]), { ok: false, code: "BAD_NAME", detail: "name" });
+    assert.deepEqual(readSectionEdits({ names: { xx: "Food" } }, ["names"]), { ok: false, code: "BAD_NAME", detail: "names.xx" });
+    // The form shows the error by the field that failed: the name, one translation, or the translations as a whole.
+    assert.deepEqual(readSectionEdits({ name: "Cars", names: { de: "Autos", ja: "?" } }, ["name", "names"]), { ok: false, code: "BAD_NAME", detail: "names.ja" });
+    assert.deepEqual(readSectionEdits({ names: ["車"] }, ["names"]), { ok: false, code: "BAD_NAME", detail: "names" });
+    assert.deepEqual(readSectionEdits({ names: { ja: "?" } }, ["names"], { de: "Autos" }), { ok: false, code: "BAD_NAME", detail: "names.ja" });
+    assert.deepEqual(readSectionEdits({ name: "Cars", names: { ja: "車", de: "" } }, ["name", "names"]), { ok: true, edits: { name: "Cars", names: { ja: "車" } } });
+    assert.equal(refusedNamesField({ ja: "車", de: null }), null);
+    assert.equal(refusedNamesField(null), "names");
     assert.deepEqual(readSectionEdits({ icon: "rocket" }, ["icon"]), { ok: false, code: "BAD_ICON" });
     assert.equal(readSectionEdits({ rank: 1.5 }, ["rank"]).ok, false);
     assert.equal(readSectionEdits({ hidden: "yes" }, ["hidden"]).ok, false);
