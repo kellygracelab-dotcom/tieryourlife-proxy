@@ -1,5 +1,5 @@
 import { defineString } from "firebase-functions/params";
-import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
+import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, keepCopiesForLater, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { copySwitches } from "./pictureCopies";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
@@ -3253,7 +3253,8 @@ async function publish(
     copyCataloguePictures(`published/${target}/`, catalogueUrls, catalogueCopyTools(pictureTools), { nameSuffix, committed: catalogueCommitted }),
   ]);
   if (!outside.ok) {
-    await Promise.all(catalogue.saved.map((path) => pictureTools.remove(path).catch(() => undefined)));
+    // The catalogue copies made wait in the shared folder for the list sent again.
+    await keepCopiesForLater(catalogue.saved);
     if ("overDailyLimit" in outside) {
       response.status(429).json({ error: "Too many pictures from other sites today", code: "WEB_PICTURES_DAILY_LIMIT" });
       return;
@@ -3273,7 +3274,8 @@ async function publish(
   const notCopied = byline.speaker === null ? [] : catalogueUrls.filter((url) => !catalogue.copies.has(url) && LICENSED_SOURCES.has(catalogueSourceOf(url) ?? ""));
   if (notCopied.length > 0) {
     console.warn(`House publication of ${target}: ${notCopied.length} of ${catalogueUrls.length} catalogue pictures not copied`);
-    await Promise.all([...outside.saved, ...catalogue.saved].map((path) => pictureTools.remove(path).catch(() => undefined)));
+    // The copies made are not fetched again: the next attempt takes them from the shared folder.
+    await Promise.all([...outside.saved.map((path) => pictureTools.remove(path).catch(() => undefined)), keepCopiesForLater(catalogue.saved)]);
     return wikimediaNotReady(response, "PICTURES_NOT_COPIED", null, { imageUrls: notCopied });
   }
 
