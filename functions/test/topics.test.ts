@@ -405,7 +405,7 @@ describe("decideTopicEdit", () => {
   const approved = topic({ id: "a" });
 
   it("renames, lower-casing the name for finding", () => {
-    assert.deepEqual(decideTopicEdit(approved, { name: "  Academy  Awards " }), {
+    assert.deepEqual(decideTopicEdit({ ...approved, names: {} }, { name: "  Academy  Awards " }), {
       ok: true,
       name: "Academy Awards",
       nameLower: "academy awards",
@@ -413,18 +413,18 @@ describe("decideTopicEdit", () => {
   });
 
   it("sets translations, alone or with a name", () => {
-    assert.deepEqual(decideTopicEdit(approved, { names: { uk: "Оскар" } }), { ok: true, names: { uk: "Оскар" } });
+    assert.deepEqual(decideTopicEdit({ ...approved, names: {} }, { names: { uk: "Оскар" } }), { ok: true, names: { uk: "Оскар" } });
   });
 
   it("refuses a bad name or bad translations", () => {
-    assert.deepEqual(decideTopicEdit(approved, { name: "?" }), { ok: false, reason: "bad_name", detail: "name" });
-    assert.deepEqual(decideTopicEdit(approved, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name", detail: "names", locale: "xx" });
+    assert.deepEqual(decideTopicEdit({ ...approved, names: {} }, { name: "?" }), { ok: false, reason: "bad_name", detail: "name" });
+    assert.deepEqual(decideTopicEdit({ ...approved, names: {} }, { names: { xx: "Oscars" } }), { ok: false, reason: "bad_name", detail: "names", locale: "xx" });
   });
 
   it("edits a waiting topic too, and nothing rejected or merged", () => {
-    assert.equal(decideTopicEdit(topic({ id: "p", status: "pending" }), { name: "Oscars" }).ok, true);
-    assert.deepEqual(decideTopicEdit(topic({ id: "r", status: "rejected" }), { name: "Oscars" }), { ok: false, reason: "settled" });
-    assert.deepEqual(decideTopicEdit(topic({ id: "m", status: "merged" }), { name: "Oscars" }), { ok: false, reason: "settled" });
+    assert.equal(decideTopicEdit({ ...topic({ id: "p", status: "pending" }), names: {} }, { name: "Oscars" }).ok, true);
+    assert.deepEqual(decideTopicEdit({ ...topic({ id: "r", status: "rejected" }), names: {} }, { name: "Oscars" }), { ok: false, reason: "settled" });
+    assert.deepEqual(decideTopicEdit({ ...topic({ id: "m", status: "merged" }), names: {} }, { name: "Oscars" }), { ok: false, reason: "settled" });
   });
 });
 

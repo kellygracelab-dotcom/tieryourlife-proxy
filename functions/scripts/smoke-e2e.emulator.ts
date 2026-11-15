@@ -232,6 +232,11 @@ describe("the proxy under the demo emulators", () => {
     assert.ok((found.body.topics as { id: string }[]).some((topic) => topic.id === made.body.id), JSON.stringify(found.body));
     const refused = await call(owner, "POST", "/lists/topics", { name: `${name} 2`, section: "anime", names: { xx: "Nope" } });
     assert.deepEqual([refused.status, refused.body.code, refused.body.detail], [400, "INVALID", "names"]);
+    // An edit of one language keeps the others; an empty one takes its language away.
+    const german = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { names: { de: "Gezeichnete Filme" } });
+    assert.deepEqual([german.status, german.body.names], [200, { uk: "Мальовані фільми", de: "Gezeichnete Filme" }]);
+    const noGerman = await call(owner, "PATCH", `/lists/topics/${made.body.id}`, { names: { de: "" } });
+    assert.deepEqual(noGerman.body.names, { uk: "Мальовані фільми" });
   });
 
   it("keeps a topic picture's credit while the picture stays", async () => {
@@ -323,6 +328,10 @@ describe("the proxy under the demo emulators", () => {
     assert.deepEqual([sectionMoved.status, sectionMoved.body.pictureFocus], [200, { x: 0.7, y: 0.4, zoom: 2 }]);
     const sectionRepictured = await call(owner, "PATCH", `/lists/sections/${section.body.id}`, { pictureId: fourth });
     assert.deepEqual([sectionRepictured.status, sectionRepictured.body.pictureFocus], [200, undefined]);
+    // A section's translations are laid over the stored ones too.
+    assert.equal((await call(owner, "PATCH", `/lists/sections/${section.body.id}`, { names: { uk: `Фокус ${stamp}` } })).status, 200);
+    const sectionGerman = await call(owner, "PATCH", `/lists/sections/${section.body.id}`, { names: { de: `Fokus ${stamp}` } });
+    assert.deepEqual([sectionGerman.status, sectionGerman.body.names], [200, { uk: `Фокус ${stamp}`, de: `Fokus ${stamp}` }]);
   });
 
   it("shows a board's catalogue pictures from one shared copy, the device's fingerprint and revision kept", async () => {
@@ -528,6 +537,30 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(chosen.get("category"), "games");
     assert.equal(chosen.get("topicId"), null);
     assert.equal(chosen.get("movedByStaff"), undefined);
+  });
+
+  it("says where a house list comes from, on its page and in the feed, and nobody else's", async () => {
+    const owner = await ownerToken();
+    const listSource = { label: "Nix's fruit stream", url: "https://www.twitch.tv/videos/123456789" };
+    const body = { title: "Fruit ranked on a stream", category: "food", tiers: [TIER], items: [{ title: "Mango", tierIndex: 0 }] };
+    const bad = await call(owner, "POST", "/lists/editorial", { ...body, listSource: { label: "Stream", url: "http://www.twitch.tv/x" } });
+    assert.deepEqual([bad.status, bad.body.code, bad.body.detail], [400, "INVALID", "listSource"]);
+    const published = await call(owner, "POST", "/lists/editorial", { ...body, listSource: { ...listSource, label: "  Nix's   fruit stream " } });
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const id = String(published.body.id);
+    assert.deepEqual((await call(owner, "GET", `/lists/${id}`)).body.listSource, listSource);
+    const feed = (await call(owner, "GET", "/lists/editorial")).body.lists as { id: string; listSource?: unknown }[];
+    assert.deepEqual(feed.find((one) => one.id === id)?.listSource, listSource);
+    // An edit that leaves it out keeps it; null takes it away.
+    assert.equal((await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, title: "Fruit ranked on a stream, again" })).status, 200);
+    assert.deepEqual((await call(owner, "GET", `/lists/${id}`)).body.listSource, listSource);
+    assert.equal((await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, listSource: null })).status, 200);
+    assert.equal("listSource" in (await call(owner, "GET", `/lists/${id}`)).body, false);
+    // A person's own list does not carry one.
+    const author = await newAuthor("source");
+    const own = await call(author, "POST", "/lists", { ...body, title: "My fruit", listSource });
+    assert.equal(own.status, 201, JSON.stringify(own.body));
+    assert.equal("listSource" in (await call(author, "GET", `/lists/${own.body.id}`)).body, false);
   });
 
   it("refuses a house edit read at an older revision than the list now has, and writes nothing", async () => {

@@ -262,6 +262,7 @@ import { manualCredits } from "./manualAttribution";
 import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
 import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit, type ManualAttribution } from "./pictureAttribution";
 import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
+import { LIST_SOURCE_RULE, readListSource, type ListSource } from "./listSource";
 import {
   cleanTopicName,
   refusedTopicLocale,
@@ -476,6 +477,8 @@ interface StoredList {
   coverAttribution?: ManualAttribution;
   /** Which part of [coverImageUrl] shows (`coverFocus.ts`); absent or null for the centre. */
   coverFocus?: CoverFocus | null;
+  /** Where a house list comes from (`listSource.ts`); a house list's only. */
+  listSource?: ListSource;
   previewImages: string[];
   tierColors: string[];
   /** The topic this list carries, if any; the name is copied so a card needs no second read. */
@@ -592,6 +595,7 @@ export function toSummary(
     itemCount: data.itemCount,
     coverImageUrl: webPicture(data.coverImageUrl),
     ...(data.coverFocus && webPicture(data.coverImageUrl) !== null ? { coverFocus: data.coverFocus } : {}),
+    ...(data.listSource ? { listSource: data.listSource } : {}),
     previewImages: (data.previewImages ?? []).filter((url) => webPicture(url) !== null),
     tierColors: data.tierColors ?? [],
     topicId: data.topicId ?? null,
@@ -2188,7 +2192,7 @@ async function settleSection(
       response.status(403).json({ error: "Not yours", code: "NOT_YOURS", detail: "owner_only" });
       return;
     }
-    const read = readSectionEdits(body, ["name", "names", "icon", "rank", "tint"]);
+    const read = readSectionEdits(body, ["name", "names", "icon", "rank", "tint"], found.names);
     if (!read.ok) return refuseSection(response, read);
     if (read.edits.name !== undefined || read.edits.names !== undefined) {
       names = namesAfter(found, read.edits);
@@ -2284,7 +2288,7 @@ async function editSection(response: Response, identity: Identity, id: string, b
     response.status(400).json({ error: "A waiting section gets its place when it is approved", code: "INVALID", detail: notYet });
     return;
   }
-  const read = readSectionEdits(body, waiting ? PENDING_EDIT_FIELDS : APPROVED_EDIT_FIELDS);
+  const read = readSectionEdits(body, waiting ? PENDING_EDIT_FIELDS : APPROVED_EDIT_FIELDS, found.names);
   if (!read.ok) return refuseSection(response, read);
   const { edits } = read;
   const pictureRefusal = pictureEditRefusal(found, role, edits.pictureId);
@@ -2952,6 +2956,16 @@ export function coverCreditFields(
   return previous?.coverAttribution ? { coverAttribution: FieldValue.delete() } : {};
 }
 
+/** A house list's source as written: the one sent, none for null, the one it had when none was sent. */
+export function listSourceFields(
+  sent: ListSource | null | undefined,
+  previous: Pick<StoredList, "listSource"> | null,
+): { listSource?: ListSource | FieldValue } {
+  const kept = sent === undefined ? previous?.listSource ?? null : sent;
+  if (kept !== null) return { listSource: kept };
+  return previous?.listSource ? { listSource: FieldValue.delete() } : {};
+}
+
 /**
  * The focus a publication keeps for its cover: the one sent (null for the
  * centre), and for a client that sends none the one before while the cover
@@ -3146,6 +3160,13 @@ async function publish(
       ...(item.imageUrl !== null && before.has(storageMediaUrl(item.imageUrl)) ? { previous: before.get(storageMediaUrl(item.imageUrl)) } : {}),
     };
   });
+  // The house's source, or undefined to keep the one it had; anybody else's is not read.
+  let listSource: ListSource | null | undefined;
+  if (byline.speaker !== null && source.listSource !== undefined) {
+    const read = readListSource(source.listSource);
+    if (read === "invalid") return void response.status(400).json({ error: LIST_SOURCE_RULE, code: "INVALID", detail: "listSource" });
+    listSource = read;
+  }
   // The house's editor may give a picture's author, licence and page; anybody else's are not read.
   // The cover's: decided, "cleared", or undefined to keep the one it had.
   let coverManual: ManualAttribution | "cleared" | undefined;
@@ -3294,6 +3315,7 @@ async function publish(
       coverImageUrl: list.coverImageUrl,
       ...coverCreditFields(coverManual, list.coverImageUrl, previous),
       coverFocus: coverFocusAfter(list.coverFocus, list.coverImageUrl, previous),
+      ...listSourceFields(listSource, previous),
       previewImages: list.previewImages,
       // Whose published pictures this list holds copies of, so taking that list
       // down for its pictures takes them out of the copies too.
@@ -4914,7 +4936,7 @@ async function editTopic(response: Response, identity: Identity, topicId: string
   }
   const stored = snapshot.data() as StoredTopic;
   const topic = knownTopic(topicId, stored);
-  const edit = decideTopicEdit(topic, body);
+  const edit = decideTopicEdit({ ...topic, names: stored.names ?? {} }, body);
   if (!edit.ok) {
     if (edit.reason === "bad_name") {
       response.status(400).json({
