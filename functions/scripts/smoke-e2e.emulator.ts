@@ -53,11 +53,8 @@ describe("the proxy under the demo emulators", () => {
       items: [{ title: "First card", tierIndex: 0 }, { title: "", pictureId: kept.body.pictureId, tierIndex: 0 }],
       boardUid: board,
     };
-    const filmCount = async () => ((await call(token, "GET", "/lists/sections")).body.sections as { id: string; listCount: number }[]).find((one) => one.id === "film_tv")!.listCount;
-    const countBefore = await filmCount();
     const first = await call(token, "POST", "/lists", body);
     assert.equal(first.status, 201, JSON.stringify(first.body));
-    assert.ok((await filmCount()) >= countBefore + 1, "a publication shows in its section's count at once, not after the counts' ten minutes");
     const again = await call(token, "POST", "/lists/lists", body);
     assert.deepEqual(again, { status: 200, body: { id: first.body.id, topicId: null, existing: true, revision: 1 } });
 
@@ -66,6 +63,18 @@ describe("the proxy under the demo emulators", () => {
     assert.match(String((list.body.items as { imageUrl: string }[])[1].imageUrl), /published%2F/);
     const mine = await call(token, "GET", "/lists/lists/mine");
     assert.equal((mine.body.lists as { boardUid?: string }[])[0].boardUid, board);
+  });
+
+  it("counts a publication and its removal in its section at once, not after the counts' ten minutes", async () => {
+    // Books: no other e2e file publishes there, and they run beside this one.
+    const author = await newAuthor("counted");
+    const books = async () => ((await call(author, "GET", "/lists/sections")).body.sections as { id: string; listCount: number }[]).find((one) => one.id === "books")!.listCount;
+    const before = await books();
+    const published = await call(author, "POST", "/lists", { title: "Counted at once", category: "books", tiers: [TIER], items: [{ title: "A book", tierIndex: 0 }] });
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    assert.equal(await books(), before + 1);
+    assert.equal((await call(author, "DELETE", `/lists/${published.body.id}`)).status, 204);
+    assert.equal(await books(), before);
   });
 
   it("takes a picture by its link with the page it was found on, for an account and never a guest, and the house must name the page", async () => {
