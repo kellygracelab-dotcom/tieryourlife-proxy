@@ -77,6 +77,29 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(await books(), before);
   });
 
+  it("keeps a smart game through an older client's syncs, and every other board's game with it", async () => {
+    const author = await newAuthor("smart");
+    const stamp = Date.now().toString(36);
+    const cards = ["c1", "c2", "c3", "c4"].map((uid, position) => ({ uid, tierUid: "t1", position, title: `Card ${uid}` }));
+    const base = { title: "Smart board", tiers: [{ ...TIER, uid: "t1", position: 0 }], items: cards };
+    const game = (kind: string) => ({ kind, count: 4, seed: 7, refine: false, ids: ["c1", "c2", "c3", "c4"], history: [[0, 1, 0], [2, 3, null]], round: 1, startedAt: Date.now() - 1000 });
+    const smart = game("smart");
+    const hill = game("hill");
+    assert.equal((await call(author, "PUT", `/boards/smart-${stamp}`, { ...base, fingerprint: "smart-1", play: smart })).status, 200);
+    assert.equal((await call(author, "PUT", `/boards/hill-${stamp}`, { ...base, fingerprint: "hill-1", play: hill })).status, 200);
+    assert.deepEqual((await call(author, "GET", `/boards/smart-${stamp}`)).body.play, smart);
+    // Android 521 and 530 keep a game they cannot play as raw JSON and send it back with their next edit unchanged.
+    const edited = await call(author, "PUT", `/boards/smart-${stamp}`, { ...base, title: "Renamed on an old phone", fingerprint: "smart-2", basedOn: 1, play: smart });
+    assert.equal(edited.body.revision, 2, JSON.stringify(edited.body));
+    const after = await call(author, "GET", "/boards");
+    assert.equal(after.status, 200);
+    assert.deepEqual((await call(author, "GET", `/boards/smart-${stamp}`)).body.play, smart);
+    assert.deepEqual((await call(author, "GET", `/boards/hill-${stamp}`)).body.play, hill);
+    // A kind nobody knows is refused, not stored for clients to choke on.
+    const unknown = await call(author, "PUT", `/boards/smart-${stamp}`, { ...base, fingerprint: "smart-3", basedOn: 2, play: game("elo") });
+    assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
+  });
+
   it("takes a picture by its link with the page it was found on, for an account and never a guest, and the house must name the page", async () => {
     const url = `https://example.invalid/linked-${Date.now().toString(36)}.png`;
     const page = "https://example.com/found-here";
