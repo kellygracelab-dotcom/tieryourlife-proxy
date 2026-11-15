@@ -572,6 +572,22 @@ export function webPicture(value: unknown): string | null {
 }
 
 /**
+ * Each collage picture's focus, beside [previews] one for one: the
+ * `pictureFocus` of the first card showing that picture, or null for none
+ * (second round of cover focus, 15.11.2026). Left out when no picture has
+ * one, so a feed card reads as it did.
+ */
+export function previewFocusOf(previews: readonly string[], items: readonly unknown[] | undefined): { previewFocus?: (CoverFocus | null)[] } {
+  const focusOf = new Map<string, CoverFocus>();
+  for (const raw of items ?? []) {
+    const card = raw as { imageUrl?: unknown; pictureFocus?: CoverFocus } | null;
+    if (card && typeof card.imageUrl === "string" && card.pictureFocus && !focusOf.has(card.imageUrl)) focusOf.set(card.imageUrl, card.pictureFocus);
+  }
+  const previewFocus = previews.map((url) => focusOf.get(url) ?? null);
+  return previewFocus.some((one) => one !== null) ? { previewFocus } : {};
+}
+
+/**
  * A list as one reader is told it: an anonymous one by nobody, and so is a
  * copy's credit to one; `mine` when the reader is the one who published it,
  * and whether they follow its author when `followed` says whom they follow.
@@ -598,6 +614,7 @@ export function toSummary(
     ...(data.coverFocus && webPicture(data.coverImageUrl) !== null ? { coverFocus: data.coverFocus } : {}),
     ...(data.listSource ? { listSource: data.listSource } : {}),
     previewImages: (data.previewImages ?? []).filter((url) => webPicture(url) !== null),
+    ...previewFocusOf((data.previewImages ?? []).filter((url) => webPicture(url) !== null), data.items),
     tierColors: data.tierColors ?? [],
     topicId: data.topicId ?? null,
     topicName: data.topicName ?? null,
