@@ -385,6 +385,18 @@ describe("the proxy under the demo emulators", () => {
       assert.deepEqual((await call(token, "PUT", `/boards/${id}`, { ...board, basedOn: 0 })).body, { uid: id, revision: 1 });
       const again = await call(token, "PUT", `/boards/${id}`, { ...board, title: "Renamed", fingerprint: "fp-renamed", basedOn: 1 });
       assert.deepEqual([again.body.revision, (again.body.copies as Record<string, string>)[poster]], [2, shared]);
+      // A legacy writer's retry is the same board whether or not this write's copies came out as the first's
+      // (the switch, the window, the allowance): the state it is judged by is what the device sent.
+      const kept = `${id}k`;
+      assert.equal((await call(token, "PUT", `/boards/${kept}`, { ...board, fingerprint: "fp-kept", coverFocus: { x: 0.2, y: 0.3, zoom: 1 } })).body.revision, 1);
+      const legacy = { ...board, title: "Legacy rename", fingerprint: "fp-kept-renamed", basedOn: 1 };
+      const renamed = await call(token, "PUT", `/boards/${kept}`, legacy);
+      assert.equal(renamed.body.revision, 2, JSON.stringify(renamed.body));
+      assert.match(String((await call(token, "GET", `/boards/${kept}`)).body.fingerprint), /^state-v1:/);
+      await switches.set({ sources: { tmdb: false } });
+      assert.deepEqual((await call(token, "PUT", `/boards/${kept}`, legacy)).body, { uid: kept, revision: 2 });
+      await switches.set({ sources: { tmdb: true } });
+      await call(token, "DELETE", `/boards/${kept}`);
       const other = await call(token, "PUT", `/boards/${id}x`, { ...board, fingerprint: "fp-other" });
       assert.equal((other.body.copies as Record<string, string>)[poster], shared);
       // A board too large to show longer addresses keeps the catalogue's: about 673 KB of the 700 KB, over the 650 KB a move allows.
