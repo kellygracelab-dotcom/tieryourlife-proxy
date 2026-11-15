@@ -28,7 +28,15 @@ describe("a licence an editor may name", () => {
   it("is CC0, CC BY or CC BY-SA with a version, Public domain or Used with permission, in one shape with its deed", () => {
     assert.deepEqual(knownLicence("cc-by-sa 3.0"), { license: "CC BY-SA 3.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0/" });
     assert.deepEqual(knownLicence("CC BY 2.0"), { license: "CC BY 2.0", licenseUrl: "https://creativecommons.org/licenses/by/2.0/" });
-    assert.deepEqual(knownLicence("CC BY-SA 3.0 de"), { license: "CC BY-SA 3.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0/" });
+    // A port to one country's law keeps its country and that country's deed (second round, 15.11.2026).
+    assert.deepEqual(knownLicence("CC BY-SA 3.0 de"), { license: "CC BY-SA 3.0 de", licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0/de/" });
+    assert.deepEqual(knownLicence("CC BY 2.0 DE"), { license: "CC BY 2.0 de", licenseUrl: "https://creativecommons.org/licenses/by/2.0/de/" });
+    assert.deepEqual(knownLicence("cc-by-sa-2.5-nl"), { license: "CC BY-SA 2.5 nl", licenseUrl: "https://creativecommons.org/licenses/by-sa/2.5/nl/" });
+    // 4.0 was never ported: a country word there is left out, as before.
+    assert.deepEqual(knownLicence("CC BY 4.0 int"), { license: "CC BY 4.0", licenseUrl: "https://creativecommons.org/licenses/by/4.0/" });
+    assert.deepEqual(knownLicence("Copyrighted free use"), { license: "Copyrighted free use", licenseUrl: "https://commons.wikimedia.org/wiki/Template:Copyrighted_free_use" });
+    assert.equal(knownLicence("copyrighted-free-use")?.license, "Copyrighted free use");
+    assert.equal(knownLicence("Copyrighted"), null);
     assert.equal(knownLicence("CC0")?.license, "CC0 1.0");
     assert.equal(knownLicence("Public Domain Dedication (CC0)")?.license, "CC0 1.0");
     assert.equal(knownLicence("public domain")?.license, "Public domain");
@@ -37,7 +45,7 @@ describe("a licence an editor may name", () => {
 
   it("is read from a deed's address too", () => {
     assert.equal(knownLicence("https://creativecommons.org/licenses/by-sa/2.0/")?.license, "CC BY-SA 2.0");
-    assert.equal(knownLicence("http://creativecommons.org/licenses/by/3.0/de/deed.en")?.license, "CC BY 3.0");
+    assert.deepEqual(knownLicence("http://creativecommons.org/licenses/by/3.0/de/deed.en"), { license: "CC BY 3.0 de", licenseUrl: "https://creativecommons.org/licenses/by/3.0/de/" });
     assert.equal(knownLicence("https://creativecommons.org/publicdomain/zero/1.0/")?.license, "CC0 1.0");
     assert.equal(knownLicence("https://creativecommons.org/publicdomain/mark/1.0/")?.license, "Public domain");
   });

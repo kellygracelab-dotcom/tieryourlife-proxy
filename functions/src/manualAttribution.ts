@@ -41,20 +41,25 @@ export type ManualRefusal = "NO_LICENSE" | "UNKNOWN_LICENSE" | "NO_LINK" | "BAD_
 
 export const USED_WITH_PERMISSION = "Used with permission";
 const PUBLIC_DOMAIN = "Public domain";
+/** Commons' template for a holder who lets anybody use the work for anything (coordinator's second round, 15.11.2026). */
+export const COPYRIGHTED_FREE_USE = "Copyrighted free use";
 const CC_VERSIONS = new Set(["1.0", "2.0", "2.5", "3.0", "4.0"]);
+/** The versions Creative Commons ported to one country's law, each with that country's deed (`by-sa/2.0/de`). */
+const PORTED_VERSIONS = new Set(["2.0", "2.5", "3.0"]);
 
 /** A Creative Commons deed's address as the licence it names (`by-sa/2.0` → CC BY-SA 2.0). */
-const DEED = /^https?:\/\/(?:www\.)?creativecommons\.org\/(?:licenses\/(by|by-sa)\/(\d\.\d)(?:\/[a-z]{2,3})?|publicdomain\/(zero|mark)\/1\.0)\/?(?:deed\.[a-z-]+)?$/i;
+const DEED = /^https?:\/\/(?:www\.)?creativecommons\.org\/(?:licenses\/(by|by-sa)\/(\d\.\d)(?:\/([a-z]{2,3}))?|publicdomain\/(zero|mark)\/1\.0)\/?(?:deed\.[a-z-]+)?$/i;
 
 /**
  * [raw] as one of the licences a manual credit may name, in its one shape, with
- * its deed where it has one: CC0 1.0, CC BY or CC BY-SA with a version, Public
- * domain, or Used with permission. A deed's address names its licence too.
- * Null for anything else.
+ * its deed where it has one: CC0 1.0, CC BY or CC BY-SA with a version (a
+ * 2.0, 2.5 or 3.0 ported to a country keeps the country, `CC BY-SA 2.0 de`),
+ * Public domain, Copyrighted free use, or Used with permission. A deed's
+ * address names its licence too. Null for anything else.
  */
 export function knownLicence(raw: string): { license: string; licenseUrl?: string } | null {
   const deed = DEED.exec(raw.trim());
-  if (deed) return knownLicence(deed[3] === "zero" ? "CC0" : deed[3] === "mark" ? "Public domain" : `CC ${deed[1]} ${deed[2]}`);
+  if (deed) return knownLicence(deed[4] === "zero" ? "CC0" : deed[4] === "mark" ? "Public domain" : `CC ${deed[1]} ${deed[2]}${deed[3] ? ` ${deed[3]}` : ""}`);
   const plain = raw.replace(/[\s_-]+/g, " ").trim().toUpperCase();
   if (plain === "CC0" || plain === "CC0 1.0" || plain === "CC ZERO" || plain === "PUBLIC DOMAIN DEDICATION (CC0)") {
     return { license: "CC0 1.0", licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/" };
@@ -63,10 +68,17 @@ export function knownLicence(raw: string): { license: string; licenseUrl?: strin
     return { license: PUBLIC_DOMAIN, licenseUrl: "https://creativecommons.org/publicdomain/mark/1.0/" };
   }
   if (plain === "USED WITH PERMISSION") return { license: USED_WITH_PERMISSION };
-  const cc = /^CC BY( SA)? (\d\.\d)(?: [A-Z]{2,3})?$/.exec(plain);
+  if (plain === "COPYRIGHTED FREE USE" || plain === "COPYRIGHTED FREE USE PROVIDED THAT") {
+    return { license: COPYRIGHTED_FREE_USE, licenseUrl: "https://commons.wikimedia.org/wiki/Template:Copyrighted_free_use" };
+  }
+  const cc = /^CC BY( SA)? (\d\.\d)(?: ([A-Z]{2,3}))?$/.exec(plain);
   if (cc && CC_VERSIONS.has(cc[2]!)) {
     const kind = cc[1] ? "by-sa" : "by";
-    return { license: `CC ${kind.toUpperCase()} ${cc[2]}`, licenseUrl: `https://creativecommons.org/licenses/${kind}/${cc[2]}/` };
+    // A country's port names its country; any other country word (as on a 4.0, never ported) is left out as before.
+    const country = cc[3] && PORTED_VERSIONS.has(cc[2]!) ? cc[3].toLowerCase() : null;
+    return country === null
+      ? { license: `CC ${kind.toUpperCase()} ${cc[2]}`, licenseUrl: `https://creativecommons.org/licenses/${kind}/${cc[2]}/` }
+      : { license: `CC ${kind.toUpperCase()} ${cc[2]} ${country}`, licenseUrl: `https://creativecommons.org/licenses/${kind}/${cc[2]}/${country}/` };
   }
   return null;
 }

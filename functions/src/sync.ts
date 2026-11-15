@@ -78,6 +78,8 @@ export interface StoredItem {
   sourceIndex?: number;
   /** The picture's source and whom it names, as a search gave it (`pictureAttribution.ts`); absent when the client sent none. */
   attribution?: PictureAttribution;
+  /** Which part of the card's picture shows (`coverFocus.ts`); absent for the default. */
+  pictureFocus?: CoverFocus;
 }
 
 export interface StoredBoard extends OriginMetadata {
@@ -294,9 +296,12 @@ export function playAfterWrite(source: Record<string, unknown>, previous: Play |
 export function preservedPlayFingerprint(source: Record<string, unknown>, board: StoredBoard, play: Play | null): string | null {
   const preservedGame = !Object.hasOwn(source, "play") && play !== null && (play.count > 64 || play.history.length > 2000);
   const metadata = ["origin", "takenFrom", "rankingChoice", "coverFocus"] as const;
-  const sentItems = new Map(((source.items as Record<string, unknown>[] | undefined) ?? []).map((item) => [item.uid, item.sourceIndex]));
+  const sent = (source.items as Record<string, unknown>[] | undefined) ?? [];
+  const sentItems = new Map(sent.map((item) => [item.uid, item.sourceIndex]));
+  const sentFocus = new Map(sent.map((item) => [item.uid, JSON.stringify(item.pictureFocus ?? null)]));
   const retainedMetadata = metadata.some((key) => JSON.stringify(source[key] ?? null) !== JSON.stringify(board[key] ?? null)) ||
-    board.items.some((item) => item.sourceIndex !== undefined && sentItems.get(item.uid) !== item.sourceIndex);
+    board.items.some((item) => item.sourceIndex !== undefined && sentItems.get(item.uid) !== item.sourceIndex) ||
+    board.items.some((item) => item.pictureFocus !== undefined && sentFocus.get(item.uid) !== JSON.stringify(item.pictureFocus));
   if (!preservedGame && !retainedMetadata) return board.fingerprint;
   const { fingerprint: _opaque, play: _sent, ...content } = board;
   return `${preservedGame ? "game-v1" : "state-v1"}:${createHash("sha256").update(JSON.stringify({ ...content, play })).digest("hex")}`;
@@ -378,6 +383,8 @@ export interface StoreInput {
   storedCoverPictureId?: string | null;
   /** The cover focus already kept for this board, if any. */
   storedCoverFocus?: CoverFocus | null;
+  /** Each stored card's picture focus, by the card's uid. */
+  storedPictureFocus?: ReadonlyMap<string, CoverFocus>;
   storedOrigin?: OriginMetadata;
   storedSourceIndexes?: ReadonlyMap<string, number>;
 }
@@ -416,6 +423,22 @@ export function settleCoverFocus(
   return singleCover ? stored : null;
 }
 
+/**
+ * The focus a card keeps for its picture, by the cover's rule: the one sent,
+ * none for null, and for a writer that leaves the field out the stored one
+ * while the card still has a picture. A card without a picture has none.
+ */
+export function settlePictureFocus(
+  item: Record<string, unknown>,
+  hasPicture: boolean,
+  stored: CoverFocus | null,
+): CoverFocus | null | "invalid" {
+  const sent = item.pictureFocus === undefined ? undefined : readFocus(item.pictureFocus);
+  if (sent === "invalid") return sent;
+  if (!hasPicture) return null;
+  return sent === undefined ? stored : sent;
+}
+
 export function decideStore({
   body,
   isAnonymous,
@@ -423,6 +446,7 @@ export function decideStore({
   nowMs,
   storedCoverPictureId = null,
   storedCoverFocus = null,
+  storedPictureFocus = new Map(),
   storedOrigin = {},
   storedSourceIndexes = new Map(),
 }: StoreInput): StoreDecision {
@@ -521,6 +545,8 @@ export function decideStore({
     const attribution = itemImageUrl === null ? null : readAttribution(item.attribution);
     const sourceIndex = sourceIndexAfterWrite(item, sameOriginVersion ? storedSourceIndexes.get(itemUid) : undefined);
     if (sourceIndex === "invalid") return { ok: false, reason: "invalid", detail: "Invalid sourceIndex" };
+    const pictureFocus = settlePictureFocus(item, itemPictureId !== null || itemImageUrl !== null, storedPictureFocus.get(itemUid) ?? null);
+    if (pictureFocus === "invalid") return { ok: false, reason: "invalid", detail: `items[].pictureFocus: ${FOCUS_RANGE}` };
     items.push({
       uid: itemUid,
       pictureId: itemPictureId,
@@ -533,6 +559,7 @@ export function decideStore({
       ...(credit ? { credit } : {}),
       ...(sourceIndex === null ? {} : { sourceIndex }),
       ...(attribution ? { attribution } : {}),
+      ...(pictureFocus === null ? {} : { pictureFocus }),
     });
   }
   const trashed = items.filter((item) => item.deletedAt !== null).length;

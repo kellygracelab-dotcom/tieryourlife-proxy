@@ -95,6 +95,7 @@ import {
   MAX_TITLE_LENGTH,
   MAX_LISTS_PER_AUTHOR,
   decidePublish,
+  keptPictureFocus,
   picturesWanted,
   readBoardUid,
   snapshotFits,
@@ -474,7 +475,7 @@ interface StoredList {
   itemCount: number;
   coverImageUrl: string | null;
   /** The house editor's credit for [coverImageUrl] (`manualAttribution.ts`); a house list's only. */
-  coverAttribution?: ManualAttribution;
+  coverAttribution?: ManualAttribution | CatalogueCredit;
   /** Which part of [coverImageUrl] shows (`coverFocus.ts`); absent or null for the centre. */
   coverFocus?: CoverFocus | null;
   /** Where a house list comes from (`listSource.ts`); a house list's only. */
@@ -673,15 +674,24 @@ export function toTopic(id: string, data: StoredTopic, following: boolean, reade
  * AniList, IGDB, Steam or Open Library is kept as the catalogue's, as a card's
  * is (`{source, link, id?}`, not manual; any author sent goes). Since 14.11.2026.
  */
+/**
+ * A staff credit that names no licence and links a catalogue's title page
+ * (TMDB, AniList, IGDB, Steam, Open Library): the picture credited to that
+ * catalogue, for a topic's picture and a house list's cover alike. Null for
+ * any other credit.
+ */
+export function catalogueCreditOf(raw: unknown): CatalogueCredit | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const sent = raw as Record<string, unknown>;
+  const licence = typeof sent.license === "string" ? sent.license.trim() : sent.license ?? "";
+  return sent.manual !== false && licence === "" && (sent.licenseUrl ?? "") === "" ? catalogueTitleCredit(sent.link) : null;
+}
+
 async function topicCredit(raw: unknown, known: ManualAttribution | CatalogueCredit | null | undefined): Promise<ManualAttribution | CatalogueCredit | "cleared" | undefined | { error: string }> {
   if (raw === undefined) return undefined;
   if (raw === null) return "cleared";
-  if (typeof raw === "object" && !Array.isArray(raw)) {
-    const sent = raw as Record<string, unknown>;
-    const licence = typeof sent.license === "string" ? sent.license.trim() : sent.license ?? "";
-    const catalogue = sent.manual !== false && licence === "" && (sent.licenseUrl ?? "") === "" ? catalogueTitleCredit(sent.link) : null;
-    if (catalogue !== null) return catalogue;
-  }
+  const catalogue = catalogueCreditOf(raw);
+  if (catalogue !== null) return catalogue;
   const asked = typeof raw === "object" && !Array.isArray(raw) && (raw as Record<string, unknown>).manual === undefined ? { ...(raw as object), manual: true } : raw;
   const [credit] = await manualCredits([asked], [known !== null && known !== undefined && "manual" in known ? known : null]);
   if (credit === null || credit === undefined) return { error: "NO_LINK" };
@@ -2945,10 +2955,10 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
  * the cover is the same picture, or none (deleted when there was one).
  */
 export function coverCreditFields(
-  manual: ManualAttribution | "cleared" | undefined,
+  manual: ManualAttribution | CatalogueCredit | "cleared" | undefined,
   coverImageUrl: string | null,
   previous: Pick<StoredList, "coverImageUrl" | "coverAttribution"> | null,
-): { coverAttribution?: ManualAttribution | FieldValue } {
+): { coverAttribution?: ManualAttribution | CatalogueCredit | FieldValue } {
   const kept = coverImageUrl === null || manual === "cleared"
     ? null
     : manual ?? (previous?.coverAttribution && previous.coverImageUrl === coverImageUrl ? previous.coverAttribution : null);
@@ -3169,12 +3179,15 @@ async function publish(
   }
   // The house's editor may give a picture's author, licence and page; anybody else's are not read.
   // The cover's: decided, "cleared", or undefined to keep the one it had.
-  let coverManual: ManualAttribution | "cleared" | undefined;
+  let coverManual: ManualAttribution | CatalogueCredit | "cleared" | undefined;
   if (byline.speaker !== null) {
-    const coverRaw = source.coverAttribution === null ? { manual: false } : source.coverAttribution;
+    // A cover credited to its title's catalogue page, as a topic's picture can be (second round, 15.11.2026).
+    const coverCatalogue = catalogueCreditOf(source.coverAttribution);
+    const coverRaw = coverCatalogue !== null ? null : source.coverAttribution === null ? { manual: false } : source.coverAttribution;
+    const coverKnown = previous?.coverAttribution && "manual" in previous.coverAttribution ? previous.coverAttribution : null;
     const credits = await manualCredits(
       [...decision.draft.items.map((item) => item.sent?.manual), coverRaw],
-      [...cards.map((card) => manualOf(card.previous)), previous?.coverAttribution],
+      [...cards.map((card) => manualOf(card.previous)), coverKnown],
     );
     const wrong = credits.findIndex((one) => one !== null && typeof one === "object" && "error" in one);
     if (wrong >= 0) {
@@ -3189,7 +3202,7 @@ async function publish(
       if (one !== null && (item.imageUrl !== null || item.pictureId !== null)) cards[at]!.manual = one as ManualAttribution | "cleared";
     });
     const cover = credits[credits.length - 1];
-    coverManual = cover === null ? undefined : (cover as ManualAttribution | "cleared");
+    coverManual = coverCatalogue ?? (cover === null ? undefined : (cover as ManualAttribution | "cleared"));
   }
   const files = commonsFilesOf(cards);
   const commons = files.length > 0 && !isDemoEmulator() ? await askCommonsFully(files) : { found: new Map(), unasked: 0, retryAfterMs: null };
@@ -3310,7 +3323,7 @@ async function publish(
       topicId,
       topicName,
       tiers: list.tiers,
-      items: list.items,
+      items: keptPictureFocus(list.items, decision.draft.items, previous?.items),
       itemCount: list.items.length,
       coverImageUrl: list.coverImageUrl,
       ...coverCreditFields(coverManual, list.coverImageUrl, previous),

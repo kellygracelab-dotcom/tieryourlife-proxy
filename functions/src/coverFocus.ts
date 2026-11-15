@@ -4,9 +4,10 @@
  * that sits in the middle of the frame, as fractions of its width and height,
  * and how far in it is zoomed past the largest crop the frame allows. Every
  * place that shows a cover cuts it by `cropOf` for its own shape, so the same
- * point shows in a wide header and a square tile alike. None kept means the
- * centre, unzoomed: every cover from before, and every client that knows
- * nothing of it.
+ * point shows in a wide header and a square tile alike. None kept means
+ * `defaultFocus`: the centre, unzoomed, or for a tall picture a point higher
+ * up, where a portrait's face and a poster's title usually are (second round,
+ * 15.11.2026). The same holds for a card's picture (`pictureFocus` on an item).
  */
 
 export interface CoverFocus {
@@ -22,8 +23,17 @@ export const MIN_FOCUS_ZOOM = 1;
 export const MAX_FOCUS_ZOOM = 4;
 export const FOCUS_RANGE = "A focus is {x, y, zoom}: x and y from 0 to 1, zoom from 1 to 4";
 
-/** The centre, unzoomed: what no focus means. */
+/** The centre, unzoomed: what no focus means for a picture that is not tall. */
 export const CENTRE: CoverFocus = { x: 0.5, y: 0.5, zoom: 1 };
+/** A picture is tall when its height over its width is more than this. */
+export const TALL_RATIO = 1.2;
+/** What no focus means for a tall picture: a third of the way down, unzoomed. */
+export const TALL_DEFAULT: CoverFocus = { x: 0.5, y: 0.35, zoom: 1 };
+
+/** The focus a [width] x [height] picture without one is shown with. */
+export function defaultFocus(width: number, height: number): CoverFocus {
+  return height / width > TALL_RATIO ? TALL_DEFAULT : CENTRE;
+}
 
 /**
  * [raw] as a focus, kept as sent: null for none (absent or null, the centre),
@@ -55,7 +65,7 @@ export interface Crop {
  * it. The one formula every client draws a cover with (`cover-crop-vectors.json`).
  */
 export function cropOf(width: number, height: number, aspect: number, focus: CoverFocus | null): Crop {
-  const { x: fx, y: fy, zoom } = focus ?? CENTRE;
+  const { x: fx, y: fy, zoom } = focus ?? defaultFocus(width, height);
   let cropWidth: number;
   let cropHeight: number;
   if (width / height > aspect) {

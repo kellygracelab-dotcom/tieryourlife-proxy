@@ -294,6 +294,20 @@ describe("the proxy under the demo emulators", () => {
     const badList = await call(author, "POST", "/lists", { title: "Bad focus", category: "film_tv", tiers: [TIER], items: [{ title: "Arrival" }], coverFocus: { x: -1, y: 0, zoom: 1 } });
     assert.deepEqual([badList.status, badList.body.code], [400, "INVALID"]);
 
+    // Cards: the same field on a card's picture, kept for a writer that leaves it out.
+    const cards = { title: "Focused cards", fingerprint: "cards-1", tiers: [{ ...TIER, uid: "tier-1", position: 0 }],
+      items: [{ uid: "c1", tierUid: "tier-1", position: 0, title: "Arrival", imageUrl: poster, pictureFocus: focus }] };
+    assert.equal((await call(author, "PUT", "/boards/focused-cards", cards)).status, 200);
+    assert.deepEqual(((await call(author, "GET", "/boards/focused-cards")).body.items as { pictureFocus?: unknown }[])[0]?.pictureFocus, focus);
+    const { pictureFocus: _left, ...oldCard } = cards.items[0]!;
+    assert.equal((await call(author, "PUT", "/boards/focused-cards", { ...cards, fingerprint: "cards-2", basedOn: 1, items: [{ ...oldCard, title: "Arrival (2016)" }] })).status, 200);
+    assert.deepEqual(((await call(author, "GET", "/boards/focused-cards")).body.items as { pictureFocus?: unknown }[])[0]?.pictureFocus, focus);
+    const badCard = await call(author, "PUT", "/boards/focused-cards", { ...cards, fingerprint: "cards-3", basedOn: 2, items: [{ ...oldCard, pictureFocus: { x: 2, y: 0, zoom: 1 } }] });
+    assert.deepEqual([badCard.status, badCard.body.code], [400, "INVALID"]);
+    const cardList = await call(author, "POST", "/lists", { title: "Focused card list", category: "film_tv", tiers: [TIER], items: [{ title: "Arrival", imageUrl: poster, pictureFocus: focus }] });
+    assert.equal(cardList.status, 201, JSON.stringify(cardList.body));
+    assert.deepEqual(((await call(author, "GET", `/lists/${cardList.body.id}`)).body.items as { pictureFocus?: unknown }[])[0]?.pictureFocus, focus);
+
     // Topics and sections: staff set it with the picture; a new picture without one goes back to the centre.
     const owner = await ownerToken();
     const { owner: { uid } } = await seed();
@@ -556,6 +570,13 @@ describe("the proxy under the demo emulators", () => {
     assert.deepEqual((await call(owner, "GET", `/lists/${id}`)).body.listSource, listSource);
     assert.equal((await call(owner, "PUT", `/lists/editorial/${id}`, { ...body, listSource: null })).status, 200);
     assert.equal("listSource" in (await call(owner, "GET", `/lists/${id}`)).body, false);
+    // A house cover credited to its title's catalogue page, as a topic's picture can be.
+    const credited = await call(owner, "POST", "/lists/editorial", {
+      ...body, title: "Matrix ranked", coverImageUrl: "https://image.tmdb.org/t/p/w500/matrixCover.jpg",
+      coverAttribution: { manual: true, author: "", license: "", link: "https://www.themoviedb.org/movie/603-the-matrix?language=de" },
+    });
+    assert.equal(credited.status, 201, JSON.stringify(credited.body));
+    assert.deepEqual((await call(owner, "GET", `/lists/${credited.body.id}`)).body.coverAttribution, { source: "tmdb", link: "https://www.themoviedb.org/movie/603", id: "tmdb:movie:603" });
     // A person's own list does not carry one.
     const author = await newAuthor("source");
     const own = await call(author, "POST", "/lists", { ...body, title: "My fruit", listSource });
