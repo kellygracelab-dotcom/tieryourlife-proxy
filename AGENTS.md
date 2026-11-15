@@ -64,3 +64,10 @@ A token-free read-only request such as
 may correctly return an authentication refusal: record the actual status and
 distinguish availability/security smoke from an authenticated feature test.
 Save deploy log, main SHA and smoke evidence on D: before cleaning branches.
+
+## Firestore protection and restore
+
+Since 15.11.2026, on Danylo's word, Firestore `(default)` has point-in-time
+recovery (7 days), a daily managed backup kept 7 days, and delete protection.
+Changing them, or restoring over `(default)`, is his call. How to check them and
+how to restore from PITR or a backup into a new database: `RESTORE.md`.

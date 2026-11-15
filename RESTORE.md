@@ -33,7 +33,16 @@ Expected: `POINT_IN_TIME_RECOVERY_ENABLED`, `DELETE_PROTECTION_ENABLED`,
 schedule with `retention: 604800s`, and a backup for each of the last days
 (the first one within a day of the schedule being made).
 
-How they were switched on:
+State when they were switched on, 15.11.2026 16:59 UTC: PITR and delete
+protection on, `earliestVersionTime: 2026-11-15T16:00:00Z` (nothing before
+that moment can be read back), daily schedule
+`backupSchedules/d45bb1c7-ab1a-4202-b2ab-a2647b3876da` made at 16:59:29 UTC
+with `retention: 604800s`, no backup yet: Firestore makes the first one within
+a day of the schedule.
+
+They were switched on through the Firestore Admin REST API (a PATCH of the
+database with `updateMask=pointInTimeRecoveryEnablement,deleteProtectionState`,
+and a POST to its `backupSchedules`); the same with gcloud:
 
 ```bash
 gcloud firestore databases update --database="(default)" --project=tieryourlife --enable-pitr --delete-protection
