@@ -523,6 +523,39 @@ describe("the proxy under the demo emulators", () => {
     assert.ok(first.sections.includes("other"));
   });
 
+  it("says on a board's marker why it is gone: deleted for good, or only the account's copy", async () => {
+    const author = await newAuthor("removal");
+    const uid = JSON.parse(Buffer.from(author.split(".")[1], "base64url").toString()).user_id as string;
+    const db = getFirestore(initializeApp({ projectId: PROJECT }, "removal-smoke"));
+    const board = { title: "Gone board", fingerprint: "gone-1", tiers: [{ ...TIER, uid: "tier-1", position: 0 }], items: [] };
+    const markerOf = async (id: string) => ((await call(author, "GET", "/boards")).body.boards as { uid: string; deleted: boolean; removal?: string; revision: number }[]).find((x) => x.uid === id);
+    for (const id of ["gone-forever", "gone-cloud", "gone-old", "gone-upgraded"]) assert.equal((await call(author, "PUT", `/boards/${id}`, board)).status, 200);
+    // A live board says nothing about removal.
+    assert.equal((await markerOf("gone-forever"))?.removal, undefined);
+    assert.deepEqual([(await call(author, "DELETE", "/boards/gone-forever?removal=sideways")).status, (await markerOf("gone-forever"))?.deleted], [400, false]);
+    assert.equal((await call(author, "DELETE", "/boards/gone-forever?removal=forever")).status, 204);
+    const forever = await markerOf("gone-forever");
+    assert.deepEqual([forever?.deleted, forever?.removal, forever?.revision], [true, "forever", 2]);
+    assert.equal((await call(author, "GET", "/boards/gone-forever")).body.removal, "forever");
+    // "cloud" asked or nothing asked (every client before): only the account's copy.
+    assert.equal((await call(author, "DELETE", "/boards/gone-cloud?removal=cloud")).status, 204);
+    assert.equal((await markerOf("gone-cloud"))?.removal, "cloud");
+    assert.equal((await call(author, "DELETE", "/boards/gone-old")).status, 204);
+    assert.equal((await markerOf("gone-old"))?.removal, "cloud");
+    // "forever" is never taken back; "cloud" turns into it.
+    assert.equal((await call(author, "DELETE", "/boards/gone-forever?removal=cloud")).status, 204);
+    assert.deepEqual([(await markerOf("gone-forever"))?.removal, (await markerOf("gone-forever"))?.revision], ["forever", 3]);
+    assert.equal((await call(author, "DELETE", "/boards/gone-upgraded")).status, 204);
+    assert.equal((await call(author, "DELETE", "/boards/gone-upgraded?removal=forever")).status, 204);
+    assert.deepEqual([(await markerOf("gone-upgraded"))?.removal, (await markerOf("gone-upgraded"))?.revision], ["forever", 3]);
+    // A marker from before says "cloud".
+    await db.collection("accounts").doc(uid).collection("boards").doc("gone-legacy").set({ revision: 4, deviceName: null, deleted: true, updatedAt: new Date() });
+    assert.equal((await markerOf("gone-legacy"))?.removal, "cloud");
+    // A board changed on a device still goes back up over the marker, as before.
+    const back = await call(author, "PUT", "/boards/gone-forever", { ...board, fingerprint: "gone-2", basedOn: 3 });
+    assert.deepEqual([back.status, (await markerOf("gone-forever"))?.deleted, (await markerOf("gone-forever"))?.removal], [200, false, undefined]);
+  });
+
   it("keeps a near-limit board and long game atomically, including legacy edit, explicit clear and account erasure", async () => {
     const author = await newAuthor("large-play");
     const uid = JSON.parse(Buffer.from(author.split(".")[1], "base64url").toString()).user_id as string;

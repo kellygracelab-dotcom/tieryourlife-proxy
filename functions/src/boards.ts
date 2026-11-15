@@ -57,6 +57,34 @@ interface BoardDocument extends Partial<Omit<StoredBoard, "play">> {
   deviceName: string | null;
   /** True on a board the account has thrown away; nothing else is left. */
   deleted: boolean;
+  /** On a marker: why the board is gone (`BoardRemoval`); absent on markers from before 15.11.2026, read as "cloud". */
+  removal?: BoardRemoval;
+}
+
+/**
+ * Why a board the account kept is gone, so the other devices know what to do
+ * with their own copy (since 15.11.2026):
+ * - "forever": its owner deleted it for good (emptied the trash, deleted it
+ *   for good): it goes from every device too.
+ * - "cloud": only the account's copy went (the back-up switched off, "Stop and
+ *   delete"); the devices keep theirs. Also every marker from before.
+ */
+export type BoardRemoval = "forever" | "cloud";
+
+/** The `removal` a DELETE asks for: "cloud" when it names none (every client before 15.11.2026), null for anything else. */
+export function readRemoval(raw: unknown): BoardRemoval | null {
+  if (raw === undefined) return "cloud";
+  return raw === "forever" || raw === "cloud" ? raw : null;
+}
+
+/** A marker's removal after another DELETE: "forever" is never taken back. */
+export function removalAfter(stored: BoardRemoval | undefined, asked: BoardRemoval): BoardRemoval {
+  return stored === "forever" ? "forever" : asked;
+}
+
+/** What a marker says about why the board is gone; nothing on a live board. */
+function removalOf(data: BoardDocument): { removal?: BoardRemoval } {
+  return data.deleted === true ? { removal: data.removal ?? "cloud" } : {};
 }
 
 function refuse(response: Response, rejection: StoreRejection): void {
@@ -91,6 +119,7 @@ export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Dat
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     deviceName: data.deviceName ?? null,
     deleted: data.deleted === true,
+    ...removalOf(data),
     fingerprint: data.fingerprint ?? null,
     title: data.title ?? "",
     displayMode: displayModeOf(data.displayMode),
@@ -124,6 +153,7 @@ function toIndexEntry(id: string, data: BoardDocument) {
     updatedAt: data.updatedAt?.toMillis() ?? 0,
     deviceName: data.deviceName ?? null,
     deleted: data.deleted === true,
+    ...removalOf(data),
     fingerprint: data.fingerprint ?? null,
     title: data.title ?? "",
     itemCount: data.items?.filter((item) => item.deletedAt === null).length ?? 0,
@@ -176,9 +206,14 @@ export const boards = onRequest(
           if (aboutTheAccount) {
             return await erase(response, identity);
           }
-          return hasId
-            ? await forget(response, identity, id)
-            : void response.status(400).json({ error: "Which board?" });
+          if (!hasId) return void response.status(400).json({ error: "Which board?" });
+          {
+            const removal = readRemoval(request.query.removal);
+            if (removal === null) {
+              return void response.status(400).json({ error: "removal is forever or cloud", code: "INVALID", detail: "removal" });
+            }
+            return await forget(response, identity, id, removal);
+          }
         default:
           return void response.status(405).json({ error: "Use GET, PUT or DELETE" });
       }
@@ -373,7 +408,7 @@ async function write(
  * A marker rather than nothing: otherwise the other phone still has the board
  * and the next sync puts it back.
  */
-async function forget(response: Response, identity: Identity, id: string): Promise<void> {
+async function forget(response: Response, identity: Identity, id: string, removal: BoardRemoval): Promise<void> {
   if (identity.isAnonymous) {
     return void response.status(403).json({ error: "Sign in to keep your boards", code: "NOT_SIGNED_IN" });
   }
@@ -392,6 +427,7 @@ async function forget(response: Response, identity: Identity, id: string): Promi
       revision: (stored.revision ?? 0) + 1,
       deviceName: stored.deviceName ?? null,
       deleted: true,
+      removal: removalAfter(stored.removal, removal),
       updatedAt: FieldValue.serverTimestamp(),
     });
     transaction.delete(ref.parent.parent!.collection("plays").doc(id));
