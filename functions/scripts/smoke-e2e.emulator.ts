@@ -53,8 +53,11 @@ describe("the proxy under the demo emulators", () => {
       items: [{ title: "First card", tierIndex: 0 }, { title: "", pictureId: kept.body.pictureId, tierIndex: 0 }],
       boardUid: board,
     };
+    const filmCount = async () => ((await call(token, "GET", "/lists/sections")).body.sections as { id: string; listCount: number }[]).find((one) => one.id === "film_tv")!.listCount;
+    const countBefore = await filmCount();
     const first = await call(token, "POST", "/lists", body);
     assert.equal(first.status, 201, JSON.stringify(first.body));
+    assert.ok((await filmCount()) >= countBefore + 1, "a publication shows in its section's count at once, not after the counts' ten minutes");
     const again = await call(token, "POST", "/lists/lists", body);
     assert.deepEqual(again, { status: 200, body: { id: first.body.id, topicId: null, existing: true, revision: 1 } });
 

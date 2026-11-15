@@ -768,6 +768,7 @@ export const lists = onRequest(
     const listingFollowing = !verb && id === "following";
     const listingAnonymous = !verb && id === "anonymous";
     const query = request.query as Record<string, unknown>;
+    if (movesLists(request.method, segments, verb, makingAFace || aboutAnAuthor)) noteSectionCountsAfter(response);
 
     try {
       // Topics and moderators have their own small trees of paths.
@@ -1473,12 +1474,58 @@ async function approvedSections(): Promise<SectionRecord[]> {
   return await approvedSectionsCache.get(() => readSectionsWhere(["approved"]));
 }
 
+/**
+ * Where every instance learns that lists moved into or out of a section
+ * (Content's report of 15.11.2026: Sport said 8 for ten minutes after its
+ * ninth list): the routes that publish, withdraw, hide, move or settle lists
+ * write the moment, and an instance whose counts are older reads them again.
+ */
+const SECTION_COUNTS = "config/sectionCounts";
+/** An instance asks whether its counts are older at most this often, and only while somebody reads them. */
+const SECTION_COUNTS_CHECK_MS = 15_000;
+let countsCheckedAtMs = 0;
+let countsReadFromMs = 0;
+
 async function currentStats(): Promise<StatsRead> {
+  const now = Date.now();
+  if (now - countsCheckedAtMs >= SECTION_COUNTS_CHECK_MS) {
+    countsCheckedAtMs = now;
+    const changed = await getFirestore().doc(SECTION_COUNTS).get().then((doc) => doc.get("changedAtMs") as unknown, () => undefined);
+    if (typeof changed === "number" && changed >= countsReadFromMs) sectionStats.invalidate();
+  }
   return await sectionStats.get(async () => {
+    const started = Date.now();
     const sections = await approvedSections();
     const stats = await Promise.all(sections.map((one) => readOneSection(one.id)));
+    countsReadFromMs = started;
     return { readAtMs: Date.now(), stats: new Map(stats.map((one) => [one.id, one])) };
   });
+}
+
+/** Whether a request may move lists into or out of a section: what `noteSectionCountsAfter` is for. */
+export function movesLists(method: string, segments: readonly string[], verb: string | null, aboutAPerson: boolean): boolean {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  if ([TOPICS_PATH, EDITORIAL_PATH, SECTIONS_PATH, ADMIN_PATH].includes(segments[0] ?? "")) return true;
+  if (segments.length > 0 && [PICTURES_PATH, SEARCH_MISSES_PATH, MODERATORS_PATH, BANS_PATH, "classify"].includes(segments[0]!)) return false;
+  if (segments[1] === RANKINGS_PATH || aboutAPerson || verb === "taken") return false;
+  return method === "POST" || method === "PUT" || method === "DELETE";
+}
+
+/**
+ * When the request answers 2xx, the moment is written to [SECTION_COUNTS]
+ * before the answer leaves (an instance may get no CPU once it has answered),
+ * and this instance forgets its counts at once.
+ */
+function noteSectionCountsAfter(response: Response): void {
+  const end = response.end;
+  response.end = function (this: Response, ...args: unknown[]) {
+    response.end = end;
+    const send = () => (end as (...rest: unknown[]) => Response).apply(this, args);
+    if (response.statusCode < 200 || response.statusCode >= 300) return send();
+    sectionStats.invalidate();
+    void getFirestore().doc(SECTION_COUNTS).set({ changedAtMs: Date.now() }, { merge: true }).catch(() => undefined).finally(send);
+    return this;
+  } as typeof response.end;
 }
 
 function forgetSections(): void {
@@ -1765,7 +1812,7 @@ type SectionRefusal = ProposalRefusal | EditRefusal | { code: "BAD_PICTURE"; why
 function refuseSection(response: Response, refusal: SectionRefusal): void {
   switch (refusal.code) {
     case "BAD_NAME":
-      response.status(400).json({ error: "A section name is two to twenty-four characters", code: refusal.code });
+      response.status(400).json({ error: "A section name is one to twenty-four characters", code: refusal.code });
       return;
     case "NAME_TAKEN":
       response.status(400).json({

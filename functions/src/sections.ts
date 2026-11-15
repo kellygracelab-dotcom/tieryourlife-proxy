@@ -164,7 +164,7 @@ export const SECTION_LOCALES = ["en", "uk", "ru", "es", "pt-BR", "de", "fr", "pl
 export const SECTION_STATUSES = ["approved", "pending", "declined", "merged"] as const;
 export type SectionStatus = (typeof SECTION_STATUSES)[number];
 
-export const MIN_SECTION_NAME_LENGTH = 2;
+export const MIN_SECTION_NAME_LENGTH = 1;
 export const MAX_SECTION_NAME_LENGTH = 24;
 
 /** Three, as for topics: one account cannot fill the queue while its first proposal is still being read. */
@@ -347,14 +347,25 @@ export function visibleText(value: string): string {
   return value.normalize("NFKC").replace(/\p{Cf}/gu, "");
 }
 
+const graphemes = new Intl.Segmenter("und", { granularity: "grapheme" });
+
+/** How many characters a reader sees in [text]: an emoji with its modifiers, a letter with its accents, one each. */
+export function graphemeCount(text: string): number {
+  let count = 0;
+  for (const _ of graphemes.segment(text)) count++;
+  return count;
+}
+
 /**
- * Collapsed and trimmed, two to twenty-four characters, and something in it
- * that is a letter or a digit. Characters, not UTF-16 units: an emoji is one.
+ * Collapsed and trimmed, one to twenty-four characters as a reader counts
+ * them (one Han, kana or Hangul character is a whole name: 車, Content's
+ * report of 15.11.2026; an emoji is one), and something in it that is a
+ * letter or a digit.
  */
 export function cleanSectionName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const collapsed = visibleText(value).replace(/\s+/g, " ").trim();
-  const length = [...collapsed].length;
+  const length = graphemeCount(collapsed);
   if (length < MIN_SECTION_NAME_LENGTH || length > MAX_SECTION_NAME_LENGTH) return null;
   return /[\p{L}\p{N}]/u.test(collapsed) ? collapsed : null;
 }
