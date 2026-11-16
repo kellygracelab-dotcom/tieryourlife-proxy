@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { anonymityAfter, fillVisible, isAnonymous, mineFor, ownAuthor, readAnonymous, shownAuthor } from "../src/anonymous";
+import { anonymityAfter, fillVisible, isAnonymous, mineFor, ownAuthor, readAnonymous, refusesAnonymity, shownAuthor } from "../src/anonymous";
 
 const list = { authorUid: "u1", authorName: "Danylo", authorPhotoUrl: "https://p/face.jpg" };
 
@@ -119,5 +119,20 @@ describe("mineFor", () => {
   it("tells a guest nothing, whatever their uid", () => {
     assert.deepEqual(mineFor(list, { uid: "u1", isAnonymous: true }), {});
     assert.deepEqual(mineFor({ ...list, authorUid: "" }, { uid: "", isAnonymous: false }), {});
+  });
+});
+
+describe("refusesAnonymity", () => {
+  it("refuses a new list or a named one asking to go out without a name, since 16.11.2026", () => {
+    assert.equal(refusesAnonymity(true, null), true);
+    assert.equal(refusesAnonymity(true, { anonymous: false }), true);
+    assert.equal(refusesAnonymity(true, {}), true);
+  });
+
+  it("lets an old anonymous list stay so, and everything that asks for a name or says nothing", () => {
+    assert.equal(refusesAnonymity(true, { anonymous: true }), false);
+    for (const asked of [false, null]) {
+      for (const previous of [null, {}, { anonymous: true }, { anonymous: false }]) assert.equal(refusesAnonymity(asked, previous), false);
+    }
   });
 });

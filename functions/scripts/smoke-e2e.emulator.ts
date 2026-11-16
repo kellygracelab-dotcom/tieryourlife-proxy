@@ -469,11 +469,19 @@ describe("the proxy under the demo emulators", () => {
     assert.ok((await real.exists())[0]);
   });
 
-  it("bans the author of an anonymous list taken down with a ban", async () => {
-    const published = await call(token, "POST", "/lists", {
-      title: "Anonymous smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }], anonymous: true,
-    });
+  it("publishes nobody anonymously any more, keeps an old anonymous list so, and bans its author on a takedown with a ban", async () => {
+    const body = { title: "Anonymous smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
+    // Since 16.11.2026: refused, not published with the name of somebody who asked for none.
+    const refused = await call(token, "POST", "/lists", { ...body, anonymous: true });
+    assert.deepEqual([refused.status, refused.body.code], [400, "ANONYMOUS_GONE"]);
+    const published = await call(token, "POST", "/lists", body);
     assert.equal(published.status, 201, JSON.stringify(published.body));
+    assert.equal((await call(token, "POST", `/lists/${published.body.id}`, { ...body, anonymous: true })).body.code, "ANONYMOUS_GONE", "a named list does not turn anonymous");
+    // One published anonymously before stays anonymous on a republish, an old phone's switch still on.
+    await getFirestore(initializeApp({ projectId: PROJECT }, "smoke-old-anonymous")).collection("publishedLists").doc(String(published.body.id)).update({ anonymous: true });
+    const again = await call(token, "POST", `/lists/${published.body.id}`, { ...body, title: "Anonymous smoke list, again", anonymous: true });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal((await call(guest, "GET", `/lists/${published.body.id}`)).body.anonymous, true);
     const reporter = (await identity("signUp", {})).idToken;
     assert.equal((await call(reporter, "POST", `/lists/${published.body.id}/report`, { reason: "spam" })).status, 204);
 
