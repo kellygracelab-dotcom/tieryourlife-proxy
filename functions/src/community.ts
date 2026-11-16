@@ -28,6 +28,7 @@ import {
 import { isPictureId } from "./safety";
 import {
   anonymityAfter,
+  refusesAnonymity,
   fillVisible,
   isAnonymous,
   mineFor,
@@ -3114,6 +3115,11 @@ async function publish(
   });
   if (!decision.ok) {
     refuse(response, decision);
+    return;
+  }
+  // Before a ranking is told apart: a ranking goes out with its author's name too.
+  if (byline.speaker === null && refusesAnonymity(decision.draft.anonymous, previous)) {
+    response.status(400).json({ error: "Lists are published with their author's name now", code: "ANONYMOUS_GONE" });
     return;
   }
 

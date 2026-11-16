@@ -38,6 +38,17 @@ export function anonymityAfter(asked: boolean | null, previous: { anonymous?: un
   return previous !== null && isAnonymous(previous);
 }
 
+/**
+ * Whether a person's publish asks for a namelessness that is no longer given
+ * (Danylo, 16.11.2026: anonymous publishing is gone, only the house publishes
+ * without a name). A list already anonymous stays so on a republish, the flag
+ * sent or not; asking for it on a new list or a named one is refused rather
+ * than ignored, which would put the name of somebody who asked for none on it.
+ */
+export function refusesAnonymity(asked: boolean | null, previous: { anonymous?: unknown } | null): boolean {
+  return asked === true && !(previous !== null && isAnonymous(previous));
+}
+
 /** Who a list is by, as everybody but its author is told. */
 export function shownAuthor(list: Authored): ShownAuthor {
   if (isAnonymous(list)) return { authorUid: "", authorName: "", authorPhotoUrl: null, anonymous: true };
