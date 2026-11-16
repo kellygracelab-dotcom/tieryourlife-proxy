@@ -108,7 +108,7 @@ canonical Storage addresses, their shared catalogue copies included
 | Own picture in Storage (`users/{uid}/pictures/`) | under 4 MB, declared `image/jpeg`, `png`, `webp` or `gif` (rules); the bytes must start as JPEG, PNG, GIF or WebP; 2000 uploads per account per UTC day; otherwise `checkUpload` removes it right after it lands | `storage.rules`, `pictureBytes.ts` |
 | Generation prompt | 1000 | `generate.ts` |
 | Free generations, daily ceiling, lease | 3 per account, 100 a UTC day, 6 minutes | `quota.ts` |
-| Page sizes | feed, house, anonymous, admin lists 20; topics 20 (max 50); rankings 30; board index 100; reports read 50; own topics, pending topics 100 | |
+| Page sizes | feed, house, admin lists 20; topics 20 (max 50); rankings 30; board index 100; reports read 50; own topics, pending topics 100 | |
 
 ## `lists`
 
@@ -214,7 +214,7 @@ Words of 20 characters or more go to the Natural Language classifier. It never r
 
 **`POST /lists/{id}/move`**: staff. Body `{topicId}` (an approved topic; the list takes its section) or `{category, topicId?: null}` (an approved section; the list keeps its topic only if that topic is in the section, and loses it when `topicId: null` is sent). `204`. `400 INVALID`, `404 NOT_FOUND`, `403 TARGET_IS_MODERATOR` for a moderator on a staff member's list. The list remembers the move as **`movedByStaff: {category?: {from, to}, topicId?: {from, to}}`** (`topicId` sides may be `null`), one entry per field that changed; `from` stays the author's value across later moves, and a move back to it drops that entry. The author's replace keeps these unless the body says otherwise (`POST /lists`, "Staff moves hold").
 
-**`GET /lists/anonymous?after=`**: owner. Every anonymous list, newest first, with who published it: `200 {lists: (ListSummary + {publishedBy: {uid, name}})[], nextCursor}`. Cursor is the last id; `409 CURSOR_GONE`.
+**`GET /lists/anonymous`**: gone since 16.11.2026 (anonymous publishing ended, #155; the admin's "Anonymous lists" tab with it, Web #210): answered `404 NOT_FOUND` as any list that is not there. The anonymous lists published before stay in `GET /lists/admin/lists` and the reports queue, the owner told their author as before.
 
 **`GET /lists/admin/counts`**: staff. `200 {reports: n, proposals: n}`.
 
