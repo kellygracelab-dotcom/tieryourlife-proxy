@@ -486,6 +486,8 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await call(reporter, "POST", `/lists/${published.body.id}/report`, { reason: "spam" })).status, 204);
 
     const owner = await ownerToken();
+    // The owner's listing of anonymous lists went with anonymous publishing (16.11.2026); the reports queue still names the author to the owner.
+    assert.equal((await call(owner, "GET", "/lists/anonymous")).status, 404);
     const queue = await call(owner, "GET", "/lists/reports");
     const row = (queue.body.reports as { listId: string; anonymous: boolean; authorUid: string | null }[]).find((one) => one.listId === published.body.id);
     assert.equal(row?.anonymous, true);

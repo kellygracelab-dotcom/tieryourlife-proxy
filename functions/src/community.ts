@@ -767,7 +767,6 @@ export const lists = onRequest(
     const listingReports = !verb && id === "reports";
     const listingMine = !verb && id === "mine";
     const listingFollowing = !verb && id === "following";
-    const listingAnonymous = !verb && id === "anonymous";
     const query = request.query as Record<string, unknown>;
     if (movesLists(request.method, segments, verb, makingAFace || aboutAnAuthor)) noteSectionCountsAfter(response);
 
@@ -820,9 +819,6 @@ export const lists = onRequest(
           }
           if (listingFollowing) {
             return await readFollowing(response, identity);
-          }
-          if (listingAnonymous) {
-            return await readAnonymousLists(response, identity, singleParam(request.query.after));
           }
           if (aboutAnAuthor) {
             return authorUid
@@ -5907,38 +5903,6 @@ async function readEditorialLists(response: Response, identity: Identity, after:
   response.setHeader("Cache-Control", "no-store");
   response.status(200).json({
     lists: snapshot.docs.map((doc) => toSummary(doc.id, doc.data() as StoredList, identity)),
-    nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
-  });
-}
-
-/**
- * Every list published without its author's name, newest first, each with
- * who published it. The owner's alone to read: it undoes the very thing
- * those authors asked for.
- */
-async function readAnonymousLists(response: Response, identity: Identity, after: string | null): Promise<void> {
-  const role = await roleOf(identity);
-  if (role !== "owner") {
-    response.status(403).json({ error: "Not yours", code: "NOT_YOURS", ...(role === null ? {} : { detail: "owner_only" }) });
-    return;
-  }
-  const collection = getFirestore().collection(PUBLISHED);
-  let ordered = collection.where("anonymous", "==", true).orderBy("updatedAt", "desc");
-  if (after) {
-    const previous = await collection.doc(after).get();
-    if (!previous.exists) {
-      response.status(409).json({ error: "That page is gone", code: "CURSOR_GONE" });
-      return;
-    }
-    ordered = ordered.startAfter(previous);
-  }
-  const snapshot = await ordered.limit(FEED_PAGE_SIZE).get();
-  response.setHeader("Cache-Control", "no-store");
-  response.status(200).json({
-    lists: snapshot.docs.map((doc) => {
-      const data = doc.data() as StoredList;
-      return { ...toSummary(doc.id, data, identity), publishedBy: { uid: data.authorUid, name: data.authorName } };
-    }),
     nextCursor: nextCursor(snapshot.docs.map((doc) => doc.id)),
   });
 }
