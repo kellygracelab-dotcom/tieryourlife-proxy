@@ -74,8 +74,8 @@ export function tallyDenied(tally: DeniedTally | undefined, nowMs: number): { ta
 }
 
 /** The line written for a refusal: the catalogue, what it answered this time, and how many this instance has seen. */
-export function deniedEntry(source: string, status: number, count: number): Record<string, unknown> {
-  return { severity: "ERROR", message: PICTURE_SOURCE_DENIED, source, status, count };
+export function deniedEntry(source: string, status: number, count: number, reason?: string): Record<string, unknown> {
+  return { severity: "ERROR", message: PICTURE_SOURCE_DENIED, source, status, count, ...(reason ? { reason } : {}) };
 }
 
 const tallies = new Map<string, DeniedTally>();
@@ -89,9 +89,17 @@ export function noteDenied(url: string | URL, status: number, nowMs: number = Da
   if (status !== 401 && status !== 403) return false;
   const source = deniedSourceOf(url);
   if (source === null) return false;
+  return noteSourceDenied(source, status, nowMs);
+}
+
+/**
+ * The same alarm for a source its caller has judged closed, whatever it answered: the paid web search says
+ * "no credits left" with a 400 ([reason] "credits"; a wrong key is "key"). True when a line was written.
+ */
+export function noteSourceDenied(source: string, status: number, nowMs: number = Date.now(), reason?: string): boolean {
   const { tally, log } = tallyDenied(tallies.get(source), nowMs);
   tallies.set(source, tally);
-  if (log) console.error(JSON.stringify(deniedEntry(source, status, tally.count)));
+  if (log) console.error(JSON.stringify(deniedEntry(source, status, tally.count, reason)));
   return log;
 }
 

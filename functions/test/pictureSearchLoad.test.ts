@@ -620,6 +620,64 @@ describe("stage 1b: the web's first pictures when nothing is found", () => {
     assert.equal(web(), 0);
   });
 
+  /** The web search refuses with [status] and [body]; the alarm lines and every logged word are kept. */
+  function webRefuses(status: number, body: unknown): { alarms: string[]; logged: string[] } {
+    const plain = globalThis.fetch;
+    const alarms: string[] = [];
+    const logged: string[] = [];
+    const keep = (...words: unknown[]) => {
+      const line = words.map(String).join(" ");
+      logged.push(line);
+      if (line.includes("PICTURE_SOURCE_DENIED")) alarms.push(line);
+    };
+    mock.method(console, "error", keep);
+    mock.method(console, "warn", keep);
+    mock.method(console, "log", keep);
+    mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "google.serper.dev") {
+        asked.push(url);
+        return Response.json(body, { status });
+      }
+      return plain(input, init);
+    });
+    return { alarms, logged };
+  }
+
+  it("goes on without the web when the key is wrong, raises the alarm, and never logs the key", async () => {
+    process.env.SERPER_API_KEY = "secret-test-key";
+    const { alarms, logged } = webRefuses(403, { message: "Unauthorized.", statusCode: 403 });
+    const whole = await get({ q: "Zzqx", scope: "film_tv" });
+    assert.equal(whole.status, 200);
+    assert.deepEqual(whole.body.notices, ["webOff"]);
+    assert.equal(items(whole).some((hit) => hit.source === "web"), false);
+    assert.equal(alarms.length, 1);
+    assert.deepEqual(JSON.parse(alarms[0]!), { severity: "ERROR", message: "PICTURE_SOURCE_DENIED", source: "web", status: 403, count: 1, reason: "key" });
+    assert.equal(logged.some((line) => line.includes("secret-test-key")), false);
+    // Off for an hour, for every instance (Firestore gives the moment back as a Timestamp).
+    const off = fakes.db.get("config/pictureWeb") as { offUntil?: Date; lastStatus?: number } | undefined;
+    assert.equal(off?.lastStatus, 403);
+    assert.ok((off?.offUntil?.getTime() ?? 0) > now);
+  });
+
+  it("says when the web's credits are used up, and takes a busy web for busy, without an alarm", async () => {
+    process.env.SERPER_API_KEY = "secret-test-key";
+    const credits = webRefuses(400, { message: "Not enough credits", statusCode: 400 });
+    await get({ q: "Zzqx", scope: "film_tv" });
+    assert.equal(JSON.parse(credits.alarms[0]!).reason, "credits");
+    mock.restoreAll();
+    fakes.restore();
+    fakes = install();
+    forgetDenied();
+    mock.method(Date, "now", () => now);
+    mock.method(emulator, "isDemoEmulator", () => false);
+    mock.method(pictureTmdbToken, "value", () => "tmdb-token");
+    const busy = webRefuses(429, { message: "Too many requests" });
+    const reply = await get({ q: "Zzqx", scope: "film_tv" });
+    assert.equal(reply.status, 200);
+    assert.deepEqual(busy.alarms, []);
+  });
+
   it("works as before without a web key", async () => {
     const quick = await get({ part: "quick", q: "Zzqx", scope: "film_tv" });
     assert.equal(quick.body.rest, false);
