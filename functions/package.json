@@ -27,6 +27,7 @@
     "anilist-links": "tsc -p tsconfig.test.json && node lib-test/scripts/anilist-links.js",
     "commons-authors": "tsc -p tsconfig.test.json && node lib-test/scripts/commons-authors.js",
     "picture-classes": "tsc -p tsconfig.test.json && node lib-test/scripts/picture-classes.js",
+    "theme-vectors": "node scripts/theme-vectors.mjs",
     "count-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/count-deezer-covers.js",
     "remove-deezer-covers": "tsc -p tsconfig.test.json && node lib-test/scripts/remove-deezer-covers.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore,auth",
@@ -43,6 +44,7 @@
     "firebase-functions": "^6.1.0"
   },
   "devDependencies": {
+    "@material/material-color-utilities": "0.3.0",
     "typescript": "^5.6.0"
   }
 }

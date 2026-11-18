@@ -151,6 +151,7 @@ export async function eraseAccount(uid: string): Promise<void> {
   await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("boards"));
   await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("plays"));
   await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("started"));
+  await removeCollection(db.collection(ACCOUNTS).doc(uid).collection("settings"));
   await db.collection(ACCOUNTS).doc(uid).delete();
 
   // Their pictures, and the face they gave the community.
