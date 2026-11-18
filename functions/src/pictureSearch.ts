@@ -97,7 +97,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 17;
+const CACHE_SHAPE = 18;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -787,7 +787,7 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     limit: "20",
     format: "json",
   });
-  const found = (await getJson(`https://www.wikidata.org/w/api.php?${search}`)) as { search?: { id?: unknown; match?: { text?: unknown } }[] };
+  const found = (await wikimediaJson(`https://www.wikidata.org/w/api.php?${search}`, "search")) as { search?: { id?: unknown; match?: { text?: unknown } }[] };
   // The name each item was found by: a label in another language or an alias.
   const matched = new Map((found.search ?? []).flatMap((row) => (typeof row.id === "string" && typeof row.match?.text === "string" ? [[row.id, row.match.text] as const] : [])));
   const ids = (found.search ?? []).map((row) => row.id).filter((id): id is string => typeof id === "string" && /^Q\d+$/.test(id));
@@ -800,13 +800,26 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     languages: [...new Set([input.language, language, "en", "mul"])].join("|"),
     format: "json",
   });
-  const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language, input.scope === "music", matched);
+  const pictured = wikidataCandidates(ids, await wikimediaJson(`https://www.wikidata.org/w/api.php?${details}`, "entities"), input.language, input.scope === "music", matched);
   const candidates = pictured.length === 0 ? pictured : await fitting(pictured, wantsCovers(input.scope));
   return {
     hits: candidates.map(({ hit }) => hit),
     hasMore: false,
     twins: Object.fromEntries(candidates.map(({ hit, tmdbIds }) => [hit.id, tmdbIds])),
   };
+}
+
+/**
+ * A Wikimedia API's answer, which must hold [field]. Wikimedia can answer 200 with an `error` instead (a
+ * rate limit, lag) or with nothing: that is a failure, not "nothing found". Taken for an empty answer, it
+ * was kept for three days: on 18.11.2026 Paris, Machu Picchu and Динамо Киев lost Wikidata that way.
+ */
+async function wikimediaJson(url: string, field: string): Promise<unknown> {
+  const body = (await getJson(url)) as Record<string, unknown> | null;
+  const error = body?.error as { code?: unknown } | undefined;
+  if (error) throw new Error(`${new URL(url).host} said ${typeof error.code === "string" ? error.code.slice(0, 40) : "error"}`);
+  if (!body || typeof body !== "object" || !(field in body)) throw new Error(`${new URL(url).host} answered without ${field}`);
+  return body;
 }
 
 /** Files Commons describes in one request. */
@@ -819,7 +832,7 @@ const COMMONS_TITLES = 50;
 async function fitting(candidates: WikidataCandidate[], covers: boolean): Promise<WikidataCandidate[]> {
   const titles = [...new Set(candidates.flatMap(({ files }) => files.map((file) => `File:${commonsName(file)}`)))];
   const chunks = Array.from({ length: Math.ceil(titles.length / COMMONS_TITLES) }, (_, at) => titles.slice(at * COMMONS_TITLES, (at + 1) * COMMONS_TITLES));
-  const answers = await Promise.all(chunks.map((chunk) => getJson(`https://commons.wikimedia.org/w/api.php?${new URLSearchParams({
+  const answers = await Promise.all(chunks.map((chunk) => wikimediaJson(`https://commons.wikimedia.org/w/api.php?${new URLSearchParams({
     action: "query",
     prop: "imageinfo",
     iiprop: "size|extmetadata",
@@ -827,7 +840,7 @@ async function fitting(candidates: WikidataCandidate[], covers: boolean): Promis
     iiextmetadatalanguage: "en",
     titles: chunk.join("|"),
     format: "json",
-  })}`)));
+  })}`, "query")));
   const good = new Map(answers.flatMap((body) => [...commonsPictures(body, covers)]));
   return candidates.flatMap((candidate) => {
     const chosen = fittingPicture(candidate, good);
