@@ -5,7 +5,8 @@ import * as emulator from "../src/emulator";
 import type { Identity } from "../src/auth";
 import { install, type Fakes } from "./fakeFirebase";
 import { catalogueAnswer } from "./pictureCatalogueFixtures";
-import { forgetCatalogueRests, igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "../src/pictureSearch";
+import { forgetCatalogueRests, forgetIgdbOpen, igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "../src/pictureSearch";
+import { forgetDenied } from "../src/pictureAlarms";
 import { chargeSearch, PICTURE_SEARCHES_PER_DAY, PICTURE_SEARCHES_PER_HOUR, retryAfterSeconds } from "../src/pictureSearchLimit";
 import { CATALOGUE_REST_MS, restUntil } from "../src/pictureSources";
 
@@ -65,6 +66,8 @@ beforeEach(() => {
   now = NOW;
   refuse = new Map();
   forgetCatalogueRests();
+  forgetIgdbOpen();
+  forgetDenied();
   delete process.env.SERPER_API_KEY;
   mock.method(Date, "now", () => now);
   mock.method(emulator, "isDemoEmulator", () => false);
@@ -545,6 +548,44 @@ describe("stage 2: the item the name means, first", () => {
     await get({ q: "Lion King", scope: "all" });
     assert.equal(asked.some((url) => url.host === "en.wikipedia.org"), false);
     assert.equal(asked.some((url) => url.pathname === "/3/movie/8587"), false);
+  });
+});
+
+describe("IGDB's firewall", () => {
+  /** IGDB as on 18.11.2026: its firewall answers 403 to a text that looks like an attack; [closed]: to everything. */
+  function igdb(closed: boolean): { alarms: string[] } {
+    const plain = globalThis.fetch;
+    const alarms: string[] = [];
+    mock.method(console, "error", (line: unknown) => {
+      if (typeof line === "string" && line.includes("PICTURE_SOURCE_DENIED")) alarms.push(line);
+    });
+    mock.method(console, "warn", () => undefined);
+    mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "api.igdb.com") {
+        asked.push(url);
+        const body = String(init?.body ?? "");
+        if (closed || body.includes("<script>")) return Response.json({ message: "Forbidden" }, { status: 403 });
+      }
+      return plain(input, init);
+    });
+    return { alarms };
+  }
+
+  it("takes a 403 for a text that looks like an attack for the text's: no IGDB hits, no alarm, the search answers", async () => {
+    const { alarms } = igdb(false);
+    const reply = await get({ q: "<script>alert(1)</script>", scope: "games" });
+    assert.equal(reply.status, 200);
+    assert.deepEqual(alarms, []);
+    // The search, and one request with no text that IGDB answered.
+    assert.ok(asked.some((url) => url.host === "api.igdb.com"));
+  });
+
+  it("raises the alarm when IGDB refuses a request with no text as well: our access is closed", async () => {
+    const { alarms } = igdb(true);
+    await get({ q: "Mario", scope: "games" });
+    assert.equal(alarms.length, 1);
+    assert.match(alarms[0]!, /"source":"igdb"/);
   });
 });
 

@@ -30,7 +30,12 @@ export const COPY_LIMITS: Readonly<Record<string, { refreshAfterMs: number; drop
   tmdb: { refreshAfterMs: 90 * DAY_MS, dropAfterMs: 150 * DAY_MS },
 };
 
-/** Without a switch written: the openly licensed only, as since 13.11.2026. */
+/**
+ * Without a switch written: the openly licensed only, as since 13.11.2026. Production has every switch on
+ * (since 13.11.2026). IGDB: its written permission of 16.11.2026 (IGDB/Twitch, to Danylo) covers copies of
+ * about 480 px shown with the list and credited to IGDB.com, under its free non-commercial API terms. With a
+ * paid subscription the app needs IGDB's commercial partnership (also free); applying for it is Danylo's.
+ */
 export const DEFAULT_COPY_SWITCHES: CopySwitches = {
   wikimedia: true,
   inaturalist: true,
