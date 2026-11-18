@@ -117,6 +117,7 @@ function matches(actual: unknown, filter: Filter): boolean {
   if (filter.op === "==") return actual === filter.value;
   if (filter.op === "<=") return typeof actual === "number" && actual <= (filter.value as number);
   if (filter.op === "array-contains") return Array.isArray(actual) && actual.includes(filter.value);
+  if (filter.op === "in") return (filter.value as unknown[]).includes(actual);
   throw new Error(`The fake does not know ${filter.op}`);
 }
 
@@ -194,6 +195,7 @@ export interface FakeUser {
   email?: string;
   emailVerified?: boolean;
   providerData: { providerId: string; uid: string }[];
+  photoURL?: string | null;
 }
 
 export interface Fakes {
@@ -230,6 +232,13 @@ export function install(): Fakes {
     async getUser(uid: string) {
       const user = users.get(uid);
       if (!user) throw Object.assign(new Error("no user"), { code: "auth/user-not-found" });
+      return user;
+    },
+    async updateUser(uid: string, properties: Record<string, unknown>) {
+      const user = users.get(uid);
+      if (!user) throw Object.assign(new Error("no user"), { code: "auth/user-not-found" });
+      Object.assign(user, properties);
+      log.push(`updateUser ${uid}`);
       return user;
     },
     async deleteUser(uid: string) {

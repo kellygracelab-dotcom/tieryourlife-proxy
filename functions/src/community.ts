@@ -1,6 +1,7 @@
 import { defineString } from "firebase-functions/params";
 import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, keepCopiesForLater, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { copySwitches } from "./pictureCopies";
+import { keepUploadedPhoto, removeUploadedPhoto } from "./facePhoto";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -875,6 +876,9 @@ export const lists = onRequest(
           if (aboutAnAuthor) {
             return await unfollow(response, identity, authorUid);
           }
+          if (makingAFace && segments.length === 1) {
+            return await removeFace(response, identity);
+          }
           return hasId
             ? await unpublish(response, identity, id)
             : void response.status(400).json({ error: "Which list?" });
@@ -908,7 +912,19 @@ async function makeFace(response: Response, identity: Identity, pictureId: strin
     response.status(422).json({ error: "That picture cannot be a face", code: "PICTURE_REFUSED" });
     return;
   }
-  response.status(200).json({ url: address });
+  // The upload is the account's photo now (`facePhoto.ts`); the one it replaces goes.
+  const photo = await keepUploadedPhoto(identity.uid, pictureId, address);
+  response.status(200).json({ url: address, photo });
+}
+
+/** "Remove your photo": the slot empties, and the photo goes from every list, ranking and the account's face. */
+async function removeFace(response: Response, identity: Identity): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+    return;
+  }
+  const removed = await removeUploadedPhoto(identity.uid);
+  response.status(200).json({ photo: null, removed: removed?.pictureId ?? null });
 }
 
 /** Anything that could not be a section id means "no filter", not an error. */

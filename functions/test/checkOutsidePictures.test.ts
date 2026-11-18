@@ -109,6 +109,15 @@ describe("a face through checkedFace", () => {
     assert.deepEqual(decidePicture({ url: photos, address, ...made.seen, dryRun: false }), { kind: "copied", address: copyOf("avatars/u1/", photos) });
   });
 
+  it("keeps our own copy while it is there, and is no face once it was deleted", async () => {
+    const own = addressOf(BUCKET, "avatars/u1/up1");
+    const made = tools({}, {}, new Set(["avatars/u1/up1"]));
+    assert.equal(await checkedFace("u1", own, made.fake, { until }), own);
+    assert.equal(made.seen.fetched, false);
+    made.files.delete("avatars/u1/up1");
+    assert.equal(await checkedFace("u1", own, made.fake, { until }), null);
+  });
+
   it("is no face when it is not an address we would fetch", async () => {
     const made = tools({});
     const url = "http://faces.example/a.png";

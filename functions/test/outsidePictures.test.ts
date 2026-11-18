@@ -383,7 +383,10 @@ describe("an author's face", () => {
     assert.equal(await checkedFace("u1", google, tools), copyAddress("avatars/u1/", google));
     assert.equal(await checkedFace("u1", copyAddress("avatars/u1/", google), tools), copyAddress("avatars/u1/", google));
     assert.equal(await checkedFace("u1", changed, tools), copyAddress("avatars/u1/", changed));
+    tools.files.set("avatars/u1/p1", Buffer.from("face"));
     assert.equal(await checkedFace("u1", own, tools), own);
+    tools.files.delete("avatars/u1/p1");
+    assert.equal(await checkedFace("u1", own, tools), null, "a copy since deleted is no face");
     assert.equal(await checkedFace("u1", null, tools), null);
     assert.deepEqual(tools.fetched, [google, changed]);
   });

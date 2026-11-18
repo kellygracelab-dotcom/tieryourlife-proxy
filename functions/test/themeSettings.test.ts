@@ -67,7 +67,7 @@ describe("a colour as a device sends it", () => {
     assert.equal(colourLands(stored, 101), true);
     assert.equal(colourLands(stored, 100), true);
     assert.equal(colourLands(stored, 99), false);
-    assert.deepEqual(settingsWire(null), { colour: null });
+    assert.deepEqual(settingsWire(null), { colour: null, photo: null });
   });
 });
 
@@ -111,7 +111,7 @@ describe("GET and PUT /boards/settings", () => {
 
   it("answers nothing chosen, then the choice, and a lost write with what is kept", async () => {
     const me = person("me");
-    assert.deepEqual((await call("GET", ["settings"], me)).body, { colour: null });
+    assert.deepEqual((await call("GET", ["settings"], me)).body, { colour: null, photo: null });
     const now = Date.now();
     const first = await call("PUT", ["settings", "colour"], me, { name: "custom", hue: 300, changedAt: now - 1000 });
     assert.equal(first.status, 200);
@@ -123,7 +123,7 @@ describe("GET and PUT /boards/settings", () => {
     assert.equal(later.body?.landed, true);
     assert.ok((later.body?.updatedAt as number) > (first.body?.updatedAt as number));
     const read = await call("GET", ["settings"], me);
-    assert.deepEqual(read.body, { colour: { name: "matcha", hue: 300, changedAt: now - 500, updatedAt: later.body?.updatedAt } });
+    assert.deepEqual(read.body, { colour: { name: "matcha", hue: 300, changedAt: now - 500, updatedAt: later.body?.updatedAt }, photo: null });
     assert.deepEqual(fakes.db.get("accounts/me/settings/appearance"), { colour: { name: "matcha", hue: 300, changedAt: now - 500, updatedAt: later.body?.updatedAt } });
   });
 
