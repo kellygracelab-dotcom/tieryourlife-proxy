@@ -110,6 +110,26 @@ async function get(query: Record<string, string>, uid = "someone"): Promise<Repl
   return reply;
 }
 
+async function post(rest: string[], body: unknown, uid = "someone"): Promise<Reply> {
+  const reply: Reply = { status: 0, body: {}, headers: {} };
+  const response = {
+    status(code: number) {
+      reply.status = code;
+      return response;
+    },
+    json(sent: Record<string, unknown>) {
+      reply.body = sent;
+      return response;
+    },
+    setHeader(name: string, value: string) {
+      reply.headers[name] = value;
+      return response;
+    },
+  };
+  await routePictures("POST", rest, {}, body, response as never, { uid } as Identity);
+  return reply;
+}
+
 const hosts = () => asked.map((url) => url.host).filter((host) => host !== "id.twitch.tv");
 const counted = () => fakes.db.get(DAY_DOC)?.hourCount;
 
@@ -377,6 +397,102 @@ describe("stage 1: the list's section, how sure, a second attempt", () => {
     await get({ part: "quick", scope: "animals" });
     const taxa = asked.filter((url) => url.pathname === "/v1/taxa/autocomplete").map((url) => url.searchParams.get("taxon_id"));
     assert.deepEqual(taxa, ["1,47126", "1"]);
+  });
+});
+
+describe("stage 2: the item the name means, first", () => {
+  type Hit = { id: string; source: string; kind: string; confidence?: string; doubts?: string[] };
+  const items = (reply: Reply) => reply.body.items as Hit[];
+  const value = (id: string) => ({ mainsnak: { snaktype: "value", datavalue: { value: { id } } } });
+  const text = (value: string) => ({ mainsnak: { snaktype: "value", datavalue: { value } } });
+
+  /** Wikidata knows The Lion King as a film with its TMDB id; Wikipedia's search finds it first. */
+  function lionKing(withTmdbId = true): void {
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      const action = url.searchParams.get("action");
+      if (url.host === "www.wikidata.org" && action === "wbsearchentities") {
+        asked.push(url);
+        return Response.json({ search: [{ id: "Q36479" }, { id: "Q140" }] });
+      }
+      if (url.host === "www.wikidata.org" && action === "wbgetentities") {
+        asked.push(url);
+        return Response.json({ entities: {
+          Q36479: {
+            labels: { en: { value: "The Lion King" } },
+            descriptions: { en: { value: "1994 American animated film" } },
+            sitelinks: Object.fromEntries(Array.from({ length: 80 }, (_, at) => [`wiki${at}`, {}])),
+            claims: { P31: [value("Q11424")], ...(withTmdbId ? { P4947: [text("8587")] } : {}), P18: [text("Lion waiting.jpg")] },
+          },
+          Q140: {
+            labels: { en: { value: "Lion" } },
+            descriptions: { en: { value: "big cat" } },
+            sitelinks: { enwiki: {} },
+            claims: { P31: [value("Q16521")], P18: [text("Lion waiting.jpg")] },
+          },
+        } });
+      }
+      if (url.host === "en.wikipedia.org" && url.searchParams.get("generator") === "search") {
+        asked.push(url);
+        return Response.json({ query: { pages: { "1": { index: 1, pageprops: { wikibase_item: "Q36479" } } } } });
+      }
+      if (url.host === "api.themoviedb.org" && url.pathname === "/3/movie/8587") {
+        asked.push(url);
+        return Response.json({ id: 8587, title: "The Lion King", poster_path: "/king.jpg", release_date: "1994-06-15" });
+      }
+      return plain(input);
+    });
+  }
+
+  it("puts a film list's film first, its poster from TMDB by its id, and is sure of it", async () => {
+    lionKing();
+    const reply = await get({ q: "Lion King", scope: "all", section: "film_tv" });
+    assert.equal(reply.status, 200);
+    const first = items(reply)[0];
+    assert.equal(first?.id, "tmdb:8587");
+    assert.equal(first?.confidence, "high");
+    assert.equal(first?.doubts, undefined);
+    assert.ok(asked.some((url) => url.pathname === "/3/movie/8587"));
+    assert.ok(asked.some((url) => url.host === "en.wikipedia.org"));
+    // Nothing of the choice itself is sent.
+    assert.equal("chosen" in reply.body, false);
+  });
+
+  it("shows Wikidata's items as the kind their classes make them", async () => {
+    // Without its TMDB id, no TMDB twin takes the film's place.
+    lionKing(false);
+    const reply = await get({ q: "Lion", scope: "all", section: "other" });
+    assert.equal(items(reply).find((hit) => hit.id === "wikidata:Q36479")?.kind, "movie");
+  });
+
+  it("answers a whole list's names in one request, each the first picture and how sure, in the order sent", async () => {
+    lionKing();
+    const reply = await post(["batch"], { names: ["Lion King", "!!", "Lion"], scope: "all", section: "film_tv", lang: "en" });
+    assert.equal(reply.status, 200);
+    const results = reply.body.results as { q: string; status: string; item?: Hit }[];
+    assert.deepEqual(results.map((result) => result.q), ["Lion King", "!!", "Lion"]);
+    assert.equal(results[0]?.status, "found");
+    assert.equal(results[0]?.item?.id, "tmdb:8587");
+    assert.equal(results[1]?.status, "none");
+    assert.ok(["found", "unsure"].includes(results[2]?.status ?? ""));
+    // Each name is a search of its own, counted as one.
+    assert.equal(counted(), 2);
+  });
+
+  it("refuses a batch with no names, too many, or one that is not text", async () => {
+    for (const names of [[], Array.from({ length: 11 }, (_, at) => `Name ${at}`), ["Lion", 7], "Lion"]) {
+      const reply = await post(["batch"], { names, scope: "all" });
+      assert.equal(reply.status, 400);
+      assert.equal(reply.body.code, "BAD_NAMES");
+    }
+  });
+
+  it("leaves an old client's search in all without a section as it was: no Wikipedia, nothing chosen", async () => {
+    lionKing();
+    await get({ q: "Lion King", scope: "all" });
+    assert.equal(asked.some((url) => url.host === "en.wikipedia.org"), false);
+    assert.equal(asked.some((url) => url.pathname === "/3/movie/8587"), false);
   });
 });
 

@@ -158,12 +158,18 @@ export class FakeDb {
   async getAll(...refs: FakeDoc[]): Promise<FakeSnapshot[]> {
     return refs.map((ref) => this.snapshot(ref));
   }
+  /** Transactions run one at a time, as Firestore's retries make them look to each other. */
+  private transactions: Promise<unknown> = Promise.resolve();
   async runTransaction<T>(work: (transaction: FakeBatch & { get: (ref: FakeDoc) => Promise<FakeSnapshot> }) => Promise<T>): Promise<T> {
-    const batch = new FakeBatch() as FakeBatch & { get: (ref: FakeDoc) => Promise<FakeSnapshot> };
-    batch.get = (ref) => ref.get();
-    const result = await work(batch);
-    await batch.commit();
-    return result;
+    const run = this.transactions.then(async () => {
+      const batch = new FakeBatch() as FakeBatch & { get: (ref: FakeDoc) => Promise<FakeSnapshot> };
+      batch.get = (ref) => ref.get();
+      const result = await work(batch);
+      await batch.commit();
+      return result;
+    });
+    this.transactions = run.catch(() => undefined);
+    return run;
   }
   snapshot(ref: FakeDoc): FakeSnapshot {
     return new FakeSnapshot(ref, this.docs.get(ref.path), this.times.get(ref.path) ?? 0);

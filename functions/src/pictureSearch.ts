@@ -66,6 +66,7 @@ import {
   wikidataCandidates,
 } from "./pictureSources";
 import { noteDenied } from "./pictureAlarms";
+import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
 import { fold } from "./search";
@@ -97,7 +98,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 18;
+const CACHE_SHAPE = 19;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -113,6 +114,11 @@ const OPEN_LIBRARY_TIMEOUT_MS = 9_000;
 const INATURALIST_OBSERVED = 6;
 const MAX_QUERY = 100;
 const MAX_PAGE = 20;
+/** A whole list's names in one request (stage 2): at most this many, searched this many at a time. */
+const BATCH_NAMES = 10;
+const BATCH_AT_ONCE = 4;
+/** No name is begun after this long, so the answer comes inside the function's 30 seconds; the rest are "later". */
+const BATCH_BUDGET_MS = 16_000;
 
 interface PicturesAnswer {
   items: JudgedHit[];
@@ -126,6 +132,8 @@ interface PicturesAnswer {
   retryAt?: number;
   /** What was searched instead when the text as typed found nothing like it (since 18.11.2026). */
   searchedAs?: { text: string; how: Retry };
+  /** The item the name was taken to mean (stage 2): kept with the answer, never sent. */
+  chosen?: Chosen;
 }
 
 /**
@@ -222,7 +230,61 @@ export async function routePictures(
     response.status(200).json(kept);
     return;
   }
+  if (method === "POST" && rest.length === 1 && rest[0] === "batch") {
+    const sent = (body ?? {}) as { names?: unknown; scope?: unknown; section?: unknown; topic?: unknown; lang?: unknown };
+    const names = Array.isArray(sent.names) ? sent.names.filter((name): name is string => typeof name === "string").map((name) => name.trim().slice(0, MAX_QUERY)) : [];
+    if (names.length === 0 || names.length > BATCH_NAMES || (Array.isArray(sent.names) && names.length !== sent.names.length)) {
+      response.status(400).json({ error: `Send 1 to ${BATCH_NAMES} names`, code: "BAD_NAMES" });
+      return;
+    }
+    const results = await searchBatch(names, {
+      scope: pictureScopeOf(sent.scope),
+      want: await wantOf(cleanId(sent.section), cleanId(sent.topic)),
+      language: searchLanguage(sent.lang),
+      uid: identity.uid,
+    });
+    response.setHeader("Cache-Control", "no-store");
+    response.status(200).json({ results });
+    return;
+  }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+}
+
+/**
+ * One name of a whole list (`POST /lists/pictures/batch`): "found" with the first picture when the search
+ * is sure enough of it (high or medium), "unsure" with the first picture it would show, "none", "busy" or
+ * "limited" with when to ask again, "later" when it was not begun in time and is to be sent again.
+ */
+export type BatchResult =
+  | { q: string; status: "found" | "unsure"; item: JudgedHit; searchedAs?: { text: string; how: Retry } }
+  | { q: string; status: "none" | "later" }
+  | { q: string; status: "busy" | "limited"; retryAt: number };
+
+/** Each name searched as its own counted search, a few at a time, in the order sent. */
+async function searchBatch(names: string[], common: Pick<SearchInput, "scope" | "want" | "language" | "uid">): Promise<BatchResult[]> {
+  const started = Date.now();
+  const results: BatchResult[] = names.map((q) => ({ q, status: "later" }));
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < names.length && Date.now() - started < BATCH_BUDGET_MS) {
+      const at = next++;
+      results[at] = await searchOne(names[at]!, common);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(BATCH_AT_ONCE, names.length) }, worker));
+  return results;
+}
+
+async function searchOne(q: string, common: Pick<SearchInput, "scope" | "want" | "language" | "uid">): Promise<BatchResult> {
+  if ([...q].length < 2 || !worthSearching(q)) return { q, status: "none" };
+  const answer = await searchPicturesCounted({ ...common, typed: q, page: 1, forcedWeb: false, quick: false }).catch(() => null);
+  if (answer === null) return { q, status: "busy", retryAt: Date.now() + 60_000 };
+  if ("limited" in answer) return { q, status: "limited", retryAt: answer.retryAtMs };
+  if (busyAnswer(answer)) return { q, status: "busy", retryAt: answer.retryAt };
+  const item = answer.items[0];
+  if (!item) return { q, status: "none" };
+  const sure = item.confidence === "high" || item.confidence === "medium";
+  return { q, status: sure ? "found" : "unsure", item, ...(answer.searchedAs ? { searchedAs: answer.searchedAs } : {}) };
 }
 
 interface SearchInput {
@@ -280,7 +342,9 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
     answer = retried ?? (await webWhenEmpty(input, first));
   }
   const typed = answer.searchedAs?.text ?? input.typed;
-  return { ...answer, items: judgeHits(answer.items, typed, input.scope, input.want ?? null, answer.searchedAs !== undefined, input.page === 1) };
+  const retried = answer.searchedAs !== undefined;
+  const { chosen, ...sent } = answer;
+  return { ...sent, items: withChosen(judgeHits(answer.items, typed, input.scope, input.want ?? null, retried, input.page === 1), chosen, retried) };
 }
 
 /** The second attempt's answer for [input], or null when none is worth giving. */
@@ -397,7 +461,8 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
     const doc = await db.collection(CACHE).doc(id).get();
     const at = doc.get("at")?.toMillis?.() ?? 0;
-    return doc.exists && Date.now() - at < CACHE_FRESH_MS ? { items: doc.get("items") ?? [], hasMore: doc.get("hasMore") === true, notices: [] } : null;
+    const chosen = doc.get("chosen") as Chosen | undefined;
+    return doc.exists && Date.now() - at < CACHE_FRESH_MS ? { items: doc.get("items") ?? [], hasMore: doc.get("hasMore") === true, notices: [], ...(chosen ? { chosen } : {}) } : null;
   };
 
   // Somebody already paid for the web on this search: it costs nothing to show again.
@@ -427,7 +492,7 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
   if (!web.hits) return catalogues;
   // Below the catalogues, as a person first sees them after the quick answer: asked again, the same order.
   const items = appendNew(catalogues.items, mergeHits(input.typed, [web.hits], input.scope, rankFor(input), scoreFor(input)));
-  const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
+  const withWeb = { items, hasMore: catalogues.hasMore, notices: [], ...(catalogues.chosen ? { chosen: catalogues.chosen } : {}) };
   // An answer with a busy catalogue's gap is not kept: asked again, it may be whole.
   // Through JSON: Firestore refuses a field left undefined, such as a web picture's missing subtitle.
   if (catalogues.busy === undefined) await db.collection(CACHE).doc(key(true)).set({ ...JSON.parse(JSON.stringify(withWeb)), at: Timestamp.now() }).catch(() => undefined);
@@ -471,13 +536,15 @@ async function askCatalogues(
   const gap = busyGap(sources, new Set(answers.keys()), await restingUntil(), Date.now());
   if (found.every((answer) => answer === null)) return gap.busy ? { items: [], hasMore: false, notices: [], ...gap } : null;
   const hits = withoutTmdbTwins(found.map((answer) => answer ?? { hits: [], hasMore: false }));
+  // Stage 2: the item the name means, as Wikidata's source chose it; its pictures come first.
+  const chosen = input.page === 1 ? answers.get("wikidata")?.chosen ?? null : null;
   // The whole answer keeps the quick one's order at its head, the slow catalogues' new hits below: what a
   // person saw first is what they see when the same search comes from the cache (18.11.2026).
   const quick = new Set(quickSourcesFor(input.scope));
   const fast = hits.filter((_, at) => quick.has(sources[at]!));
-  const all = mergeHits(input.typed, hits, input.scope, rankFor(input), scoreFor(input));
-  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(input), scoreFor(input)), all) : all;
-  const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap };
+  const all = mergeHits(input.typed, hits, input.scope, rankFor(input, chosen), scoreFor(input));
+  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(input, chosen), scoreFor(input)), all) : all;
+  const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap, ...(chosen ? { chosen } : {}) };
   const cache = getFirestore().collection(CACHE);
   if (keep.parts && asked.some(([, answer]) => answer !== null)) {
     const parts = sources.flatMap((source) => {
@@ -492,10 +559,14 @@ async function askCatalogues(
   return merged;
 }
 
-/** How a search ranks hits for what its list wants (src/pictureIntent.ts). */
-function rankFor(input: SearchInput): (hit: PictureHit) => number {
+/**
+ * How a search ranks hits for what its list wants (src/pictureIntent.ts). The [chosen] item's pictures
+ * come before all: its catalogue's first, then its own from Commons (stage 2).
+ */
+function rankFor(input: SearchInput, chosen: Chosen | null = null): (hit: PictureHit) => number {
   const want = input.want ?? null;
-  return (hit) => wantRank(hit, input.scope, want);
+  const keys = new Set(chosen?.keys ?? []);
+  return (hit) => (keys.has(entityKey(hit)) ? (hit.source === "wikidata" ? -1 : -2) : wantRank(hit, input.scope, want));
 }
 
 function scoreFor(input: SearchInput): (hit: PictureHit) => number {
@@ -510,9 +581,9 @@ async function knownParts(id: string): Promise<Map<PictureSource, KnownAnswer>> 
   const known = new Map<PictureSource, KnownAnswer>();
   const now = Date.now();
   for (const part of Array.isArray(parts) ? parts : []) {
-    const { source, hits, hasMore, twins, atMs } = (part ?? {}) as { source?: unknown; hits?: unknown; hasMore?: unknown; twins?: Record<string, string[]>; atMs?: unknown };
+    const { source, hits, hasMore, twins, chosen, atMs } = (part ?? {}) as { source?: unknown; hits?: unknown; hasMore?: unknown; twins?: Record<string, string[]>; chosen?: Chosen; atMs?: unknown };
     if (typeof source !== "string" || !Array.isArray(hits) || typeof atMs !== "number" || now - atMs >= CACHE_FRESH_MS) continue;
-    known.set(source as PictureSource, { hits: hits as PictureHit[], hasMore: hasMore === true, atMs, ...(twins ? { twins } : {}) });
+    known.set(source as PictureSource, { hits: hits as PictureHit[], hasMore: hasMore === true, atMs, ...(twins ? { twins } : {}), ...(chosen ? { chosen } : {}) });
   }
   return known;
 }
@@ -578,6 +649,8 @@ interface SourceAnswer {
   hasMore: boolean;
   /** Wikidata's: the TMDB keys each hit is also known by. */
   twins?: Record<string, string[]>;
+  /** Wikidata's, stage 2: the item the name was taken to mean. */
+  chosen?: Chosen;
 }
 
 async function askSource(source: PictureSource, input: SearchInput): Promise<SourceAnswer | null> {
@@ -787,26 +860,110 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     limit: "20",
     format: "json",
   });
-  const found = (await wikimediaJson(`https://www.wikidata.org/w/api.php?${search}`, "search")) as { search?: { id?: unknown; match?: { text?: unknown } }[] };
+  // Stage 2: where the list or the scope says what it holds, Wikipedia's search is asked beside Wikidata's.
+  // It knows redirects ("GTA 5", "Man Utd"), corrects spelling, and ranks by what people read.
+  const entityStep = input.page === 1 && ((input.want ?? null) !== null || input.scope !== "all");
+  const [found, read] = await Promise.all([
+    wikimediaJson(`https://www.wikidata.org/w/api.php?${search}`, "search") as Promise<{ search?: { id?: unknown; match?: { text?: unknown } }[] }>,
+    entityStep ? askWikipedia(input) : Promise.resolve([]),
+  ]);
   // The name each item was found by: a label in another language or an alias.
   const matched = new Map((found.search ?? []).flatMap((row) => (typeof row.id === "string" && typeof row.match?.text === "string" ? [[row.id, row.match.text] as const] : [])));
-  const ids = (found.search ?? []).map((row) => row.id).filter((id): id is string => typeof id === "string" && /^Q\d+$/.test(id));
+  const searched = (found.search ?? []).map((row) => row.id).filter((id): id is string => typeof id === "string" && /^Q\d+$/.test(id));
+  const places = new Map<string, Found>(searched.map((id, at) => [id, { wikidata: at }]));
+  read.forEach(({ item, disambiguation, at }) => {
+    const known = places.get(item) ?? {};
+    places.set(item, { ...known, wikipedia: Math.min(known.wikipedia ?? at, at), ...(disambiguation || known.disambiguation ? { disambiguation: true } : {}) });
+  });
+  const ids = [...places.keys()].slice(0, WIKIDATA_ITEMS);
   if (ids.length === 0) return { hits: [], hasMore: false };
+  const languages = [...new Set([input.language, language, "en", "mul"])];
   const details = new URLSearchParams({
     action: "wbgetentities",
     ids: ids.join("|"),
-    props: "labels|descriptions|claims",
+    props: entityStep ? "labels|descriptions|aliases|claims|sitelinks" : "labels|descriptions|claims",
     // `mul`: Wikidata keeps a name that is the same in every language (Michael Jordan, PlayStation 5) there, and nowhere else.
-    languages: [...new Set([input.language, language, "en", "mul"])].join("|"),
+    languages: languages.join("|"),
     format: "json",
   });
-  const pictured = wikidataCandidates(ids, await wikimediaJson(`https://www.wikidata.org/w/api.php?${details}`, "entities"), input.language, input.scope === "music", matched);
-  const candidates = pictured.length === 0 ? pictured : await fitting(pictured, wantsCovers(input.scope));
+  const body = await wikimediaJson(`https://www.wikidata.org/w/api.php?${details}`, "entities");
+  const want = input.want ?? null;
+  const facts = new Map(entityFacts(ids, body, [input.language, language]).map((one) => [one.id, one]));
+  const chosen = entityStep
+    ? chooseEntity([...facts.values()].map((one) => ({ facts: one, found: places.get(one.id) ?? {} })), input.typed, want, input.scope)
+    : null;
+  const pictured = wikidataCandidates(ids, body, input.language, input.scope === "music", matched);
+  // Each item shows as the kind its classes make it: a novel is a book, a band an artist (stage 2).
+  for (const candidate of pictured) {
+    const one = facts.get(candidate.hit.id.slice("wikidata:".length));
+    const kind = one ? kindOfFacts(one, want, input.scope) : null;
+    if (kind) candidate.hit = { ...candidate.hit, kind };
+  }
+  const [candidates, byId] = await Promise.all([
+    pictured.length === 0 ? pictured : fitting(pictured, wantsCovers(input.scope)),
+    chosen ? tmdbById(chosen, input.language) : Promise.resolve(null),
+  ]);
+  if (chosen) chosen.keys = [...new Set([...chosen.keys, ...catalogueKeys(chosen), ...(byId ? [entityKey(byId)] : [])])];
   return {
-    hits: candidates.map(({ hit }) => hit),
+    hits: [...(byId ? [byId] : []), ...candidates.map(({ hit }) => hit)],
     hasMore: false,
     twins: Object.fromEntries(candidates.map(({ hit, tmdbIds }) => [hit.id, tmdbIds])),
+    ...(chosen ? { chosen } : {}),
   };
+}
+
+/** Items Wikidata is asked about at most: its search's 20 and Wikipedia's new ones. */
+const WIKIDATA_ITEMS = 30;
+
+/**
+ * Wikipedia's search in the page's language and in English: each page's Wikidata item, its place, and
+ * whether it is a disambiguation page. Spelling corrected by Wikipedia (`gsrenablerewrites`). A Wikipedia
+ * that fails leaves nothing: Wikidata's own search still answers.
+ */
+async function askWikipedia(input: SearchInput): Promise<{ item: string; disambiguation: boolean; at: number }[]> {
+  const wikis = [...new Set([wikipediaOf(input.language), "en"])];
+  const answers = await Promise.all(wikis.map(async (wiki) => {
+    const params = new URLSearchParams({
+      action: "query",
+      generator: "search",
+      gsrsearch: input.typed,
+      gsrlimit: "6",
+      gsrnamespace: "0",
+      gsrenablerewrites: "1",
+      prop: "pageprops",
+      ppprop: "wikibase_item|disambiguation",
+      redirects: "1",
+      format: "json",
+    });
+    try {
+      const body = (await getJson(`https://${wiki}.wikipedia.org/w/api.php?${params}`)) as { error?: { code?: unknown } } | null;
+      if (body?.error) throw new Error(`${wiki}.wikipedia.org said ${String(body.error.code).slice(0, 40)}`);
+      return wikipediaItems(body).map((one, at) => ({ ...one, at }));
+    } catch (error) {
+      console.warn("Wikipedia search failed", error instanceof Error ? error.message : error);
+      return [];
+    }
+  }));
+  return answers.flat();
+}
+
+/**
+ * The chosen item's poster or portrait from TMDB by its id, in the page's language: the right one even
+ * where TMDB's search ranks another of the name first. Null when it has none, or TMDB does not answer.
+ */
+async function tmdbById(chosen: Chosen, language: string): Promise<PictureHit | null> {
+  const ask = chosen.kind === "movie" ? ["movie", chosen.ids.tmdbMovie] : chosen.kind === "tv" ? ["tv", chosen.ids.tmdbTv] : chosen.kind === "person" ? ["person", chosen.ids.tmdbPerson] : null;
+  if (!ask || !ask[1] || !/^\d{1,10}$/.test(ask[1])) return null;
+  const [type, id] = ask as [string, string];
+  try {
+    const body = await getJson(`https://api.themoviedb.org/3/${type}/${id}?${new URLSearchParams({ language })}`, {
+      headers: { Authorization: `Bearer ${pictureTmdbToken.value()}` },
+    });
+    return tmdbHits({ results: [{ ...(body as object), media_type: type }] })[0] ?? null;
+  } catch (error) {
+    console.warn("TMDB by id failed", error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 
 /**
