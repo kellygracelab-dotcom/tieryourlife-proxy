@@ -15,6 +15,12 @@ import {
   inaturalistWithoutPhoto,
   matchScore,
   mergeHits,
+  appendNew,
+  fittingPicture,
+  scopeRank,
+  searchLanguage,
+  worthSearching,
+  WIDEST_PHOTO,
   openLibraryHits,
   PictureHit,
   pictureScopeOf,
@@ -176,7 +182,12 @@ describe("the catalogues' answers", () => {
     assert.equal(fitsTile(600, 900, true), true);
     assert.equal(fitsTile(901, 900, true), false);
     assert.equal(fitsTile(1500, 1000, false), true);
-    assert.equal(fitsTile(1600, 1000, false), false);
+    // Paris (1.6), Everest (1.84) and Queen (1.57) are cropped into a tile now; a panorama is not.
+    assert.equal(fitsTile(4592, 2870, false), true);
+    assert.equal(fitsTile(2000, 1000, false), true);
+    assert.equal(fitsTile(2001, 1000, false), false);
+    assert.equal(fitsTile(12288, 3072, false), false);
+    assert.equal(WIDEST_PHOTO, 2);
     assert.equal(fitsTile(299, 600, false), false);
   });
 
@@ -190,6 +201,69 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.kind]), [
       ["The Legend of Zelda: Breath of the Wild", "2017", "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co3p2d.jpg", "game"],
     ]);
+  });
+
+  it("in a scope with a catalogue of its own, its kind of picture first and Wikidata's last; all as before", () => {
+    const thing = (id: string, title: string): PictureHit => ({ ...hit(id, title), source: "wikidata", kind: "thing" });
+    const game = (id: string, title: string): PictureHit => ({ ...hit(id, title), source: "igdb", kind: "game" });
+    const halo = [[game("igdb:740", "Halo: Combat Evolved")], [thing("wikidata:Q1", "Halo"), { ...thing("wikidata:Q2", "Halo"), subtitle: "optical phenomenon" }]];
+    assert.deepEqual(mergeHits("halo", halo, "games").map((one) => one.id), ["igdb:740", "wikidata:Q1", "wikidata:Q2"]);
+    assert.deepEqual(mergeHits("halo", halo, "all").map((one) => one.id), ["wikidata:Q1", "wikidata:Q2", "igdb:740"]);
+    assert.deepEqual(mergeHits("halo", halo).map((one) => one.id), ["wikidata:Q1", "wikidata:Q2", "igdb:740"]);
+    // Within the scope's own kind the best title still leads.
+    assert.deepEqual(mergeHits("halo", [[game("igdb:1", "Halo Wars"), game("igdb:2", "Halo")]], "games").map((one) => one.id), ["igdb:2", "igdb:1"]);
+  });
+
+  it("an anime list gets the series before its manga, and the manga before a namesake from Wikidata", () => {
+    const anilist = (id: string, kind: PictureHit["kind"]): PictureHit => ({ ...hit(id, "Attack on Titan"), source: "anilist", kind });
+    const merged = mergeHits("attack on titan", [[anilist("anilist:53390", "manga"), anilist("anilist:16498", "anime")], [{ ...hit("wikidata:Q1", "Attack on Titan"), source: "wikidata", kind: "thing" }]], "anime");
+    assert.deepEqual(merged.map((one) => one.id), ["anilist:16498", "anilist:53390", "wikidata:Q1"]);
+    assert.deepEqual([scopeRank({ kind: "anime", source: "anilist" }, "anime"), scopeRank({ kind: "character", source: "anilist" }, "anime"), scopeRank({ kind: "thing", source: "wikidata" }, "anime")], [0, 1, 2]);
+    assert.equal(scopeRank({ kind: "thing", source: "wikidata" }, "all"), 0);
+  });
+
+  it("of games with one title, the most rated is kept, where the first stood", () => {
+    const game = (id: string, subtitle: string, popularity?: number): PictureHit => ({ ...hit(id, "Hollow Knight"), subtitle, source: "igdb", kind: "game", ...(popularity ? { popularity } : {}) });
+    const merged = mergeHits("hollow knight", [[game("igdb:270000", "2023"), { ...hit("igdb:5", "Hollow Knight: Godmaster"), source: "igdb", kind: "game" }, game("igdb:14593", "2017", 2400)]], "games");
+    assert.deepEqual(merged.map((one) => one.id), ["igdb:14593", "igdb:5"]);
+    // Equally rated or unrated: the first, as before.
+    assert.deepEqual(mergeHits("hollow knight", [[game("igdb:1", "2023"), game("igdb:2", "2017")]]).map((one) => one.id), ["igdb:1"]);
+  });
+
+  it("the whole answer keeps the quick one at its head, new hits below", () => {
+    const quick = [hit("wikidata:Q1", "Dune"), hit("tmdb:2", "Dune Part Two")];
+    const whole = [{ ...hit("openlibrary:OL1W", "Dune"), source: "openlibrary" as const, kind: "book" as const }, hit("tmdb:2", "Dune Part Two"), hit("wikidata:Q1", "Dune"), hit("openlibrary:OL2W", "Dune Messiah", "https://x/tmdb:2.jpg")];
+    assert.deepEqual(appendNew(quick, whole).map((one) => one.id), ["wikidata:Q1", "tmdb:2", "openlibrary:OL1W"]);
+    assert.deepEqual(appendNew([], whole).map((one) => one.id), whole.map((one) => one.id));
+  });
+
+  it("asks nothing for a string without a letter or a digit, in any script", () => {
+    assert.deepEqual(["!!!???", "😀😀", "--", "…  ", "<>"].map(worthSearching), [false, false, false, false, false]);
+    assert.deepEqual(["the", "1984", "東京", "Київ", "القاهرة", "<script>alert(1)</script>", "C++"].map(worthSearching), [true, true, true, true, true, true, true]);
+  });
+
+  it("keeps a search in the language alone, so a phone's en-US and the site's en share one answer", () => {
+    assert.deepEqual(["en-US", "EN", "en", "uk-UA", "ja-JP", "ar-EG", "de"].map(searchLanguage), ["en", "en", "en", "uk", "ja", "ar", "de"]);
+    assert.deepEqual(["pt-BR", "pt-br", "pt-PT", "pt"].map(searchLanguage), ["pt-BR", "pt-BR", "pt", "pt"]);
+    assert.deepEqual(["zh-tw", "zh-hant", "zh"].map(searchLanguage), ["zh-TW", "zh-Hant", "zh"]);
+    assert.deepEqual([undefined, "", "english", "e1", ["en"]].map(searchLanguage), ["en", "en", "en", "en", "en"]);
+  });
+
+  it("Wikidata: every picture an item names, preferred first, none deprecated; the next one shows when the first is too wide", () => {
+    const value = (file: string, rank = "normal") => ({ rank, mainsnak: { datavalue: { value: file } } });
+    const [candidate] = wikidataCandidates(["Q34221"], { entities: { Q34221: {
+      labels: { en: { value: "Niagara Falls" } },
+      claims: { P18: [value("Panorama.jpg"), value("Old.jpg", "deprecated"), value("Falls.jpg", "preferred")], P154: [value("Logo.svg")], P2716: [value("Collage.jpg")] },
+    } } }, "en");
+    assert.deepEqual(candidate?.files, ["Falls.jpg", "Panorama.jpg", "Logo.svg"]);
+    assert.equal(candidate?.file, "Falls.jpg");
+    const attribution = { source: "wikimedia" as const };
+    const chosen = fittingPicture({ ...candidate!, files: ["Panorama.jpg", "Falls.jpg"] }, new Map([["Falls.jpg", { credit: "Someone", attribution }]]));
+    assert.equal(chosen?.file, "Falls.jpg");
+    assert.equal(chosen?.hit.imageUrl, "https://commons.wikimedia.org/wiki/Special:FilePath/Falls.jpg?width=600");
+    assert.equal(chosen?.hit.thumbUrl, "https://commons.wikimedia.org/wiki/Special:FilePath/Falls.jpg?width=400");
+    assert.equal(chosen?.hit.credit, "Someone");
+    assert.equal(fittingPicture(candidate!, new Map()), null);
   });
 
   it("the same game from IGDB and Steam is shown once, IGDB's first", () => {

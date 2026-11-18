@@ -114,6 +114,37 @@ const hosts = () => asked.map((url) => url.host).filter((host) => host !== "id.t
 const counted = () => fakes.db.get(DAY_DOC)?.hourCount;
 
 describe("GET /lists/pictures under load", () => {
+  it("shows the same order when the same search comes back from the cache", async () => {
+    const ids = (reply: Reply) => (reply.body.items as { id: string }[]).map((one) => one.id);
+    const quick = await get({ part: "quick", q: "Lion", scope: "all" });
+    const whole = await get({ q: "Lion", scope: "all" });
+    assert.ok(ids(quick).length > 0);
+    // Open Library answers only the whole search, with a title as exact as Wikidata's: it comes below.
+    assert.deepEqual(ids(whole).slice(ids(quick).length), ["openlibrary:OL1W"]);
+    assert.deepEqual(ids(whole).slice(0, ids(quick).length), ids(quick));
+    const before = asked.length;
+    assert.deepEqual(ids(await get({ part: "quick", q: "Lion", scope: "all" })), ids(whole));
+    assert.equal(asked.length, before);
+  });
+
+  it("asks nothing and counts nothing for a string without a letter or a digit", async () => {
+    for (const q of ["!!!???", "😀😀"]) {
+      const quick = await get({ part: "quick", q });
+      assert.deepEqual([quick.status, quick.body], [200, { items: [], hasMore: false, notices: [], rest: false }]);
+      assert.deepEqual((await get({ q })).body, { items: [], hasMore: false, notices: [] });
+    }
+    assert.equal(asked.length, 0);
+    assert.equal(counted(), undefined);
+  });
+
+  it("answers a phone's en-US from what the site's en search kept", async () => {
+    await get({ lang: "en" });
+    const before = asked.length;
+    assert.equal((await get({ lang: "en-US" })).status, 200);
+    assert.equal(asked.length, before);
+    assert.equal(counted(), 1);
+  });
+
   it("counts a quick search and the whole one after it as one", async () => {
     assert.equal((await get({ part: "quick" })).status, 200);
     assert.equal((await get({})).status, 200);
