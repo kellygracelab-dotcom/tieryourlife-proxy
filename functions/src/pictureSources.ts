@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { COMMONS_CARD_WIDTH, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, type PictureAttribution } from "./pictureAttribution";
+import { COMMONS_CARD_WIDTH, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -151,15 +151,25 @@ export function fitsTile(width: number, height: number, covers: boolean): boolea
 
 /** Fewer good matches than this from the catalogues, and "all" asks the web too. */
 export const WEB_WHEN_FEWER_THAN = 6;
+/**
+ * How many of the web's pictures a search that found nothing shows, in any scope: the first few, as an
+ * image search shows them (QA, 18.11.2026: "если не находило то шло в гугл картинки и брало от туда первые 5").
+ */
+export const WEB_WHEN_EMPTY = 5;
 export const WEB_DAILY_PER_USER = 30;
 /** About fifty dollars of web searches; past it the web drops out for everyone until the month turns. */
 export const WEB_MONTHLY_CEILING = 50_000;
 
 export type WebDecision = "ask" | "skip" | "dailyLimit" | "off";
 
+/**
+ * Whether a search asks the web. "all" asks it when the catalogues found little; any scope asks it when
+ * [empty]: the catalogues and the second attempt found nothing like the name. [forced]: asked for everywhere.
+ */
 export function decideWeb(input: {
   scope: PictureScope;
   forced: boolean;
+  empty?: boolean;
   goodMatches: number;
   configured: boolean;
   offUntilMs: number;
@@ -167,8 +177,8 @@ export function decideWeb(input: {
   usedToday: number;
   usedThisMonth: number;
 }): WebDecision {
-  if (input.scope !== "all" && !input.forced) return "skip";
-  if (!input.forced && input.goodMatches >= WEB_WHEN_FEWER_THAN) return "skip";
+  const wanted = input.forced || input.empty === true || (input.scope === "all" && input.goodMatches < WEB_WHEN_FEWER_THAN);
+  if (!wanted) return "skip";
   if (!input.configured || input.offUntilMs > input.nowMs || input.usedThisMonth >= WEB_MONTHLY_CEILING) return "off";
   if (input.usedToday >= WEB_DAILY_PER_USER) return "dailyLimit";
   return "ask";
@@ -711,6 +721,8 @@ export function webHits(body: unknown): PictureHit[] {
     if (!imageUrl || !imageUrl.startsWith("https://") || !title) return [];
     // The search engine's own thumbnail is a couple of hundred pixels: the grid takes the picture itself.
     if (typeof row.imageWidth !== "number" || typeof row.imageHeight !== "number" || !fitsTile(row.imageWidth, row.imageHeight, false)) return [];
+    // The page the picture stands on: whose it is and under what terms is said there, not by the search.
+    const link = pageLink(row.link);
     return [{
       id: `web:${hashOf(imageUrl)}`,
       title: title.length > 80 ? `${title.slice(0, 79)}…` : title,
@@ -719,7 +731,7 @@ export function webHits(body: unknown): PictureHit[] {
       thumbUrl: null,
       source: "web",
       kind: "web",
-      attribution: { source: "web" },
+      attribution: link ? { source: "web", link } : { source: "web" },
     }];
   });
 }

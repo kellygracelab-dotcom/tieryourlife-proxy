@@ -31,7 +31,7 @@ export const houseFill = onDocumentCreated(
       }
       const answer = query.exact
         ? await igdbNamed(query.typed).then((items) => ({ items }), () => null)
-        : await searchPictures({ typed: query.typed, scope: query.scope, language: "en", page: 1, forcedWeb: false, quick: false, uid: HOUSE_FILL_UID }).catch(() => null);
+        : await searchPictures({ typed: query.typed, scope: query.scope, language: "en", page: 1, forcedWeb: false, quick: false, uid: HOUSE_FILL_UID, noWeb: true }).catch(() => null);
       // Through JSON, so a field a hit leaves undefined is not refused by Firestore.
       answers.push({ ok: answer !== null, hits: JSON.parse(JSON.stringify(answer?.items.slice(0, HITS_KEPT) ?? [])) });
       if (spacingMs > 0) await new Promise((resolve) => setTimeout(resolve, spacingMs));

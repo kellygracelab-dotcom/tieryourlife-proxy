@@ -80,9 +80,12 @@ describe("decideWeb", () => {
     assert.equal(decideWeb({ ...base, goodMatches: 10 }), "skip");
   });
 
-  it("leaves a narrow scope to its catalogues unless asked everywhere", () => {
+  it("leaves a narrow scope to its catalogues unless asked everywhere or nothing was found", () => {
     assert.equal(decideWeb({ ...base, scope: "anime" }), "skip");
     assert.equal(decideWeb({ ...base, scope: "anime", forced: true }), "ask");
+    assert.equal(decideWeb({ ...base, scope: "anime", empty: true }), "ask");
+    assert.equal(decideWeb({ ...base, scope: "anime", empty: true, configured: false }), "off");
+    assert.equal(decideWeb({ ...base, scope: "anime", empty: true, usedToday: WEB_DAILY_PER_USER }), "dailyLimit");
   });
 
   it("stops at a person's day and the service's month", () => {
@@ -419,14 +422,18 @@ describe("the catalogues' answers", () => {
 
   it("the web: https pictures big enough for a tile, the picture itself in the grid, long page titles cut", () => {
     const hits = webHits({ images: [
-      { title: "x".repeat(100), imageUrl: "https://site/a.jpg", imageWidth: 800, imageHeight: 1000, thumbnailUrl: "https://t/a", source: "site" },
+      { title: "x".repeat(100), imageUrl: "https://site/a.jpg", imageWidth: 800, imageHeight: 1000, thumbnailUrl: "https://t/a", source: "site", link: "https://site.example/page" },
+      { title: "no page", imageUrl: "https://site/f.jpg", imageWidth: 800, imageHeight: 1000, link: "javascript:alert(1)" },
       { title: "plain", imageUrl: "http://site/b.jpg", imageWidth: 800, imageHeight: 1000 },
       { title: "banner", imageUrl: "https://site/c.jpg", imageWidth: 1600, imageHeight: 400 },
       { title: "icon", imageUrl: "https://site/d.jpg", imageWidth: 128, imageHeight: 128 },
       { title: "unknown size", imageUrl: "https://site/e.jpg" },
     ] });
-    assert.deepEqual(hits.map((one) => one.imageUrl), ["https://site/a.jpg"]);
+    assert.deepEqual(hits.map((one) => one.imageUrl), ["https://site/a.jpg", "https://site/f.jpg"]);
     assert.equal([...(hits[0]?.title ?? "")].length, 80);
+    // The page the picture stands on is kept, an https page only.
+    assert.deepEqual(hits[0]?.attribution, { source: "web", link: "https://site.example/page" });
+    assert.deepEqual(hits[1]?.attribution, { source: "web" });
     assert.equal(hits[0]?.thumbUrl, null);
   });
 });
