@@ -488,6 +488,58 @@ describe("stage 2: the item the name means, first", () => {
     }
   });
 
+  it("asks Wikidata's items in chunks of ten and keeps what the chunks that answer hold", async () => {
+    const plain = globalThis.fetch;
+    const chunks: string[][] = [];
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      const action = url.searchParams.get("action");
+      if (url.host === "www.wikidata.org" && action === "wbsearchentities") {
+        return Response.json({ search: Array.from({ length: 25 }, (_, at) => ({ id: `Q${at + 1}` })) });
+      }
+      if (url.host === "www.wikidata.org" && action === "wbgetentities") {
+        const ids = (url.searchParams.get("ids") ?? "").split("|");
+        chunks.push(ids);
+        if (ids.includes("Q11")) return new Response("too slow", { status: 504 });
+        return Response.json({ entities: Object.fromEntries(ids.map((id) => [id, {
+          labels: { en: { value: "Lion" } },
+          sitelinks: { enwiki: {} },
+          claims: { P31: [value("Q16521")], P18: [text("Lion waiting.jpg")] },
+        }])) });
+      }
+      if (url.host.endsWith("wikipedia.org")) return Response.json({ batchcomplete: "" });
+      return plain(input);
+    });
+    const reply = await get({ q: "Lion", scope: "animals", section: "animals" });
+    assert.equal(reply.status, 200);
+    assert.deepEqual(chunks.map((ids) => ids.length).sort(), [10, 10, 5]);
+    const wikidata = items(reply).filter((hit) => hit.source === "wikidata").map((hit) => hit.id);
+    assert.ok(wikidata.includes("wikidata:Q1"));
+    assert.equal(wikidata.includes("wikidata:Q11"), false);
+  });
+
+  it("leaves a music list's singer to Wikidata: TMDB is not asked by id where the scope does not ask it", async () => {
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      const action = url.searchParams.get("action");
+      if (url.host === "www.wikidata.org" && action === "wbsearchentities") return Response.json({ search: [{ id: "Q36153" }] });
+      if (url.host === "www.wikidata.org" && action === "wbgetentities") {
+        return Response.json({ entities: { Q36153: {
+          labels: { en: { value: "Beyoncé" } },
+          sitelinks: Object.fromEntries(Array.from({ length: 120 }, (_, at) => [`wiki${at}`, {}])),
+          claims: { P31: [value("Q5")], P106: [value("Q177220")], P136: [value("Q37073")], P4985: [text("14386")], P18: [text("Lion waiting.jpg")] },
+        } } });
+      }
+      if (url.host.endsWith("wikipedia.org")) return Response.json({ query: { pages: { "1": { index: 1, pageprops: { wikibase_item: "Q36153" } } } } });
+      asked.push(url);
+      return plain(input);
+    });
+    const reply = await get({ q: "Beyonce", scope: "music", section: "music" });
+    assert.equal(asked.some((url) => url.host === "api.themoviedb.org"), false);
+    assert.equal(items(reply)[0]?.id, "wikidata:Q36153");
+  });
+
   it("leaves an old client's search in all without a section as it was: no Wikipedia, nothing chosen", async () => {
     lionKing();
     await get({ q: "Lion King", scope: "all" });
