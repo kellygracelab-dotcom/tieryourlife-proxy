@@ -42,6 +42,7 @@ import {
   inaturalistWithoutPhoto,
   mergeHits,
   appendNew,
+  WEB_WHEN_EMPTY,
   fittingPicture,
   searchLanguage,
   worthSearching,
@@ -234,6 +235,8 @@ interface SearchInput {
   forcedWeb: boolean;
   quick: boolean;
   uid: string;
+  /** Never asks the web: the house fill takes only pictures it may copy, and a second attempt's searches are the first one's. */
+  noWeb?: boolean;
 }
 
 /**
@@ -251,8 +254,11 @@ export function searchPicturesCounted(input: SearchInput): Promise<PicturesAnswe
   return search(input, true);
 }
 
-/** Cache keys of a search: its answer, with the web, the quick parts, and the second attempt chosen for it. */
-function cacheKey(input: SearchInput, web: boolean, part: "" | "parts" | "retry" = ""): string {
+/**
+ * Cache keys of a search: its answer, with the web, the quick parts, the second attempt chosen for it, and
+ * the web's pictures for a search that found nothing.
+ */
+function cacheKey(input: SearchInput, web: boolean, part: "" | "parts" | "retry" | "empty" = ""): string {
   return createHash("sha256")
     .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", part, wantKey(input.want ?? null)].join("|"))
     .digest("hex");
@@ -262,7 +268,8 @@ function cacheKey(input: SearchInput, web: boolean, part: "" | "parts" | "retry"
  * A search as it is answered: the catalogues asked as typed, and when that finds nothing like it on the
  * first page, a second attempt (a trailing "watch online" cut off, the other keyboard layout, Wikipedia's
  * spelling) whose answer is given instead, with `searchedAs`. The texts tried are kept with the search, so
- * a quick search and the whole one after it try the same. Each hit is then judged.
+ * a quick search and the whole one after it try the same. When that finds nothing either, the web's first
+ * pictures come below (`webWhenEmpty`). Each hit is then judged.
  */
 async function search(input: SearchInput, metered: boolean): Promise<PicturesAnswer | SearchLimited | null> {
   const first = await searchAsTyped(input, metered);
@@ -270,7 +277,7 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   let answer: PicturesAnswer = first;
   if (input.page === 1 && !busyAnswer(first) && goodMatches(input.typed, first.items) === 0 && !isDemoEmulator()) {
     const retried = await secondAttempt(input, first);
-    if (retried) answer = retried;
+    answer = retried ?? (await webWhenEmpty(input, first));
   }
   const typed = answer.searchedAs?.text ?? input.typed;
   return { ...answer, items: judgeHits(answer.items, typed, input.scope, input.want ?? null, answer.searchedAs !== undefined, input.page === 1) };
@@ -285,8 +292,8 @@ async function secondAttempt(input: SearchInput, first: PicturesAnswer): Promise
   const tries = known ?? (await retryTexts(input.typed, input.language, first.items.length === 0));
   if (!known) await chosenRef.set({ tries, at: Timestamp.now() }).catch(() => undefined);
   for (const attempt of tries.slice(0, 2)) {
-    // The same search, so it is not counted again.
-    const again = await searchAsTyped({ ...input, typed: attempt.text }, false);
+    // The same search, so it is not counted again; the web, if any, was asked for the text as typed.
+    const again = await searchAsTyped({ ...input, typed: attempt.text, noWeb: true }, false);
     if (again === null || "limited" in again || busyAnswer(again)) continue;
     if (goodMatches(attempt.text, again.items) === 0) continue;
     // What the text as typed found stays below.
@@ -294,6 +301,30 @@ async function secondAttempt(input: SearchInput, first: PicturesAnswer): Promise
     return { ...again, items: appendNew(again.items, first.items), searchedAs: attempt, ...rest };
   }
   return null;
+}
+
+/**
+ * A search in a scope of its own that found nothing like the name, as typed or at the second attempt: the
+ * web's first pictures below what it did find. "all" and a search for the web everywhere asked the web
+ * already. Kept with the search, so asked again it costs nothing more; a quick search only says that the
+ * whole one may bring them. Without a web key, the answer as it is.
+ */
+async function webWhenEmpty(input: SearchInput, answer: PicturesAnswer): Promise<PicturesAnswer> {
+  if (input.scope === "all" || input.forcedWeb || input.noWeb === true || webKey() === null) return answer;
+  if (input.quick) return { ...answer, rest: true };
+  const keptRef = getFirestore().collection(CACHE).doc(cacheKey(input, true, "empty"));
+  const kept = await keptRef.get().catch(() => null);
+  const at = kept?.get("at")?.toMillis?.() ?? 0;
+  let hits = kept?.exists && Date.now() - at < CACHE_FRESH_MS ? (kept.get("items") as PictureHit[] | undefined) : undefined;
+  if (!hits) {
+    const web = await maybeAskWeb(input, 0, true);
+    if (web.notice) return { ...answer, notices: [...answer.notices, web.notice] };
+    if (!web.hits) return answer;
+    hits = web.hits.slice(0, WEB_WHEN_EMPTY);
+    // Through JSON: Firestore refuses a field left undefined.
+    await keptRef.set({ items: JSON.parse(JSON.stringify(hits)), at: Timestamp.now() }).catch(() => undefined);
+  }
+  return { ...answer, items: appendNew(answer.items, hits) };
 }
 
 /**
@@ -398,7 +429,8 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
   const items = appendNew(catalogues.items, mergeHits(input.typed, [web.hits], input.scope, rankFor(input), scoreFor(input)));
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
   // An answer with a busy catalogue's gap is not kept: asked again, it may be whole.
-  if (catalogues.busy === undefined) await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
+  // Through JSON: Firestore refuses a field left undefined, such as a web picture's missing subtitle.
+  if (catalogues.busy === undefined) await db.collection(CACHE).doc(key(true)).set({ ...JSON.parse(JSON.stringify(withWeb)), at: Timestamp.now() }).catch(() => undefined);
   return catalogues.busy === undefined ? withWeb : { ...withWeb, busy: catalogues.busy, retryAt: catalogues.retryAt };
 }
 
@@ -814,7 +846,9 @@ function webKey(): string | null {
   return key && key.length > 0 ? key : null;
 }
 
-async function maybeAskWeb(input: SearchInput, good: number): Promise<WebOutcome> {
+/** The web's pictures for [input] when `decideWeb` says so; [empty]: the search found nothing like the name. */
+async function maybeAskWeb(input: SearchInput, good: number, empty = false): Promise<WebOutcome> {
+  if (input.noWeb === true) return {};
   const db = getFirestore();
   const now = Date.now();
   const today = dayKey(now);
@@ -827,6 +861,7 @@ async function maybeAskWeb(input: SearchInput, good: number): Promise<WebOutcome
   const decision = decideWeb({
     scope: input.scope,
     forced: input.forcedWeb,
+    empty,
     goodMatches: good,
     configured: webKey() !== null,
     offUntilMs: switchDoc.get("offUntil")?.toMillis?.() ?? 0,

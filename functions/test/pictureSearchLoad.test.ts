@@ -379,3 +379,49 @@ describe("stage 1: the list's section, how sure, a second attempt", () => {
     assert.deepEqual(taxa, ["1,47126", "1"]);
   });
 });
+
+describe("stage 1b: the web's first pictures when nothing is found", () => {
+  type Hit = { id: string; source: string; attribution?: { source: string; link?: string }; confidence?: string; doubts?: string[] };
+  const items = (reply: Reply) => reply.body.items as Hit[];
+  const web = () => asked.filter((url) => url.host === "google.serper.dev").length;
+
+  it("asks the web once in a scope of its own and shows its first five, with their pages", async () => {
+    process.env.SERPER_API_KEY = "test-key";
+    // TMDB finds only The Lion King, nothing like "Zzqx", and Wikipedia suggests nothing.
+    const quick = await get({ part: "quick", q: "Zzqx", scope: "film_tv" });
+    assert.equal(quick.body.rest, true);
+    assert.equal(web(), 0);
+    const whole = await get({ q: "Zzqx", scope: "film_tv" });
+    const found = items(whole).filter((hit) => hit.source === "web");
+    assert.equal(found.length, 5);
+    assert.equal(items(whole)[0]?.source, "tmdb");
+    assert.deepEqual(found[0]?.attribution, { source: "web", link: "https://page.example/1" });
+    assert.equal(found[0]?.confidence, "low");
+    assert.deepEqual(found[0]?.doubts, ["web"]);
+    assert.equal(web(), 1);
+    // Asked again, the pictures are kept with the search: the web is not paid twice.
+    assert.deepEqual(items(await get({ q: "Zzqx", scope: "film_tv" })).map((hit) => hit.id), items(whole).map((hit) => hit.id));
+    assert.equal(web(), 1);
+  });
+
+  it("leaves a search that found its name alone", async () => {
+    process.env.SERPER_API_KEY = "test-key";
+    const whole = await get({ q: "The Lion King", scope: "film_tv" });
+    assert.equal(items(whole).some((hit) => hit.source === "web"), false);
+    assert.equal(web(), 0);
+  });
+
+  it("works as before without a web key", async () => {
+    const quick = await get({ part: "quick", q: "Zzqx", scope: "film_tv" });
+    assert.equal(quick.body.rest, false);
+    const whole = await get({ q: "Zzqx", scope: "film_tv" });
+    assert.equal(items(whole).some((hit) => hit.source === "web"), false);
+    assert.equal(web(), 0);
+  });
+
+  it("pays for the web once in all, not again for the second attempt's text", async () => {
+    process.env.SERPER_API_KEY = "test-key";
+    await get({ q: "Zzqx смотреть онлайн", scope: "all" });
+    assert.equal(web(), 1);
+  });
+});

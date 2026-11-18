@@ -46,6 +46,18 @@ export function catalogueAnswer(url: URL): unknown {
         return { results: ids.map((id) => ({ id, taxon_photos: [{ photo: id <= 4 ? OPEN(100 + id) : CLOSED(100 + id) }] })) };
       }
       return { results: [{ photos: [{ ...OPEN(200), url: "https://inaturalist-open-data.s3.amazonaws.com/photos/200/square.jpg" }] }] };
+    case "google.serper.dev":
+      return {
+        images: [1, 2, 3, 4, 5, 6, 7].map((id) => ({
+          title: `Zzqx ${id}`,
+          imageUrl: `https://img.example/${id}.jpg`,
+          imageWidth: 800,
+          imageHeight: 1000,
+          source: "Example",
+          domain: "page.example",
+          link: `https://page.example/${id}`,
+        })),
+      };
     default:
       return {};
   }
