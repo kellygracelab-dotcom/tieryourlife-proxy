@@ -31,6 +31,7 @@ import {
   deezerAlbumHits,
   deezerArtistHits,
   goodMatches,
+  hitScore,
   hasSlowSources,
   IGDB_QUERY_FIELDS,
   igdbHits,
@@ -67,6 +68,22 @@ import { noteDenied } from "./pictureAlarms";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
 import { fold } from "./search";
+import {
+  builtInWant,
+  cleanId,
+  judgeHits,
+  otherLayout,
+  trimmedTail,
+  typeOfNames,
+  wantKey,
+  wantRank,
+  wantScore,
+  wikipediaOf,
+  wikipediaSuggestion,
+  type JudgedHit,
+  type Retry,
+  type Want,
+} from "./pictureIntent";
 
 export const pictureTmdbToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
 export const igdbClientId = defineSecret("IGDB_CLIENT_ID");
@@ -79,7 +96,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 16;
+const CACHE_SHAPE = 17;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -97,7 +114,7 @@ const MAX_QUERY = 100;
 const MAX_PAGE = 20;
 
 interface PicturesAnswer {
-  items: PictureHit[];
+  items: JudgedHit[];
   hasMore: boolean;
   notices: string[];
   /** Quick answers only: whether the whole search can find more. */
@@ -106,6 +123,8 @@ interface PicturesAnswer {
   busy?: PictureSource[];
   /** With [busy]: when they may be asked again, epoch milliseconds. */
   retryAt?: number;
+  /** What was searched instead when the text as typed found nothing like it (since 18.11.2026). */
+  searchedAs?: { text: string; how: Retry };
 }
 
 /**
@@ -161,6 +180,7 @@ export async function routePictures(
     const answer = await searchPicturesCounted({
       typed,
       scope: pictureScopeOf(query.scope),
+      want: await wantOf(cleanId(query.section), cleanId(query.topic)),
       language: searchLanguage(query.lang),
       page,
       forcedWeb: query.web === "1" || query.web === "true",
@@ -207,6 +227,8 @@ export async function routePictures(
 interface SearchInput {
   typed: string;
   scope: PictureScope;
+  /** What the list wants, from its section and topic; absent or null: as before sections were sent. */
+  want?: Want | null;
   language: string;
   page: number;
   forcedWeb: boolean;
@@ -229,14 +251,118 @@ export function searchPicturesCounted(input: SearchInput): Promise<PicturesAnswe
   return search(input, true);
 }
 
+/** Cache keys of a search: its answer, with the web, the quick parts, and the second attempt chosen for it. */
+function cacheKey(input: SearchInput, web: boolean, part: "" | "parts" | "retry" = ""): string {
+  return createHash("sha256")
+    .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", part, wantKey(input.want ?? null)].join("|"))
+    .digest("hex");
+}
+
+/**
+ * A search as it is answered: the catalogues asked as typed, and when that finds nothing like it on the
+ * first page, a second attempt (a trailing "watch online" cut off, the other keyboard layout, Wikipedia's
+ * spelling) whose answer is given instead, with `searchedAs`. The texts tried are kept with the search, so
+ * a quick search and the whole one after it try the same. Each hit is then judged.
+ */
 async function search(input: SearchInput, metered: boolean): Promise<PicturesAnswer | SearchLimited | null> {
+  const first = await searchAsTyped(input, metered);
+  if (first === null || "limited" in first) return first;
+  let answer: PicturesAnswer = first;
+  if (input.page === 1 && !busyAnswer(first) && goodMatches(input.typed, first.items) === 0 && !isDemoEmulator()) {
+    const retried = await secondAttempt(input, first);
+    if (retried) answer = retried;
+  }
+  const typed = answer.searchedAs?.text ?? input.typed;
+  return { ...answer, items: judgeHits(answer.items, typed, input.scope, input.want ?? null, answer.searchedAs !== undefined, input.page === 1) };
+}
+
+/** The second attempt's answer for [input], or null when none is worth giving. */
+async function secondAttempt(input: SearchInput, first: PicturesAnswer): Promise<PicturesAnswer | null> {
+  const chosenRef = getFirestore().collection(CACHE).doc(cacheKey(input, false, "retry"));
+  const chosen = await chosenRef.get().catch(() => null);
+  const at = chosen?.get("at")?.toMillis?.() ?? 0;
+  const known = chosen?.exists && Date.now() - at < CACHE_FRESH_MS ? (chosen.get("tries") as { text: string; how: Retry }[] | undefined) : undefined;
+  const tries = known ?? (await retryTexts(input.typed, input.language, first.items.length === 0));
+  if (!known) await chosenRef.set({ tries, at: Timestamp.now() }).catch(() => undefined);
+  for (const attempt of tries.slice(0, 2)) {
+    // The same search, so it is not counted again.
+    const again = await searchAsTyped({ ...input, typed: attempt.text }, false);
+    if (again === null || "limited" in again || busyAnswer(again)) continue;
+    if (goodMatches(attempt.text, again.items) === 0) continue;
+    // What the text as typed found stays below.
+    const rest = first.rest === undefined && again.rest === undefined ? {} : { rest: again.rest === true || first.rest === true };
+    return { ...again, items: appendNew(again.items, first.items), searchedAs: attempt, ...rest };
+  }
+  return null;
+}
+
+/**
+ * The texts a second attempt tries, best first: the title without its tail, the other layout, Wikipedia's
+ * spelling. The other layout only when nothing at all was found: "Крёстный отец" is no Latin typed wrong.
+ */
+async function retryTexts(typed: string, language: string, nothing: boolean): Promise<{ text: string; how: Retry }[]> {
+  const tries: { text: string; how: Retry }[] = [];
+  const trimmed = trimmedTail(typed);
+  if (trimmed) tries.push({ text: trimmed, how: "trimmed" });
+  const layout = nothing ? otherLayout(trimmed ?? typed, language) : null;
+  if (layout) tries.push({ text: layout, how: "layout" });
+  if (tries.length < 2) {
+    const spelled = await spelling(trimmed ?? typed, language);
+    if (spelled) tries.push({ text: spelled, how: "spelling" });
+  }
+  return tries;
+}
+
+/** Wikipedia's "did you mean" in the search's language, then in English; null when neither suggests anything. */
+async function spelling(typed: string, language: string): Promise<string | null> {
+  for (const wiki of [...new Set([wikipediaOf(language), "en"])]) {
+    const params = new URLSearchParams({ action: "query", list: "search", srsearch: typed, srinfo: "suggestion", srprop: "", srlimit: "1", format: "json" });
+    const body = await getJson(`https://${wiki}.wikipedia.org/w/api.php?${params}`).catch(() => null);
+    const suggestion = wikipediaSuggestion(body, typed);
+    if (suggestion) return suggestion;
+  }
+  return null;
+}
+
+/** What one section or topic is called, read at most every ten minutes per instance. */
+const NAMES_FRESH_MS = 10 * 60 * 1000;
+const namesRead = new Map<string, { atMs: number; names: string[] }>();
+
+async function namesOf(collection: "sections" | "topics", id: string): Promise<string[]> {
+  const key = `${collection}/${id}`;
+  const kept = namesRead.get(key);
+  if (kept && Date.now() - kept.atMs < NAMES_FRESH_MS) return kept.names;
+  const doc = await getFirestore().collection(collection).doc(id).get().catch(() => null);
+  const data = (doc?.exists ? doc.data() : null) ?? {};
+  const names = [data.name, ...Object.values((data.names ?? {}) as Record<string, unknown>)].filter((name): name is string => typeof name === "string").slice(0, 20);
+  if (namesRead.size > 500) namesRead.clear();
+  namesRead.set(key, { atMs: Date.now(), names });
+  return names;
+}
+
+/**
+ * What a list with [section] and [topic] wants. A built-in section says it; a section of somebody's own,
+ * by its names; where that says nothing more than "anything", the topic's names may.
+ */
+export async function wantOf(section: string | null, topic: string | null): Promise<Want | null> {
+  if (section === null && topic === null) return null;
+  let want = builtInWant(section ?? "other");
+  if (want === undefined) {
+    const type = typeOfNames(await namesOf("sections", section!));
+    want = type ? { kind: "type", type } : { kind: "general" };
+  }
+  if (want?.kind === "general" && topic !== null) {
+    const type = typeOfNames(await namesOf("topics", topic));
+    if (type) want = { kind: "type", type };
+  }
+  return want;
+}
+
+async function searchAsTyped(input: SearchInput, metered: boolean): Promise<PicturesAnswer | SearchLimited | null> {
   if (isDemoEmulator()) return { items: [], hasMore: false, notices: [], ...(input.quick ? { rest: false } : {}) };
   const db = getFirestore();
   // "parts": each catalogue's answer to a quick search. The merged quick answers once kept under "quick" are read no more.
-  const key = (web: boolean, part: "" | "parts" = "") =>
-    createHash("sha256")
-      .update([CACHE_SHAPE, fold(input.typed), input.scope, input.language, input.page, web ? "web" : "", part].join("|"))
-      .digest("hex");
+  const key = (web: boolean, part: "" | "parts" = "") => cacheKey(input, web, part);
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
     const doc = await db.collection(CACHE).doc(id).get();
     const at = doc.get("at")?.toMillis?.() ?? 0;
@@ -269,7 +395,7 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   if (web.notice) return { ...catalogues, notices: [web.notice] };
   if (!web.hits) return catalogues;
   // Below the catalogues, as a person first sees them after the quick answer: asked again, the same order.
-  const items = appendNew(catalogues.items, mergeHits(input.typed, [web.hits], input.scope));
+  const items = appendNew(catalogues.items, mergeHits(input.typed, [web.hits], input.scope, rankFor(input), scoreFor(input)));
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
   // An answer with a busy catalogue's gap is not kept: asked again, it may be whole.
   if (catalogues.busy === undefined) await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
@@ -317,8 +443,8 @@ async function askCatalogues(
   // person saw first is what they see when the same search comes from the cache (18.11.2026).
   const quick = new Set(quickSourcesFor(input.scope));
   const fast = hits.filter((_, at) => quick.has(sources[at]!));
-  const all = mergeHits(input.typed, hits, input.scope);
-  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope), all) : all;
+  const all = mergeHits(input.typed, hits, input.scope, rankFor(input), scoreFor(input));
+  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(input), scoreFor(input)), all) : all;
   const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap };
   const cache = getFirestore().collection(CACHE);
   if (keep.parts && asked.some(([, answer]) => answer !== null)) {
@@ -332,6 +458,17 @@ async function askCatalogues(
     await cache.doc(keep.answer).set({ ...merged, at: Timestamp.now() }).catch(() => undefined);
   }
   return merged;
+}
+
+/** How a search ranks hits for what its list wants (src/pictureIntent.ts). */
+function rankFor(input: SearchInput): (hit: PictureHit) => number {
+  const want = input.want ?? null;
+  return (hit) => wantRank(hit, input.scope, want);
+}
+
+function scoreFor(input: SearchInput): (hit: PictureHit) => number {
+  const want = input.want ?? null;
+  return (hit) => wantScore(hit, want, hitScore(hit, input.typed));
 }
 
 /** What a quick search already heard from each catalogue, each while it is fresh. */
@@ -550,8 +687,8 @@ export async function igdbNamed(name: string): Promise<PictureHit[]> {
 /** Autocomplete ranks the tiger above the tiger moths; it has one page, so the next one is empty. */
 async function askInaturalist(input: SearchInput): Promise<SourceAnswer> {
   if (input.page > 1) return { hits: [], hasMore: false };
-  // taxon_id 1 is Animalia: plants and fungi are not what this scope is for.
-  const params = new URLSearchParams({ q: input.typed, taxon_id: "1", rank: "species,subspecies,genus", locale: input.language, per_page: "20" });
+  // taxon_id 1 is Animalia, 47126 Plantae: the animals scope is for animals, "all" takes plants too (18.11.2026).
+  const params = new URLSearchParams({ q: input.typed, taxon_id: input.scope === "animals" ? "1" : "1,47126", rank: "species,subspecies,genus", locale: input.language, per_page: "20" });
   const found = await getJson(`https://api.inaturalist.org/v1/taxa/autocomplete?${params}`);
   // Most default photos are licensed non-commercially or not at all: such a taxon's other photos are looked through.
   const without = inaturalistWithoutPhoto(found);
@@ -618,7 +755,9 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     limit: "20",
     format: "json",
   });
-  const found = (await getJson(`https://www.wikidata.org/w/api.php?${search}`)) as { search?: { id?: unknown }[] };
+  const found = (await getJson(`https://www.wikidata.org/w/api.php?${search}`)) as { search?: { id?: unknown; match?: { text?: unknown } }[] };
+  // The name each item was found by: a label in another language or an alias.
+  const matched = new Map((found.search ?? []).flatMap((row) => (typeof row.id === "string" && typeof row.match?.text === "string" ? [[row.id, row.match.text] as const] : [])));
   const ids = (found.search ?? []).map((row) => row.id).filter((id): id is string => typeof id === "string" && /^Q\d+$/.test(id));
   if (ids.length === 0) return { hits: [], hasMore: false };
   const details = new URLSearchParams({
@@ -629,7 +768,7 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     languages: [...new Set([input.language, language, "en", "mul"])].join("|"),
     format: "json",
   });
-  const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language, input.scope === "music");
+  const pictured = wikidataCandidates(ids, await getJson(`https://www.wikidata.org/w/api.php?${details}`), input.language, input.scope === "music", matched);
   const candidates = pictured.length === 0 ? pictured : await fitting(pictured, wantsCovers(input.scope));
   return {
     hits: candidates.map(({ hit }) => hit),

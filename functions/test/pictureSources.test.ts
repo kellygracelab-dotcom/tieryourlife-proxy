@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { judgeHits } from "../src/pictureIntent";
 import {
   anilistHits,
   commonsFitting,
@@ -335,10 +336,12 @@ describe("the catalogues' answers", () => {
       ["Domestic Cat", "https://inaturalist-open-data.s3.amazonaws.com/photos/11/medium.jpeg"],
       ["Catones", "https://inaturalist-open-data.s3.amazonaws.com/photos/20/medium.jpg"],
     ]);
-    // Found by "Cat", the cat ranks as what was typed, above a name that merely starts so; the alias never leaves.
+    // Found by "Cat", the cat ranks as what was typed, above a name that merely starts so; the alias leaves as matchedName.
     const merged = mergeHits("cat", [hits]);
     assert.deepEqual(merged.map((one) => one.title), ["Domestic Cat", "Catones"]);
-    assert.equal("alias" in (merged[0] ?? {}), false);
+    const sent = judgeHits(merged, "cat", "animals", null, false, true);
+    assert.equal("alias" in (sent[0] ?? {}), false);
+    assert.equal(sent[0]?.matchedName, "Cat");
   });
 
   it("Deezer: a namesake with a sliver of the best-known artist's fans is left out", () => {
