@@ -14,6 +14,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { ERASED_ACCOUNTS, type Identity } from "./auth";
 import { changedAtOf, nextVersion } from "./started";
+import { readPhotoSlot, type PhotoSlot } from "./facePhoto";
 
 export const SETTINGS_PATH = "settings";
 export const SETTINGS_COLLECTION = "settings";
@@ -41,6 +42,8 @@ export interface ColourSetting extends ColourChoice {
 
 export interface AppearanceDocument {
   colour?: ColourSetting;
+  /** The uploaded face photo's slot (`facePhoto.ts`); null once removed. */
+  photo?: PhotoSlot | null;
 }
 
 export type ColourBody = { ok: true; choice: ColourChoice; changedAt: number } | { ok: false; detail: string };
@@ -64,9 +67,12 @@ export function readColourBody(body: unknown, nowMs: number): ColourBody {
 export const colourLands = (stored: ColourSetting | null | undefined, changedAt: number): boolean =>
   !stored || changedAt >= stored.changedAt;
 
-export function settingsWire(stored: AppearanceDocument | null): { colour: ColourSetting | null } {
+export function settingsWire(stored: AppearanceDocument | null): { colour: ColourSetting | null; photo: PhotoSlot | null } {
   const colour = stored?.colour;
-  return { colour: colour ? { name: colour.name, hue: colour.hue ?? null, changedAt: colour.changedAt, updatedAt: colour.updatedAt } : null };
+  return {
+    colour: colour ? { name: colour.name, hue: colour.hue ?? null, changedAt: colour.changedAt, updatedAt: colour.updatedAt } : null,
+    photo: readPhotoSlot(stored?.photo ?? null),
+  };
 }
 
 const appearanceOf = (uid: string) =>
@@ -104,7 +110,7 @@ async function writeColour(response: Response, identity: Identity, body: unknown
     }
     const existing = await transaction.get(ref);
     const stored = existing.exists ? ((existing.data() as AppearanceDocument).colour ?? null) : null;
-    if (!colourLands(stored, read.changedAt)) return { status: 200, body: { ...settingsWire({ colour: stored! }).colour, landed: false } };
+    if (!colourLands(stored, read.changedAt)) return { status: 200, body: { ...settingsWire({ colour: stored! }).colour!, landed: false } };
     const colour: ColourSetting = { ...read.choice, changedAt: read.changedAt, updatedAt: nextVersion(stored?.updatedAt ?? null, now) };
     transaction.set(ref, { colour }, { merge: true });
     return { status: 200, body: { ...colour, landed: true } };

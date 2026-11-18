@@ -287,7 +287,12 @@ export async function checkedFace(
   const host = hostOf(url);
   if (host === null) return null;
   const folder = `avatars/${uid}/`;
-  if (isOurCopy(url, tools.bucket, folder)) return url;
+  if (isOurCopy(url, tools.bucket, folder)) {
+    // An uploaded photo replaced or removed (`facePhoto.ts`) is deleted, while a token keeps naming it for up to an hour.
+    const name = decodeURIComponent(url.slice(`https://firebasestorage.googleapis.com/v0/b/${tools.bucket}/o/${encodeURIComponent(folder)}`.length).split(/[?#]/)[0] ?? "");
+    const names = await tools.namesIn(folder).catch(() => null);
+    return names === null || names.has(name) ? url : null;
+  }
   const done = await copyOutside(folder, [url], tools, { atOnce: 1, withinMs: FACE_WINDOW_MS, until });
   const copy = done.ok ? done.copies.get(url) ?? null : null;
   if (copy !== null) return copy;
