@@ -29,6 +29,7 @@ function seedErasable(uid: string, banned = true) {
   db.seed("topics/someoneElses", { name: "theirs", status: "pending", createdBy: "someone", proposerName: "Someone" });
   db.seed(`accounts/${uid}`, { credits: 3 });
   db.seed(`accounts/${uid}/boards/board1`, { title: "Mine", revision: 1 });
+  db.seed(`accounts/${uid}/started/list1`, { updatedAt: 1, changedAt: 1, removed: null, title: "Begun" });
 }
 
 describe("eraseAccount", () => {
@@ -53,6 +54,7 @@ describe("eraseAccount", () => {
     assert.ok(log.includes("deleteFiles topics/pending/"));
     assert.ok(log.includes("deleteFiles topics/rejected/"));
     assert.equal(db.get("accounts/old1/boards/board1"), undefined);
+    assert.equal(db.get("accounts/old1/started/list1"), undefined);
     assert.equal(db.get("accounts/old1"), undefined);
   });
 

@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { ERASED_ACCOUNTS, requireUser, type Identity } from "./auth";
 import { eraseAccount } from "./erase";
+import { STARTED_PATH, startedRoute } from "./started";
 import { originState } from "./boardOrigin";
 import { copiesOnBoard, copiesShown, copyToShared, fitsWithCopies, withBoardCopies } from "./boardPictures";
 import { catalogueCopyTools } from "./cataloguePictures";
@@ -188,6 +189,15 @@ export const boards = onRequest(
     const identity = await requireUser(request, response, { evenIfErased: erasesTheAccount(request.method, segments) });
     if (!identity) {
       return;
+    }
+    // Somebody else's lists the account began (`started.ts`): a word, like "account", no board id can be.
+    if (id === STARTED_PATH) {
+      try {
+        return await startedRoute(request, response, identity, segments);
+      } catch (error) {
+        console.error("Begun-list request failed", error);
+        return void response.status(503).json({ error: "Unavailable", code: "UNAVAILABLE" });
+      }
     }
     if (segments.length > 1) {
       return void response.status(404).json({ error: "No such address" });
