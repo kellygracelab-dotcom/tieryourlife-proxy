@@ -317,3 +317,65 @@ describe("iNaturalist", () => {
     assert.deepEqual(observed, ["5", "6", "7", "8"]);
   });
 });
+
+describe("stage 1: the list's section, how sure, a second attempt", () => {
+  type Item = { id: string; confidence?: string; doubts?: string[]; matchedName?: string };
+  const items = (reply: Reply) => reply.body.items as Item[];
+
+  it("judges every hit, puts a film section's films first in all, and Wikidata first in Other", async () => {
+    const before = await get({ q: "Lion", scope: "all" });
+    const other = await get({ q: "Lion", scope: "all", section: "other" });
+    // A film list looked up in all: the film first, as if the scope were the section's.
+    const film = await get({ q: "Lion", scope: "all", section: "film_tv" });
+    assert.equal(items(film)[0]?.id, "tmdb:8587");
+    assert.equal(items(other)[0]?.id, "wikidata:Q140");
+    // Other says nothing of what the list holds, and Open Library has a "Lion" too.
+    assert.equal(items(other)[0]?.confidence, "medium");
+    assert.deepEqual(items(other)[0]?.doubts, ["noSection", "namesakes"]);
+    assert.ok(items(before).every((one) => one.confidence !== undefined));
+  });
+
+  it("reads what a section of somebody's own holds from its names, and a topic's under Other", async () => {
+    const { wantOf } = await import("../src/pictureSearch");
+    fakes.db.seed("sections/cities1", { name: "Cities", names: { uk: "Міста" } });
+    fakes.db.seed("sections/stuff", { name: "Stuff" });
+    fakes.db.seed("topics/brands1", { name: "Tech brands" });
+    assert.deepEqual(await wantOf("cities1", null), { kind: "type", type: "places" });
+    assert.deepEqual(await wantOf("stuff", null), { kind: "general" });
+    assert.deepEqual(await wantOf("other", "brands1"), { kind: "type", type: "brands" });
+    assert.deepEqual(await wantOf("food", "brands1"), { kind: "type", type: "food" });
+    assert.deepEqual(await wantOf("missing", null), { kind: "general" });
+    assert.equal(await wantOf(null, null), null);
+  });
+
+  it("searches again as Wikipedia spells a name that found nothing like it, counted once", async () => {
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "en.wikipedia.org") {
+        asked.push(url);
+        return Response.json({ query: { searchinfo: { suggestion: "lion" }, search: [] } });
+      }
+      return plain(input);
+    });
+    const typo = await get({ q: "Lyon kng", scope: "all", section: "other" });
+    assert.equal(typo.status, 200);
+    assert.deepEqual(typo.body.searchedAs, { text: "lion", how: "spelling" });
+    assert.equal(items(typo)[0]?.id, "wikidata:Q140");
+    assert.deepEqual(items(typo)[0]?.doubts?.[0], "spelling");
+    assert.notEqual(items(typo)[0]?.confidence, "high");
+    assert.equal(counted(), 1);
+    // Asked again, the attempt chosen is kept: Wikipedia is not asked twice.
+    const wikipedia = () => asked.filter((url) => url.host === "en.wikipedia.org").length;
+    const once = wikipedia();
+    await get({ q: "Lyon kng", scope: "all", section: "other" });
+    assert.equal(wikipedia(), once);
+  });
+
+  it("asks iNaturalist for plants in all, and for animals alone in the animals scope", async () => {
+    await get({ part: "quick", scope: "all" });
+    await get({ part: "quick", scope: "animals" });
+    const taxa = asked.filter((url) => url.pathname === "/v1/taxa/autocomplete").map((url) => url.searchParams.get("taxon_id"));
+    assert.deepEqual(taxa, ["1,47126", "1"]);
+  });
+});

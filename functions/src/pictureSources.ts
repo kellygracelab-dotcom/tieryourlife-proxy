@@ -13,7 +13,7 @@ export type PictureScope = (typeof PICTURE_SCOPES)[number];
 export type PictureSource = "tmdb" | "anilist" | "igdb" | "steam" | "deezer" | "openlibrary" | "inaturalist" | "wikidata" | "web";
 
 /** What a card's picture can be: the chip a client draws under a result is its own business. */
-export type PictureKind = "movie" | "tv" | "person" | "anime" | "manga" | "character" | "game" | "artist" | "album" | "book" | "animal" | "thing" | "web";
+export type PictureKind = "movie" | "tv" | "person" | "anime" | "manga" | "character" | "game" | "artist" | "album" | "book" | "animal" | "plant" | "thing" | "web";
 
 export interface PictureHit {
   /** `source:id`, stable across searches, so a client can drop what it already shows. */
@@ -35,8 +35,10 @@ export interface PictureHit {
    * the main game of a series.
    */
   popularity?: number;
-  /** Another name the catalogue found it by ("Cat" for the domestic cat): ranked like the title, never sent. */
+  /** Another name the catalogue found it by ("Cat" for the domestic cat): ranked like the title; sent as `matchedName` when it is what was typed. */
   alias?: string;
+  /** Wikidata's description in English, what a section's kind is told by (src/pictureIntent.ts); never sent. */
+  about?: string;
 }
 
 /** A scope from what a client sent: a known scope, or a section id that means one; anything else is all. */
@@ -188,7 +190,7 @@ export function matchScore(title: string, typed: string): number {
  * everything else, Wikidata's last (18.11.2026). An anime list wants the series before its manga, a games
  * list the game before a namesake. "all" has none: it does not know what the list is about.
  */
-const OWN_KINDS: Partial<Record<PictureScope, readonly PictureKind[]>> = {
+export const OWN_KINDS: Partial<Record<PictureScope, readonly PictureKind[]>> = {
   film_tv: ["movie", "tv"],
   people: ["person"],
   anime: ["anime"],
@@ -219,7 +221,13 @@ function sameThing(hit: PictureHit): string {
  * with one title the most rated is kept, in the place of the first (IGDB
  * lists an unrated re-release of Hollow Knight above the game).
  */
-export function mergeHits(typed: string, answers: readonly (readonly PictureHit[])[], scope: PictureScope = "all"): PictureHit[] {
+export function mergeHits(
+  typed: string,
+  answers: readonly (readonly PictureHit[])[],
+  scope: PictureScope = "all",
+  rank: (hit: PictureHit) => number = (hit) => scopeRank(hit, scope),
+  score: (hit: PictureHit) => number = (hit) => hitScore(hit, typed),
+): PictureHit[] {
   const interleaved: PictureHit[] = [];
   const longest = Math.max(0, ...answers.map((answer) => answer.length));
   for (let index = 0; index < longest; index++) {
@@ -243,9 +251,9 @@ export function mergeHits(typed: string, answers: readonly (readonly PictureHit[
     return [hit];
   });
   return kept
-    .map((hit, order) => ({ hit, order, rank: scopeRank(hit, scope), score: hitScore(hit, typed) }))
+    .map((hit, order) => ({ hit, order, rank: rank(hit), score: score(hit) }))
     .sort((left, right) => left.rank - right.rank || left.score - right.score || left.order - right.order)
-    .map(({ hit: { alias: _alias, ...hit } }) => hit);
+    .map(({ hit }) => hit);
 }
 
 /**
@@ -277,7 +285,7 @@ export function searchLanguage(raw: unknown): string {
   return language;
 }
 
-function hitScore(hit: PictureHit, typed: string): number {
+export function hitScore(hit: PictureHit, typed: string): number {
   return Math.min(matchScore(hit.title, typed), hit.alias ? matchScore(hit.alias, typed) : 3);
 }
 
@@ -305,10 +313,11 @@ export function tmdbHits(body: unknown): PictureHit[] {
     const kind: PictureKind | null = type === "movie" ? "movie" : type === "tv" ? "tv" : type === "person" ? "person" : null;
     const path = text(kind === "person" ? row.profile_path : row.poster_path);
     const title = text(row.title) ?? text(row.name);
+    const original = text(row.original_title) ?? text(row.original_name);
     if (!kind || !path || !title || typeof row.id !== "number") return [];
     const date = text(row.release_date) ?? text(row.first_air_date);
     const subtitle = kind === "person" ? text(row.known_for_department) : date?.slice(0, 4) ?? null;
-    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}`, id: `tmdb:${kind}:${row.id}` } }];
+    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}`, id: `tmdb:${kind}:${row.id}` }, ...(original && original !== title ? { alias: original } : {}) }];
   });
 }
 
@@ -317,12 +326,14 @@ export function anilistHits(body: unknown): PictureHit[] {
   const media = rows((data.media as Json | undefined)?.media).flatMap((row): PictureHit[] => {
     const titles = (row.title ?? {}) as Json;
     const title = text(titles.english) ?? text(titles.romaji) ?? text(titles.native);
+    // "Shingeki no Kyojin" is AniList's "Attack on Titan": the romaji or native name is matched as the title is.
+    const alias = [text(titles.romaji), text(titles.native)].find((name) => name !== null && name !== title) ?? null;
     const cover = (row.coverImage ?? {}) as Json;
     const imageUrl = text(cover.extraLarge) ?? text(cover.large);
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number" || row.isAdult === true) return [];
     const kind: PictureKind = row.type === "MANGA" ? "manga" : "anime";
     const year = typeof row.seasonYear === "number" ? String(row.seasonYear) : typeof (row.startDate as Json | undefined)?.year === "number" ? String((row.startDate as Json).year) : null;
-    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}`, id: `anilist:${row.id}` } }];
+    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}`, id: `anilist:${row.id}` }, ...(alias ? { alias } : {}) }];
   });
   const characters = rows((data.characters as Json | undefined)?.characters).flatMap((row): PictureHit[] => {
     const title = text((row.name as Json | undefined)?.full);
@@ -539,7 +550,8 @@ export function inaturalistHits(body: unknown, others: Map<number, unknown[]> = 
       imageUrl: photo.medium.replace(/\/medium\.(\w+)$/, "/large.$1"),
       thumbUrl: photo.medium,
       source: "inaturalist",
-      kind: "animal",
+      // Plants come along in "all" since 18.11.2026: a rose in a list of flowers.
+      kind: row.iconic_taxon_name === "Plantae" ? "plant" : "animal",
       ...(photo.credit ? { credit: photo.credit } : {}),
       attribution: inaturalistAttribution(photo),
       ...(alias && alias !== title ? { alias } : {}),
@@ -608,7 +620,7 @@ export function commonsPictures(body: unknown, covers: boolean): Map<string, { c
 export { commonsThumb };
 
 /** `wbgetentities` with labels, descriptions and claims, in the order `wbsearchentities` found the ids. */
-export function wikidataCandidates(ids: readonly string[], body: unknown, language: string, onlyMusic = false): WikidataCandidate[] {
+export function wikidataCandidates(ids: readonly string[], body: unknown, language: string, onlyMusic = false, matched: ReadonlyMap<string, string> = new Map()): WikidataCandidate[] {
   const entities = ((body as Json | null)?.entities ?? {}) as Record<string, Json>;
   return ids.flatMap((id): WikidataCandidate[] => {
     const entity = entities[id];
@@ -619,6 +631,9 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
     const file = files[0] ?? null;
     const title = labelIn(entity.labels, language);
     if (!file || !title) return [];
+    // The name the search found it by, when not its title here: "Киев" finds Kyiv on an English page.
+    const alias = matched.get(id);
+    const about = text(((entity.descriptions ?? {}) as Record<string, Json>).en?.value);
     const tmdbIds = Object.entries(WIKIDATA_TMDB).flatMap(([property, kind]) => {
       const value = firstStringClaim(claims[property]);
       return value ? [`${kind}:${value}`] : [];
@@ -632,6 +647,8 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
         thumbUrl: commonsThumb(file, 400),
         source: "wikidata",
         kind: "thing",
+        ...(alias && alias !== title ? { alias } : {}),
+        ...(about ? { about } : {}),
       },
       file,
       files,
