@@ -419,6 +419,24 @@ describe("stage 1b: the web's first pictures when nothing is found", () => {
     assert.equal(web(), 0);
   });
 
+  it("takes Wikimedia's error inside a 200 for a failure, not for nothing found to keep", async () => {
+    const plain = globalThis.fetch;
+    let sayError = true;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "www.wikidata.org" && sayError) {
+        asked.push(url);
+        return Response.json({ error: { code: "ratelimited", info: "You've exceeded your rate limit." } });
+      }
+      return plain(input);
+    });
+    const wikidata = (reply: Reply) => items(reply).filter((hit) => hit.source === "wikidata").length;
+    assert.equal(wikidata(await get({ q: "Lion", scope: "all", section: "other" })), 0);
+    sayError = false;
+    // Not kept: asked again, Wikidata answers.
+    assert.equal(wikidata(await get({ q: "Lion", scope: "all", section: "other" })), 1);
+  });
+
   it("pays for the web once in all, not again for the second attempt's text", async () => {
     process.env.SERPER_API_KEY = "test-key";
     await get({ q: "Zzqx смотреть онлайн", scope: "all" });
