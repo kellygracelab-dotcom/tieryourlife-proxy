@@ -57,6 +57,13 @@ describe("what an item is", () => {
     assert.equal(kindOfFacts(item("Q1", { classes: [CITY] })), null);
   });
 
+  it("is an artist in a music list when the person makes music, a person elsewhere", () => {
+    const singer = item("Q36153", { classes: [HUMAN], jobs: [SINGER] });
+    assert.equal(kindOfFacts(singer), "person");
+    assert.equal(kindOfFacts(singer, null, "music"), "artist");
+    assert.equal(kindOfFacts(item("Q1", { classes: [HUMAN], jobs: [FOOTBALLER] }), null, "music"), "person");
+  });
+
   it("is a film in a list of films even when it is anime", () => {
     const spiritedAway = item("Q155653", { classes: [ANIME_FILM] });
     assert.equal(kindOfFacts(spiritedAway), "anime");
