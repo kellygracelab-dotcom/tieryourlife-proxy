@@ -131,7 +131,8 @@ export function entityFacts(ids: readonly string[], body: unknown, languages: re
  */
 export function kindOfFacts(facts: EntityFacts, want: Want | null = null, scope: PictureScope = "all"): PictureKind | null {
   const own = facts.classes;
-  if (own.includes(HUMAN)) return "person";
+  // A singer in a music list is the artist the music scope shows; elsewhere a person.
+  if (own.includes(HUMAN)) return wantedKinds(want, scope)?.people === "musicianJob" && anyIn("musicianJob", facts.jobs) ? "artist" : "person";
   if (wantedKinds(want, scope)?.kinds.includes("film")) {
     if (anyIn("film", own)) return "movie";
     if (anyIn("tv", own)) return "tv";
