@@ -65,7 +65,7 @@ import {
   wantsCovers,
   wikidataCandidates,
 } from "./pictureSources";
-import { noteDenied } from "./pictureAlarms";
+import { noteDenied, noteSourceDenied } from "./pictureAlarms";
 import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
@@ -90,6 +90,8 @@ import {
 export const pictureTmdbToken = defineSecret("TMDB_READ_ACCESS_TOKEN");
 export const igdbClientId = defineSecret("IGDB_CLIENT_ID");
 export const igdbClientSecret = defineSecret("IGDB_CLIENT_SECRET");
+/** The paid web search's key (Serper), set by the owner; bound to `lists` since 18.11.2026. Its value is never logged. */
+export const serperApiKey = defineSecret("SERPER_API_KEY");
 
 const SOURCE_TIMEOUT_MS = 5_000;
 const CACHE = "pictureCache";
@@ -1129,7 +1131,13 @@ async function maybeAskWeb(input: SearchInput, good: number, empty = false): Pro
     return {};
   }
   if (reply.status === 400 || reply.status === 401 || reply.status === 402 || reply.status === 403 || reply.status === 429) {
-    console.error("Web picture search refused", reply.status, (await reply.text()).slice(0, 200));
+    // A wrong key (403 "Unauthorized."), no credits left (400 "Not enough credits", or 402) is the owner's to
+    // see: the alarm every catalogue raises (`pictureAlarms.ts`). 429 is the web being busy. The body is
+    // read for the word "credit" only and never logged.
+    const said = await reply.text().catch(() => "");
+    const closed = reply.status === 401 || reply.status === 402 || reply.status === 403 || (reply.status === 400 && /credit/i.test(said));
+    if (closed) noteSourceDenied("web", reply.status, Date.now(), /credit/i.test(said) ? "credits" : "key");
+    else console.warn("Web picture search refused", reply.status);
     await db.doc(WEB_SWITCH).set({ offUntil: new Date(now + WEB_REST_MS), lastStatus: reply.status }, { merge: true });
     return { notice: "webOff" };
   }

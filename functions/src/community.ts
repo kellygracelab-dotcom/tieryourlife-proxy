@@ -258,7 +258,7 @@ import { decideApproveAsTopic, decideMergeIntoTopic, mergeTopicId, nameClashOf, 
 import { adminKeeps, publishedByFor, readAdminListsQuery, readsBySection } from "./adminLists";
 import { holdStaffMoves, readMovedByStaff, recordStaffMove, stillMoved, type MovedByStaff } from "./staffMoves";
 import { matchesSearch, missOf, searchFieldsFor, searchQueryOf } from "./search";
-import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures } from "./pictureSearch";
+import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures, serperApiKey } from "./pictureSearch";
 import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import { manualCredits } from "./manualAttribution";
 import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
@@ -737,8 +737,8 @@ export const lists = onRequest(
     // Room for a board, its own photographs and the pictures from other sites in flight.
     memory: "512MiB",
     maxInstances: 10,
-    // Picture search asks TMDB itself (src/pictureSearch.ts).
-    secrets: secretsOutsideDemo([pictureTmdbToken, igdbClientId, igdbClientSecret]),
+    // Picture search asks TMDB, IGDB and the paid web search itself (src/pictureSearch.ts).
+    secrets: secretsOutsideDemo([pictureTmdbToken, igdbClientId, igdbClientSecret, serperApiKey]),
     // One copy kept warm: a cold start cost 2-5 s on every first open of
     // Community, a face or a publish. About three dollars a month at this size.
     minInstances: 1,
