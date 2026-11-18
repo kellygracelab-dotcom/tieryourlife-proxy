@@ -566,7 +566,10 @@ async function askCatalogues(
 function rankFor(input: SearchInput, chosen: Chosen | null = null): (hit: PictureHit) => number {
   const want = input.want ?? null;
   const keys = new Set(chosen?.keys ?? []);
-  return (hit) => (keys.has(entityKey(hit)) ? (hit.source === "wikidata" ? -1 : -2) : wantRank(hit, input.scope, want));
+  // The item's own Wikidata picture comes first where it shows a kind, or where nothing else does ("all"):
+  // an animals list keeps iNaturalist's "Octopus" above Wikidata's "Octopoda".
+  const lifted = (hit: PictureHit) => hit.source !== "wikidata" || hit.kind !== "thing" || input.scope === "all";
+  return (hit) => (keys.has(entityKey(hit)) && lifted(hit) ? (hit.source === "wikidata" ? -1 : -2) : wantRank(hit, input.scope, want));
 }
 
 function scoreFor(input: SearchInput): (hit: PictureHit) => number {
@@ -886,7 +889,7 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     languages: languages.join("|"),
     format: "json",
   });
-  const body = await wikimediaJson(`https://www.wikidata.org/w/api.php?${details}`, "entities");
+  const body = await entitiesInChunks(ids, details);
   const want = input.want ?? null;
   const facts = new Map(entityFacts(ids, body, [input.language, language]).map((one) => [one.id, one]));
   const chosen = entityStep
@@ -901,7 +904,8 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
   }
   const [candidates, byId] = await Promise.all([
     pictured.length === 0 ? pictured : fitting(pictured, wantsCovers(input.scope)),
-    chosen ? tmdbById(chosen, input.language) : Promise.resolve(null),
+    // TMDB only where the scope asks it: a music list's singer stays Wikidata's.
+    chosen && sourcesFor(input.scope).includes("tmdb") ? tmdbById(chosen, input.language) : Promise.resolve(null),
   ]);
   if (chosen) chosen.keys = [...new Set([...chosen.keys, ...catalogueKeys(chosen), ...(byId ? [entityKey(byId)] : [])])];
   return {
@@ -914,6 +918,27 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
 
 /** Items Wikidata is asked about at most: its search's 20 and Wikipedia's new ones. */
 const WIKIDATA_ITEMS = 30;
+/** Items asked in one request: 30 with all their claims are up to 2 MB, and took more than 5 seconds under load. */
+const WIKIDATA_CHUNK = 10;
+
+/**
+ * Wikidata's entities for [ids], asked in parallel chunks of [WIKIDATA_CHUNK]: a chunk that fails leaves
+ * its items out; only when every chunk fails does the search fail.
+ */
+async function entitiesInChunks(ids: string[], details: URLSearchParams): Promise<{ entities: Record<string, unknown> }> {
+  const chunks = Array.from({ length: Math.ceil(ids.length / WIKIDATA_CHUNK) }, (_, at) => ids.slice(at * WIKIDATA_CHUNK, (at + 1) * WIKIDATA_CHUNK));
+  const answers = await Promise.allSettled(chunks.map((chunk) => {
+    const params = new URLSearchParams(details);
+    params.set("ids", chunk.join("|"));
+    return wikimediaJson(`https://www.wikidata.org/w/api.php?${params}`, "entities") as Promise<{ entities?: Record<string, unknown> }>;
+  }));
+  const failed = answers.find((answer): answer is PromiseRejectedResult => answer.status === "rejected");
+  if (failed && answers.every((answer) => answer.status === "rejected")) throw failed.reason;
+  if (failed) console.warn("Wikidata entities in part", failed.reason instanceof Error ? failed.reason.message : failed.reason);
+  const entities: Record<string, unknown> = {};
+  for (const answer of answers) if (answer.status === "fulfilled") Object.assign(entities, answer.value.entities ?? {});
+  return { entities };
+}
 
 /**
  * Wikipedia's search in the page's language and in English: each page's Wikidata item, its place, and
