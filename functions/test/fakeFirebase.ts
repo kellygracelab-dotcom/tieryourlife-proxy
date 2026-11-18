@@ -153,6 +153,18 @@ export class FakeDb {
   doc(path: string): FakeDoc {
     return new FakeDoc(this, path);
   }
+  /** Every document directly in a collection of that name, wherever it is. */
+  collectionGroup(name: string) {
+    return {
+      get: async () => {
+        const docs = [...this.docs.keys()]
+          .filter((path) => path.split("/").slice(-2, -1)[0] === name)
+          .sort()
+          .map((path) => this.snapshot(new FakeDoc(this, path)));
+        return { docs, empty: docs.length === 0, size: docs.length };
+      },
+    };
+  }
   batch(): FakeBatch {
     return new FakeBatch();
   }
@@ -225,6 +237,11 @@ export function install(): Fakes {
     file: (name: string) => ({
       async delete() {
         log.push(`deleteFile ${name}`);
+        const at = files.indexOf(name);
+        if (at >= 0) files.splice(at, 1);
+      },
+      async exists() {
+        return [files.includes(name)];
       },
     }),
   };

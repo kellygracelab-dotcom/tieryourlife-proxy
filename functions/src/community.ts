@@ -1,7 +1,7 @@
 import { defineString } from "firebase-functions/params";
 import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, keepCopiesForLater, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { copySwitches } from "./pictureCopies";
-import { keepUploadedPhoto, removeUploadedPhoto } from "./facePhoto";
+import { keepUploadedPhoto, removeUploadedPhoto, restoreUploadedPhoto, UNDO_WINDOW_MS } from "./facePhoto";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -898,6 +898,7 @@ export const lists = onRequest(
  * published board. Catalogue art already has an address of its own.
  */
 async function makeFace(response: Response, identity: Identity, pictureId: string): Promise<void> {
+  if (pictureId === RESTORE_FACE) return restoreFace(response, identity);
   if (!isPictureId(pictureId)) {
     response.status(400).json({ error: "Which picture?", code: "INVALID" });
     return;
@@ -917,14 +918,34 @@ async function makeFace(response: Response, identity: Identity, pictureId: strin
   response.status(200).json({ url: address, photo });
 }
 
-/** "Remove your photo": the slot empties, and the photo goes from every list, ranking and the account's face. */
+/** A word no upload's id is: `POST /lists/face/restore` is Undo of "Remove your photo". */
+const RESTORE_FACE = "restore";
+
+/** "Remove your photo": the slot empties, every face showing it becomes the letter; its copy waits for Undo. */
 async function removeFace(response: Response, identity: Identity): Promise<void> {
   if (identity.isAnonymous) {
     response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
     return;
   }
   const removed = await removeUploadedPhoto(identity.uid);
-  response.status(200).json({ photo: null, removed: removed?.pictureId ?? null });
+  response.status(200).json({
+    photo: null,
+    removed: removed?.pictureId ?? null,
+    wasWorn: removed?.wasWorn ?? false,
+    undoUntil: removed === null ? null : removed.removedAt + UNDO_WINDOW_MS,
+  });
+}
+
+/** Undo: the removed photo back in the slot while its copy is kept. */
+async function restoreFace(response: Response, identity: Identity): Promise<void> {
+  if (identity.isAnonymous) {
+    response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+    return;
+  }
+  const restored = await restoreUploadedPhoto(identity.uid);
+  if (restored.ok) return void response.status(200).json({ photo: restored.photo, wasWorn: restored.wasWorn });
+  if (restored.why === "taken") return void response.status(409).json({ error: "A new photo is already there", code: "CONFLICT", photo: restored.photo });
+  response.status(404).json({ error: "Nothing to put back", code: "NOT_FOUND" });
 }
 
 /** Anything that could not be a section id means "no filter", not an error. */

@@ -2,6 +2,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { decideDiscard, picturesOfBoard, type StoredPicture } from "./pictures";
+import { sweepRemovedPhotos } from "./facePhoto";
 
 /**
  * Storage knows nothing about boards, so nothing else deletes these; without
@@ -37,7 +38,13 @@ export const sweepPictures = onSchedule(
       discarded += await sweepAccount(bucket, db, uid, nowMs);
     }
 
-    console.log(`Picture sweep: discarded ${discarded} unclaimed pictures across ${accounts} accounts`);
+    // Face photos removed with "Remove your photo" whose Undo window is over (`facePhoto.ts`).
+    const removedFaces = await sweepRemovedPhotos(nowMs).catch((error) => {
+      console.warn("Removed face photos not swept", error);
+      return 0;
+    });
+
+    console.log(`Picture sweep: discarded ${discarded} unclaimed pictures across ${accounts} accounts, ${removedFaces} removed face photos`);
   },
 );
 

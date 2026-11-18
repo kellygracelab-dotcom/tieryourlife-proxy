@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { addressOf } from "../src/publishedPictures";
-import { keepUploadedPhoto, pointsAt, readPhotoSlot, removeUploadedPhoto } from "../src/facePhoto";
+import { finishRemoval, keepUploadedPhoto, pointsAt, readPhotoSlot, removeUploadedPhoto, restoreUploadedPhoto, sweepRemovedPhotos, UNDO_WINDOW_MS } from "../src/facePhoto";
+
+const NOW = 1_800_000_000_000;
 import { settingsWire } from "../src/settings";
 import { install, type Fakes } from "./fakeFirebase";
 import { chooseUpload, uploadsByAccount } from "../scripts/face-slots";
@@ -71,16 +73,55 @@ describe("the photo slot", () => {
     assert.ok(!fakes.log.some((line) => line.startsWith("deleteFile")));
   });
 
-  it("Remove your photo: the face showing it becomes the letter, the file goes, the slot is empty", async () => {
+  it("Remove your photo: the face showing it becomes the letter at once, the slot is empty, the file waits for Undo", async () => {
     await keepUploadedPhoto("me", "up1", first, 1000);
     seedShowing(first);
-    assert.deepEqual(await removeUploadedPhoto("me"), { pictureId: "up1", url: first, setAt: 1000 });
+    assert.deepEqual(await removeUploadedPhoto("me", NOW), { pictureId: "up1", url: first, setAt: 1000, removedAt: NOW, wasWorn: true });
     assert.equal((fakes.db.get("publishedLists/l1") as Record<string, unknown>).authorPhotoUrl, null);
     assert.equal((fakes.db.get("rankings/x_me") as Record<string, unknown>).authorPhotoUrl, null);
     assert.equal(fakes.users.get("me")!.photoURL, null);
-    assert.ok(fakes.log.includes("deleteFile avatars/me/up1"));
+    assert.ok(!fakes.log.includes("deleteFile avatars/me/up1"));
     assert.deepEqual(settingsWire(fakes.db.get("accounts/me/settings/appearance") as Record<string, unknown>).photo, null);
-    assert.equal(await removeUploadedPhoto("me"), null);
+    assert.equal(await removeUploadedPhoto("me", NOW + 1), null);
+  });
+
+  it("Undo puts it back in the slot while the copy is kept, saying it was worn", async () => {
+    fakes.files.push("avatars/me/up1");
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    await removeUploadedPhoto("me", NOW);
+    assert.deepEqual(await restoreUploadedPhoto("me", NOW + 5000), { ok: true, photo: { pictureId: "up1", url: first, setAt: 1000 }, wasWorn: true });
+    assert.deepEqual(readPhotoSlot((fakes.db.get("accounts/me/settings/appearance") as Record<string, unknown>).photo), { pictureId: "up1", url: first, setAt: 1000 });
+    assert.deepEqual(await restoreUploadedPhoto("me", NOW + 6000), { ok: false, why: "taken", photo: { pictureId: "up1", url: first, setAt: 1000 } });
+    assert.equal(await finishRemoval("me", (fakes.db.get("accounts/me/settings/appearance") as Record<string, unknown>).removedPhoto, NOW + UNDO_WINDOW_MS + 1), false);
+    assert.ok(!fakes.log.includes("deleteFile avatars/me/up1"));
+  });
+
+  it("has nothing to put back once the window is over, or once a new photo came", async () => {
+    fakes.files.push("avatars/me/up1");
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    await removeUploadedPhoto("me", NOW);
+    assert.deepEqual(await restoreUploadedPhoto("me", NOW + UNDO_WINDOW_MS + 1), { ok: false, why: "nothing", photo: null });
+    await keepUploadedPhoto("me", "up2", second, NOW + 10);
+    assert.deepEqual(await restoreUploadedPhoto("me", NOW + 20), { ok: false, why: "taken", photo: { pictureId: "up2", url: second, setAt: NOW + 10 } });
+  });
+
+  it("deletes the copy after the window, as read or by the daily sweep, and an earlier removal's at the next one", async () => {
+    fakes.files.push("avatars/me/up1", "avatars/me/up2");
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    await removeUploadedPhoto("me", NOW);
+    assert.equal(await sweepRemovedPhotos(NOW + UNDO_WINDOW_MS), 0);
+    assert.ok(!fakes.log.includes("deleteFile avatars/me/up1"));
+    assert.equal(await sweepRemovedPhotos(NOW + UNDO_WINDOW_MS + 1), 1);
+    assert.ok(fakes.log.includes("deleteFile avatars/me/up1"));
+    assert.equal((fakes.db.get("accounts/me/settings/appearance") as Record<string, unknown>).removedPhoto, null);
+
+    await keepUploadedPhoto("me", "up2", second, NOW + 10);
+    await removeUploadedPhoto("me", NOW + 20);
+    fakes.files.push("avatars/me/up3");
+    await keepUploadedPhoto("me", "up3", addressOf(BUCKET, "avatars/me/up3"), NOW + 30);
+    await removeUploadedPhoto("me", NOW + 40);
+    assert.ok(fakes.log.includes("deleteFile avatars/me/up2"), "only the last removal waits for Undo");
+    assert.ok(!fakes.log.includes("deleteFile avatars/me/up3"));
   });
 
   it("leaves a face that is not the photo alone when the photo goes", async () => {
