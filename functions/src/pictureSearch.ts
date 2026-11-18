@@ -40,6 +40,10 @@ import {
   inaturalistPhotos,
   inaturalistWithoutPhoto,
   mergeHits,
+  appendNew,
+  fittingPicture,
+  searchLanguage,
+  worthSearching,
   openLibraryHits,
   PictureHit,
   PictureScope,
@@ -75,7 +79,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 15;
+const CACHE_SHAPE = 16;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -147,11 +151,17 @@ export async function routePictures(
       response.status(400).json({ error: "Type at least two letters", code: "QUERY_TOO_SHORT" });
       return;
     }
+    // "!!!???" or two emoji: no catalogue can mean anything by it, so none is asked and nothing is counted.
+    if (!worthSearching(typed)) {
+      response.setHeader("Cache-Control", "no-store");
+      response.status(200).json({ items: [], hasMore: false, notices: [], ...(query.part === "quick" ? { rest: false } : {}) });
+      return;
+    }
     const page = Math.min(MAX_PAGE, Math.max(1, Number.parseInt(String(query.page ?? "1"), 10) || 1));
     const answer = await searchPicturesCounted({
       typed,
       scope: pictureScopeOf(query.scope),
-      language: typeof query.lang === "string" && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(query.lang) ? query.lang : "en",
+      language: searchLanguage(query.lang),
       page,
       forcedWeb: query.web === "1" || query.web === "true",
       quick: query.part === "quick",
@@ -258,7 +268,8 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   const web = await maybeAskWeb(input, goodMatches(input.typed, catalogues.items));
   if (web.notice) return { ...catalogues, notices: [web.notice] };
   if (!web.hits) return catalogues;
-  const items = mergeHits(input.typed, [catalogues.items, web.hits]);
+  // Below the catalogues, as a person first sees them after the quick answer: asked again, the same order.
+  const items = appendNew(catalogues.items, mergeHits(input.typed, [web.hits], input.scope));
   const withWeb = { items, hasMore: catalogues.hasMore, notices: [] };
   // An answer with a busy catalogue's gap is not kept: asked again, it may be whole.
   if (catalogues.busy === undefined) await db.collection(CACHE).doc(key(true)).set({ ...withWeb, at: Timestamp.now() }).catch(() => undefined);
@@ -302,7 +313,13 @@ async function askCatalogues(
   const gap = busyGap(sources, new Set(answers.keys()), await restingUntil(), Date.now());
   if (found.every((answer) => answer === null)) return gap.busy ? { items: [], hasMore: false, notices: [], ...gap } : null;
   const hits = withoutTmdbTwins(found.map((answer) => answer ?? { hits: [], hasMore: false }));
-  const merged: PicturesAnswer = { items: mergeHits(input.typed, hits), hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap };
+  // The whole answer keeps the quick one's order at its head, the slow catalogues' new hits below: what a
+  // person saw first is what they see when the same search comes from the cache (18.11.2026).
+  const quick = new Set(quickSourcesFor(input.scope));
+  const fast = hits.filter((_, at) => quick.has(sources[at]!));
+  const all = mergeHits(input.typed, hits, input.scope);
+  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope), all) : all;
+  const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap };
   const cache = getFirestore().collection(CACHE);
   if (keep.parts && asked.some(([, answer]) => answer !== null)) {
     const parts = sources.flatMap((source) => {
@@ -621,21 +638,29 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
   };
 }
 
-/** Commons knows each file's size: too small a picture never shows, nor a wide one where covers are wanted. */
+/** Files Commons describes in one request. */
+const COMMONS_TITLES = 50;
+
+/**
+ * Commons knows each file's size: too small a picture never shows, nor a wide one where covers are wanted.
+ * An item whose first picture will not do shows its next one (`fittingPicture`).
+ */
 async function fitting(candidates: WikidataCandidate[], covers: boolean): Promise<WikidataCandidate[]> {
-  const sizes = new URLSearchParams({
+  const titles = [...new Set(candidates.flatMap(({ files }) => files.map((file) => `File:${commonsName(file)}`)))];
+  const chunks = Array.from({ length: Math.ceil(titles.length / COMMONS_TITLES) }, (_, at) => titles.slice(at * COMMONS_TITLES, (at + 1) * COMMONS_TITLES));
+  const answers = await Promise.all(chunks.map((chunk) => getJson(`https://commons.wikimedia.org/w/api.php?${new URLSearchParams({
     action: "query",
     prop: "imageinfo",
     iiprop: "size|extmetadata",
     iiextmetadatafilter: "Artist|Credit|Attribution|LicenseShortName|LicenseUrl|UsageTerms",
     iiextmetadatalanguage: "en",
-    titles: candidates.map(({ file }) => `File:${file}`).join("|"),
+    titles: chunk.join("|"),
     format: "json",
-  });
-  const good = commonsPictures(await getJson(`https://commons.wikimedia.org/w/api.php?${sizes}`), covers);
+  })}`)));
+  const good = new Map(answers.flatMap((body) => [...commonsPictures(body, covers)]));
   return candidates.flatMap((candidate) => {
-    const picture = good.get(commonsName(candidate.file));
-    return picture ? [{ ...candidate, hit: { ...candidate.hit, ...picture } }] : [];
+    const chosen = fittingPicture(candidate, good);
+    return chosen ? [chosen] : [];
   });
 }
 

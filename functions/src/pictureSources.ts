@@ -134,8 +134,12 @@ export function wantsCovers(scope: PictureScope): boolean {
 
 /** Below this on its short side a picture is soft in a grid tile. */
 export const MIN_SHORT_SIDE = 300;
-/** A photo may be cropped into a tile; past this it is a banner or a screenshot. */
-const WIDEST_PHOTO = 1.5;
+/**
+ * A photo is cropped into a tile; past this it is a panorama or a banner, and another picture of the same
+ * thing is looked for. Raised from 1.5 on 18.11.2026: Paris, Cairo, Everest and Queen were dropped whole
+ * for a picture 1.6 to 1.9 times as wide as tall (QA, `qa-picture-search-2026-11-18`).
+ */
+export const WIDEST_PHOTO = 2;
 
 /** Whether a picture this size makes a good tile: big enough, and upright where covers are wanted. */
 export function fitsTile(width: number, height: number, covers: boolean): boolean {
@@ -180,11 +184,42 @@ export function matchScore(title: string, typed: string): number {
 }
 
 /**
- * One list from many: each catalogue's answer in its own order, taken in
- * turn, then the best titles first. A picture already shown by an earlier
- * source, or the same title of the same kind, is dropped.
+ * What a scope's own catalogue shows, the pictures its lists are made of: in that scope they come before
+ * everything else, Wikidata's last (18.11.2026). An anime list wants the series before its manga, a games
+ * list the game before a namesake. "all" has none: it does not know what the list is about.
  */
-export function mergeHits(typed: string, answers: readonly (readonly PictureHit[])[]): PictureHit[] {
+const OWN_KINDS: Partial<Record<PictureScope, readonly PictureKind[]>> = {
+  film_tv: ["movie", "tv"],
+  people: ["person"],
+  anime: ["anime"],
+  games: ["game"],
+  music: ["artist", "album"],
+  books: ["book"],
+  animals: ["animal"],
+};
+
+/** 0 the scope's own kind of picture, 1 another catalogue's, 2 Wikidata's; all 0 where the scope has no kind of its own. */
+export function scopeRank(hit: Pick<PictureHit, "kind" | "source">, scope: PictureScope): number {
+  const own = OWN_KINDS[scope];
+  if (!own) return 0;
+  if (own.includes(hit.kind)) return 0;
+  return hit.source === "wikidata" ? 2 : 1;
+}
+
+/** The key two hits of the same thing share: games by their title alone, as two catalogues write the year differently or not at all. */
+function sameThing(hit: PictureHit): string {
+  return `${hit.kind}|${fold(hit.title)}|${hit.kind === "game" ? "" : hit.subtitle ?? ""}`;
+}
+
+/**
+ * One list from many: each catalogue's answer in its own order, taken in
+ * turn, then, in a scope with a catalogue of its own, that catalogue's kind
+ * of picture first, then the best titles first. A picture already shown by
+ * an earlier source, or the same title of the same kind, is dropped; of games
+ * with one title the most rated is kept, in the place of the first (IGDB
+ * lists an unrated re-release of Hollow Knight above the game).
+ */
+export function mergeHits(typed: string, answers: readonly (readonly PictureHit[])[], scope: PictureScope = "all"): PictureHit[] {
   const interleaved: PictureHit[] = [];
   const longest = Math.max(0, ...answers.map((answer) => answer.length));
   for (let index = 0; index < longest; index++) {
@@ -193,18 +228,53 @@ export function mergeHits(typed: string, answers: readonly (readonly PictureHit[
       if (hit) interleaved.push(hit);
     }
   }
+  const mostRated = new Map<string, PictureHit>();
+  for (const hit of interleaved) {
+    if (hit.kind !== "game") continue;
+    const best = mostRated.get(sameThing(hit));
+    if (!best || (hit.popularity ?? 0) > (best.popularity ?? 0)) mostRated.set(sameThing(hit), hit);
+  }
   const seen = new Set<string>();
-  const kept = interleaved.filter((hit) => {
-    // Two catalogues of games write the year differently or not at all; the title is enough.
-    const keys = [hit.imageUrl, `${hit.kind}|${fold(hit.title)}|${hit.kind === "game" ? "" : hit.subtitle ?? ""}`];
-    if (keys.some((key) => seen.has(key))) return false;
+  const kept = interleaved.flatMap((found) => {
+    const hit = found.kind === "game" ? mostRated.get(sameThing(found)) ?? found : found;
+    const keys = [hit.imageUrl, sameThing(hit)];
+    if (keys.some((key) => seen.has(key))) return [];
     keys.forEach((key) => seen.add(key));
-    return true;
+    return [hit];
   });
   return kept
-    .map((hit, order) => ({ hit, order, score: hitScore(hit, typed) }))
-    .sort((left, right) => left.score - right.score || left.order - right.order)
+    .map((hit, order) => ({ hit, order, rank: scopeRank(hit, scope), score: hitScore(hit, typed) }))
+    .sort((left, right) => left.rank - right.rank || left.score - right.score || left.order - right.order)
     .map(({ hit: { alias: _alias, ...hit } }) => hit);
+}
+
+/**
+ * [first] as it stands, then what [then] adds to it, in [then]'s order: the
+ * whole search's answer in the order a person first saw it, the quick part
+ * at once and the rest below, so asking again shows the same first tiles.
+ */
+export function appendNew(first: readonly PictureHit[], then: readonly PictureHit[]): PictureHit[] {
+  const seen = new Set(first.flatMap((hit) => [hit.id, hit.imageUrl, sameThing(hit)]));
+  return [...first, ...then.filter((hit) => ![hit.id, hit.imageUrl, sameThing(hit)].some((key) => seen.has(key)))];
+}
+
+/** Whether a search is worth making: a letter or a digit in it, in any script ("!!!???" and emoji have none). */
+export function worthSearching(typed: string): boolean {
+  return /[\p{L}\p{N}]/u.test(typed);
+}
+
+/**
+ * The language a search is made and kept in: the language alone, so a phone's "en-US" and the site's "en"
+ * share one answer (18.11.2026). Portuguese keeps Brazil, the app's own, apart from the rest; Chinese keeps
+ * its region, which decides the script.
+ */
+export function searchLanguage(raw: unknown): string {
+  if (typeof raw !== "string" || !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?$/.test(raw)) return "en";
+  const [base = "en", region] = raw.split("-");
+  const language = base.toLowerCase();
+  if (language === "pt") return region?.toUpperCase() === "BR" ? "pt-BR" : "pt";
+  if (language === "zh" && region) return `zh-${region.length === 2 ? region.toUpperCase() : region.charAt(0).toUpperCase() + region.slice(1).toLowerCase()}`;
+  return language;
 }
 
 function hitScore(hit: PictureHit, typed: string): number {
@@ -495,9 +565,15 @@ export function isMusicItem(claims: Record<string, unknown>): boolean {
 
 export interface WikidataCandidate {
   hit: PictureHit;
+  /** The first of [files]: the picture [hit] shows until Commons says which fits. */
   file: string;
+  /** Every picture the item names, the most telling first, at most [WIKIDATA_FILES]: a wide first one gives way to the next. */
+  files: string[];
   tmdbIds: string[];
 }
+
+/** Pictures of one item looked at, so a panorama or a banner gives way to another of the same thing. */
+export const WIKIDATA_FILES = 3;
 
 /** How Commons names a file: spaces, not underscores, and a capital first letter. */
 export function commonsName(file: string): string {
@@ -539,7 +615,8 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
     if (!entity) return [];
     const claims = (entity.claims ?? {}) as Record<string, unknown>;
     if (onlyMusic && !isMusicItem(claims)) return [];
-    const file = WIKIDATA_PICTURES.map((property) => firstStringClaim(claims[property])).find((value) => value !== null) ?? null;
+    const files = [...new Set(WIKIDATA_PICTURES.flatMap((property) => stringClaims(claims[property])))].slice(0, WIKIDATA_FILES);
+    const file = files[0] ?? null;
     const title = labelIn(entity.labels, language);
     if (!file || !title) return [];
     const tmdbIds = Object.entries(WIKIDATA_TMDB).flatMap(([property, kind]) => {
@@ -557,6 +634,7 @@ export function wikidataCandidates(ids: readonly string[], body: unknown, langua
         kind: "thing",
       },
       file,
+      files,
       tmdbIds,
     }];
   });
@@ -573,10 +651,35 @@ function labelIn(labels: unknown, language: string): string | null {
     text(Object.values(byLanguage)[0]?.value);
 }
 
+/** Every value of a claim that is a string, in Wikidata's order, the preferred ones first and no deprecated one. */
+function stringClaims(claim: unknown): string[] {
+  const all = rows(claim).filter((row) => row.rank !== "deprecated");
+  return [...all.filter((row) => row.rank === "preferred"), ...all.filter((row) => row.rank !== "preferred")].flatMap((row) => {
+    const value = text(((row.mainsnak as Json | undefined)?.datavalue as Json | undefined)?.value);
+    return value ? [value] : [];
+  });
+}
+
 function firstStringClaim(claim: unknown): string | null {
   const first = rows(claim)[0];
   const value = ((first?.mainsnak as Json | undefined)?.datavalue as Json | undefined)?.value;
   return text(value);
+}
+
+/**
+ * The candidate with the first of its pictures Commons says fits ([good], by Commons name), shown by that
+ * picture with its credit; null when none does.
+ */
+export function fittingPicture(
+  candidate: WikidataCandidate,
+  good: ReadonlyMap<string, { credit?: string; attribution: Omit<PictureAttribution, "originalUrl"> }>,
+): WikidataCandidate | null {
+  for (const file of candidate.files.length > 0 ? candidate.files : [candidate.file]) {
+    const picture = good.get(commonsName(file));
+    if (!picture) continue;
+    return { ...candidate, file, hit: { ...candidate.hit, imageUrl: commonsThumb(file, COMMONS_CARD_WIDTH), thumbUrl: commonsThumb(file, 400), ...picture } };
+  }
+  return null;
 }
 
 /** A TMDB hit's own key in the shape Wikidata names it. */
