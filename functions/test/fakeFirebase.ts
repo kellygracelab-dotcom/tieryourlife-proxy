@@ -122,8 +122,8 @@ function matches(actual: unknown, filter: Filter): boolean {
 
 class FakeBatch {
   private readonly writes: (() => Promise<void>)[] = [];
-  set(ref: FakeDoc, data: Data) {
-    this.writes.push(() => ref.set(data));
+  set(ref: FakeDoc, data: Data, options?: { merge?: boolean }) {
+    this.writes.push(() => ref.set(data, options));
     return this;
   }
   update(ref: FakeDoc, data: Data) {

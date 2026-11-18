@@ -5,6 +5,7 @@ import { requireAppCheck } from "./appCheck";
 import { ERASED_ACCOUNTS, requireUser, type Identity } from "./auth";
 import { eraseAccount } from "./erase";
 import { STARTED_PATH, startedRoute } from "./started";
+import { SETTINGS_PATH, settingsRoute } from "./settings";
 import { originState } from "./boardOrigin";
 import { copiesOnBoard, copiesShown, copyToShared, fitsWithCopies, withBoardCopies } from "./boardPictures";
 import { catalogueCopyTools } from "./cataloguePictures";
@@ -196,6 +197,15 @@ export const boards = onRequest(
         return await startedRoute(request, response, identity, segments);
       } catch (error) {
         console.error("Begun-list request failed", error);
+        return void response.status(503).json({ error: "Unavailable", code: "UNAVAILABLE" });
+      }
+    }
+    // What the account chose for how the app looks (`settings.ts`): another word no board id can be.
+    if (id === SETTINGS_PATH) {
+      try {
+        return await settingsRoute(request, response, identity, segments);
+      } catch (error) {
+        console.error("Settings request failed", error);
         return void response.status(503).json({ error: "Unavailable", code: "UNAVAILABLE" });
       }
     }

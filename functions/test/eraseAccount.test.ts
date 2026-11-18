@@ -30,6 +30,7 @@ function seedErasable(uid: string, banned = true) {
   db.seed(`accounts/${uid}`, { credits: 3 });
   db.seed(`accounts/${uid}/boards/board1`, { title: "Mine", revision: 1 });
   db.seed(`accounts/${uid}/started/list1`, { updatedAt: 1, changedAt: 1, removed: null, title: "Begun" });
+  db.seed(`accounts/${uid}/settings/appearance`, { colour: { name: "matcha", hue: null, changedAt: 1, updatedAt: 1 } });
 }
 
 describe("eraseAccount", () => {
@@ -55,6 +56,7 @@ describe("eraseAccount", () => {
     assert.ok(log.includes("deleteFiles topics/rejected/"));
     assert.equal(db.get("accounts/old1/boards/board1"), undefined);
     assert.equal(db.get("accounts/old1/started/list1"), undefined);
+    assert.equal(db.get("accounts/old1/settings/appearance"), undefined);
     assert.equal(db.get("accounts/old1"), undefined);
   });
 
