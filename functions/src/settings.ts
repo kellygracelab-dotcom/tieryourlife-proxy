@@ -14,7 +14,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import type { Response } from "express";
 import { ERASED_ACCOUNTS, type Identity } from "./auth";
 import { changedAtOf, nextVersion } from "./started";
-import { readPhotoSlot, type PhotoSlot } from "./facePhoto";
+import { finishRemoval, readPhotoSlot, type PhotoSlot } from "./facePhoto";
 
 export const SETTINGS_PATH = "settings";
 export const SETTINGS_COLLECTION = "settings";
@@ -90,6 +90,8 @@ export async function settingsRoute(
   if (segments.length === 1) {
     if (request.method !== "GET") return void response.status(405).json({ error: "Use GET" });
     const doc = await appearanceOf(identity.uid).get();
+    // A removed photo past Undo's window goes as it is read; the daily sweep takes the rest.
+    if (doc.exists) await finishRemoval(identity.uid, doc.get("removedPhoto")).catch((error) => console.warn("Removed photo not finished", error));
     response.setHeader("Cache-Control", "no-store");
     return void response.status(200).json(settingsWire(doc.exists ? (doc.data() as AppearanceDocument) : null));
   }

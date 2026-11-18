@@ -63,26 +63,118 @@ export async function keepUploadedPhoto(uid: string, pictureId: string, url: str
   return slot;
 }
 
-/** Empties the slot; the photo it held goes everywhere, a face showing it becoming the letter. Null when it was empty. */
-export async function removeUploadedPhoto(uid: string): Promise<PhotoSlot | null> {
-  const db = getFirestore();
-  const ref = appearanceOf(uid);
-  const previous = await db.runTransaction(async (transaction) => {
-    const doc = await transaction.get(ref);
-    const before = readPhotoSlot(doc.exists ? doc.get("photo") : null);
-    if (before !== null) transaction.set(ref, { photo: null }, { merge: true });
-    return before;
-  });
-  if (previous !== null) await retirePhoto(uid, previous, null);
-  return previous;
+/** A removed photo kept for Undo: its copy stays this long, then goes. */
+export const UNDO_WINDOW_MS = 10 * 60 * 1000;
+
+export interface RemovedPhoto extends PhotoSlot {
+  removedAt: number;
+  /** Whether the account wore it when it was removed: Undo puts it back on. */
+  wasWorn: boolean;
+}
+
+export function readRemovedPhoto(value: unknown): RemovedPhoto | null {
+  const slot = readPhotoSlot(value);
+  const record = value as Record<string, unknown> | null;
+  if (slot === null || typeof record?.removedAt !== "number") return null;
+  return { ...slot, removedAt: record.removedAt, wasWorn: record.wasWorn === true };
 }
 
 /**
- * The lists and rankings showing [old] show [replacement] instead (null: the
- * letter), and so does the account when it wears it; then the copy is deleted,
- * so no file is left behind and nothing points at a missing one.
+ * "Remove your photo": the slot empties and every face showing the photo
+ * becomes the letter at once; its copy is kept for [UNDO_WINDOW_MS] so Undo can
+ * put it back, then deleted (`finishRemoval`). A photo removed earlier and
+ * still kept goes now: only the last removal can be undone. Null when the slot was empty.
  */
+export async function removeUploadedPhoto(uid: string, nowMs = Date.now()): Promise<RemovedPhoto | null> {
+  const db = getFirestore();
+  const ref = appearanceOf(uid);
+  const { before, earlier } = await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(ref);
+    const before = readPhotoSlot(doc.exists ? doc.get("photo") : null);
+    const earlier = readRemovedPhoto(doc.exists ? doc.get("removedPhoto") : null);
+    if (before !== null) transaction.set(ref, { photo: null, removedPhoto: { ...before, removedAt: nowMs, wasWorn: false } }, { merge: true });
+    return { before, earlier };
+  });
+  if (before === null) return null;
+  if (earlier !== null && earlier.pictureId !== before.pictureId) await deleteCopy(uid, earlier.pictureId);
+  const wasWorn = await unshowPhoto(uid, before, null);
+  const removed: RemovedPhoto = { ...before, removedAt: nowMs, wasWorn };
+  if (wasWorn) await ref.set({ removedPhoto: removed }, { merge: true });
+  return removed;
+}
+
+export type Restore =
+  | { ok: true; photo: PhotoSlot; wasWorn: boolean }
+  | { ok: false; why: "nothing" | "taken"; photo: PhotoSlot | null };
+
+/**
+ * Undo of "Remove your photo": the photo goes back in the slot while its copy
+ * is kept. The client wears it again when `wasWorn`, as choosing "Your photo".
+ * Nothing to put back after the window; a photo uploaded meanwhile stays.
+ */
+export async function restoreUploadedPhoto(uid: string, nowMs = Date.now()): Promise<Restore> {
+  const db = getFirestore();
+  const ref = appearanceOf(uid);
+  const doc = await ref.get();
+  const current = readPhotoSlot(doc.exists ? doc.get("photo") : null);
+  const removed = readRemovedPhoto(doc.exists ? doc.get("removedPhoto") : null);
+  if (current !== null) return { ok: false, why: "taken", photo: current };
+  if (removed === null || nowMs - removed.removedAt > UNDO_WINDOW_MS) return { ok: false, why: "nothing", photo: null };
+  const [exists] = await getStorage().bucket().file(photoPathOf(uid, removed.pictureId)).exists();
+  if (!exists) return { ok: false, why: "nothing", photo: null };
+  return db.runTransaction(async (transaction): Promise<Restore> => {
+    const now = await transaction.get(ref);
+    const photo = readPhotoSlot(now.get("photo"));
+    const still = readRemovedPhoto(now.get("removedPhoto"));
+    if (photo !== null) return { ok: false, why: "taken", photo };
+    if (still === null || still.pictureId !== removed.pictureId) return { ok: false, why: "nothing", photo: null };
+    const slot: PhotoSlot = { pictureId: still.pictureId, url: still.url, setAt: still.setAt };
+    transaction.set(ref, { photo: slot, removedPhoto: null }, { merge: true });
+    return { ok: true, photo: slot, wasWorn: still.wasWorn };
+  });
+}
+
+/** Deletes a removed photo's copy once Undo's window is over; true when it did. */
+export async function finishRemoval(uid: string, stored: unknown, nowMs = Date.now()): Promise<boolean> {
+  const removed = readRemovedPhoto(stored);
+  if (removed === null || nowMs - removed.removedAt <= UNDO_WINDOW_MS) return false;
+  const ref = appearanceOf(uid);
+  const gone = await getFirestore().runTransaction(async (transaction) => {
+    const now = readRemovedPhoto((await transaction.get(ref)).get("removedPhoto"));
+    if (now === null || now.pictureId !== removed.pictureId) return false;
+    transaction.set(ref, { removedPhoto: null }, { merge: true });
+    return true;
+  });
+  if (gone) await deleteCopy(uid, removed.pictureId);
+  return gone;
+}
+
+/** Every account's removed photo past its window; once a day, with the picture sweep. */
+export async function sweepRemovedPhotos(nowMs = Date.now()): Promise<number> {
+  const docs = await getFirestore().collectionGroup("settings").get();
+  let finished = 0;
+  for (const doc of docs.docs) {
+    const [top, uid, settings, name, ...rest] = doc.ref.path.split("/");
+    if (top !== "accounts" || !uid || settings !== "settings" || name !== "appearance" || rest.length > 0) continue;
+    if (await finishRemoval(uid, doc.get("removedPhoto"), nowMs)) finished++;
+  }
+  return finished;
+}
+
+/** A new upload replaced [old]: it shows [replacement] everywhere, and its copy goes now (no Undo for a replacement). */
 export async function retirePhoto(uid: string, old: PhotoSlot, replacement: string | null): Promise<void> {
+  await unshowPhoto(uid, old, replacement);
+  await deleteCopy(uid, old.pictureId);
+}
+
+const deleteCopy = (uid: string, pictureId: string) =>
+  getStorage().bucket().file(photoPathOf(uid, pictureId)).delete({ ignoreNotFound: true });
+
+/**
+ * The lists and rankings showing [old] show [replacement] instead (null: the
+ * letter), and so does the account when it wears it. True when the account wore it.
+ */
+async function unshowPhoto(uid: string, old: PhotoSlot, replacement: string | null): Promise<boolean> {
   const db = getFirestore();
   const bucket = getStorage().bucket();
   const path = photoPathOf(uid, old.pictureId);
@@ -111,10 +203,11 @@ export async function retirePhoto(uid: string, old: PhotoSlot, replacement: stri
 
   try {
     const user = await getAuth().getUser(uid);
-    if (showing(user.photoURL ?? null)) await getAuth().updateUser(uid, { photoURL: replacement });
+    if (!showing(user.photoURL ?? null)) return false;
+    await getAuth().updateUser(uid, { photoURL: replacement });
+    return true;
   } catch (error) {
     if ((error as { code?: string }).code !== "auth/user-not-found") throw error;
+    return false;
   }
-
-  await bucket.file(path).delete({ ignoreNotFound: true });
 }
