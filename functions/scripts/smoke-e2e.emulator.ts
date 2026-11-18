@@ -805,6 +805,102 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((await db.collection("accounts").doc(uid).get()).exists, false);
     assert.equal((await call(author, "PUT", "/boards/resurrect", { ...base, play })).status, 401);
   });
+
+  it("keeps an account's begun lists for its devices only: conflicts, Discard and Undo, the fifty, erasure", async () => {
+    const author = await newAuthor("started");
+    const other = await newAuthor("started-other");
+    const uid = JSON.parse(Buffer.from(author.split(".")[1], "base64url").toString()).user_id as string;
+    const db = getFirestore(initializeApp({ projectId: PROJECT }, "started-smoke"));
+    const started = db.collection("accounts").doc(uid).collection("started");
+    const now = Date.now();
+    const list = "GameOfThronesList01";
+    const content = {
+      listVersion: now - 100_000, itemCount: 45, tierCount: 5, title: "Game of Thrones characters",
+      picture: "https://example.test/cover.jpg", pictures: ["https://example.test/1.jpg"], category: "film_tv",
+      rows: [[3, 7], [1], [], [12], []], poolOrder: [0, 2, 4],
+    };
+    const play = { kind: "smart", count: 3, seed: 5, refine: false, ids: ["0", "2", "4"], history: [[0, 1, 0]], round: 1, startedAt: now - 1000, tiers: 2, scope: ["pool"] };
+
+    // A guest keeps begun lists on the device, as before.
+    const guestNow = (await identity("signUp", {})).idToken;
+    assert.equal((await call(guestNow, "GET", "/boards/started")).status, 403);
+    assert.equal((await call(guestNow, "PUT", `/boards/started/${list}`, { ...content, basedOn: null, changedAt: now })).body.code, "NOT_SIGNED_IN");
+
+    // The phone begins the list with a game; the site reads it whole.
+    const first = await call(author, "PUT", `/boards/started/${list}`, { ...content, basedOn: null, changedAt: now - 50, play });
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(first.body.placed, 4);
+    const v1 = first.body.updatedAt as number;
+    const read = await call(author, "GET", `/boards/started/${list}`);
+    assert.equal(read.status, 200);
+    assert.deepEqual(read.body.rows, content.rows);
+    assert.deepEqual(read.body.play, play);
+    assert.deepEqual((await started.doc(list).get()).get("rows"), content.rows.map((c) => ({ c })));
+
+    // Nobody else can address it: another account has no such list, and cannot see it in its own.
+    assert.equal((await call(other, "GET", `/boards/started/${list}`)).status, 404);
+    assert.deepEqual((await call(other, "GET", "/boards/started")).body.started, []);
+    assert.equal((await call(other, "DELETE", `/boards/started/${list}?reason=discard`)).status, 200);
+    assert.equal((await call(author, "GET", `/boards/started/${list}`)).body.updatedAt, v1);
+
+    // Refused shapes say which field.
+    const invalid = await call(author, "PUT", `/boards/started/${list}`, { ...content, rows: [[1], [1], [], [], []], basedOn: v1, changedAt: now });
+    assert.deepEqual([invalid.status, invalid.body.code, invalid.body.detail], [400, "INVALID", "rows"]);
+    assert.equal((await call(author, "GET", "/boards/started?since=yesterday")).status, 400);
+    assert.equal((await call(author, "DELETE", `/boards/started/${list}`)).body.detail, "reason");
+
+    // Two devices from the same version: the later change wins, the earlier is handed what is kept.
+    const site = await call(author, "PUT", `/boards/started/${list}`, { ...content, rows: [[3, 7, 9], [1], [], [12], []], basedOn: v1, changedAt: now - 10, play: null });
+    assert.equal(site.status, 200);
+    const phone = await call(author, "PUT", `/boards/started/${list}`, { ...content, basedOn: v1, changedAt: now - 20, play });
+    assert.equal(phone.status, 409);
+    assert.equal(phone.body.code, "CONFLICT");
+    const kept = phone.body.started as { rows: number[][]; play: unknown; updatedAt: number };
+    assert.deepEqual([kept.rows[0], kept.play, kept.updatedAt], [[3, 7, 9], null, site.body.updatedAt]);
+    // A change made later on a device lands even from an older version, and the other device learns it from since.
+    const later = await call(author, "PUT", `/boards/started/${list}`, { ...content, basedOn: v1, changedAt: now - 5, play });
+    assert.equal(later.status, 200);
+    const fresh = await call(author, "GET", `/boards/started?since=${site.body.updatedAt}`);
+    assert.deepEqual((fresh.body.started as { listId: string }[]).map((x) => x.listId), [list]);
+    assert.deepEqual((await call(author, "GET", `/boards/started?since=${later.body.updatedAt}`)).body.started, []);
+
+    // Discard leaves a mark every device sees; Undo from that mark brings the list back with its game.
+    const discard = await call(author, "DELETE", `/boards/started/${list}?reason=discard&basedOn=${later.body.updatedAt}&changedAt=${now}`);
+    assert.deepEqual([discard.status, discard.body.removed], [200, "discard"]);
+    const all = await call(author, "GET", "/boards/started");
+    assert.deepEqual(all.body.started, []);
+    assert.deepEqual(all.body.removed, [{ listId: list, updatedAt: discard.body.updatedAt, changedAt: now, removed: "discard" }]);
+    assert.equal(typeof all.body.now, "number");
+    assert.equal((await call(author, "GET", `/boards/started/${list}`)).body.removed, "discard");
+    const stale = await call(author, "PUT", `/boards/started/${list}`, { ...content, basedOn: later.body.updatedAt, changedAt: now - 1, play });
+    assert.equal(stale.status, 409);
+    assert.equal((stale.body.started as { removed: string }).removed, "discard");
+    const undo = await call(author, "PUT", `/boards/started/${list}`, { ...content, basedOn: discard.body.updatedAt, changedAt: now - 5, play });
+    assert.equal(undo.status, 200);
+    assert.deepEqual((await call(author, "GET", `/boards/started/${list}`)).body.play, play);
+    // Continued on another device after an old Discard was sent: the Discard is the one refused.
+    const lateDiscard = await call(author, "DELETE", `/boards/started/${list}?reason=discard&basedOn=${discard.body.updatedAt}&changedAt=${now - 100}`);
+    assert.equal(lateDiscard.status, 409);
+    assert.equal((lateDiscard.body.started as { listId: string }).listId, list);
+
+    // Fifty live lists at most: the fifty-first pushes out the oldest, which every device takes out too.
+    for (let i = 0; i < 51; i++) {
+      const one = await call(author, "PUT", `/boards/started/fill-${String(i).padStart(2, "0")}`, { ...content, basedOn: null, changedAt: now - 10_000 + i });
+      assert.equal(one.status, 200, JSON.stringify(one.body));
+    }
+    const listed = await call(author, "GET", "/boards/started");
+    const live = (listed.body.started as { listId: string }[]).map((x) => x.listId);
+    assert.equal(live.length, 50);
+    assert.equal(live[0], list);
+    assert.ok(!live.includes("fill-00") && !live.includes("fill-01"));
+    const pushed = (listed.body.removed as { listId: string; removed: string }[]).filter((x) => x.removed === "evicted").map((x) => x.listId).sort();
+    assert.deepEqual(pushed, ["fill-00", "fill-01"]);
+
+    // Erasing the account erases its begun lists and their marks.
+    assert.equal((await call(author, "DELETE", "/boards/account")).status, 204);
+    assert.equal((await started.get()).size, 0);
+    assert.equal((await call(author, "PUT", `/boards/started/${list}`, { ...content, basedOn: null, changedAt: Date.now() })).status, 401);
+  });
 });
 
 /** A black PNG of [width] x [height]: a picture big enough to be a section's or a topic's. */
