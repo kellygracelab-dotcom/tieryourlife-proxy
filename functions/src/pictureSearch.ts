@@ -693,7 +693,14 @@ function unlessRefused<T>(fallback: () => T): (error: unknown) => T {
   };
 }
 
-export async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_TIMEOUT_MS): Promise<unknown> {
+/** A 403 left for the caller to judge (`getJson` with `forbiddenToJudge`): the text, or our access. */
+export class Forbidden extends Error {
+  constructor(host: string) {
+    super(`${host} answered 403`);
+  }
+}
+
+export async function getJson(url: string, init: RequestInit = {}, timeoutMs = SOURCE_TIMEOUT_MS, forbiddenToJudge = false): Promise<unknown> {
   const reply = await fetch(url, {
     ...init,
     headers: { Accept: "application/json", "User-Agent": USER_AGENT, ...(init.headers ?? {}) },
@@ -701,6 +708,7 @@ export async function getJson(url: string, init: RequestInit = {}, timeoutMs = S
   });
   if (!reply.ok) {
     const host = new URL(url).host;
+    if (forbiddenToJudge && reply.status === 403) throw new Forbidden(host);
     // A 401 or 403 is a key switched off or access closed: an alarm, not a quiet gap (`pictureAlarms.ts`).
     noteDenied(url, reply.status);
     if (reply.status === 429 || reply.status >= 500) throw new CatalogueRefusal(host, reply.status, reply.headers.get("retry-after"));
@@ -755,7 +763,7 @@ export async function askIgdb(input: SearchInput): Promise<SourceAnswer> {
   if (!id || !secret) return { hits: [], hasMore: false };
   const typed = input.typed.replace(/["\\]/g, " ").trim();
   const headers = { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" };
-  const ask = (query: string) => getJson("https://api.igdb.com/v4/games", { method: "POST", headers, body: query });
+  const ask = (query: string) => igdbGames(headers, query);
   const [body, rated] = await Promise.all([
     ask(`search "${typed}"; fields ${IGDB_QUERY_FIELDS}; where cover != null & version_parent = null; limit ${IGDB_PAGE}; offset ${(input.page - 1) * IGDB_PAGE};`),
     // IGDB's search ranks by text alone: "Mario" finds Mario & Luigi, not Super Mario Bros. The most rated games
@@ -784,12 +792,52 @@ export async function igdbNamed(name: string): Promise<PictureHit[]> {
   const secret = igdbClientSecret.value().trim();
   if (!id || !secret) return [];
   const exact = name.replace(/["\\]/g, " ").trim();
-  const body = await getJson("https://api.igdb.com/v4/games", {
-    method: "POST",
-    headers: { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" },
-    body: `fields ${IGDB_QUERY_FIELDS}; where name ~ "${exact}" & cover != null; sort first_release_date asc; limit ${IGDB_PAGE};`,
-  });
+  const headers = { "Client-ID": id, Authorization: `Bearer ${await igdbAccess(id, secret)}`, "Content-Type": "text/plain" };
+  const body = await igdbGames(headers, `fields ${IGDB_QUERY_FIELDS}; where name ~ "${exact}" & cover != null; sort first_release_date asc; limit ${IGDB_PAGE};`);
   return igdbHits(body);
+}
+
+const IGDB_GAMES = "https://api.igdb.com/v4/games";
+/** How long a harmless request that IGDB answered stands for our access being open. */
+const IGDB_OPEN_FOR_MS = 60_000;
+let igdbOpenAtMs = 0;
+
+/**
+ * IGDB's games for a query with a person's text in it. IGDB's firewall answers 403 to a text that looks
+ * like an attack (`<script>`, `javascript:`, `../`, `${jndi:`) before it reads our key: QA's
+ * `<script>alert(1)</script>` raised PICTURE_SOURCE_DENIED on 18.11.2026 at every run. So a 403 is
+ * checked with a request that holds no text, under the same token: answered, the refusal was the text's,
+ * and the search goes on without IGDB, with a warning; refused too, it is our access, and the alarm is
+ * raised as for any catalogue (`pictureAlarms.ts`).
+ */
+async function igdbGames(headers: Record<string, string>, query: string): Promise<unknown> {
+  try {
+    return await getJson(IGDB_GAMES, { method: "POST", headers, body: query }, SOURCE_TIMEOUT_MS, true);
+  } catch (error) {
+    if (!(error instanceof Forbidden)) throw error;
+    if (await igdbStillOpen(headers)) {
+      console.warn("IGDB's firewall refused a search text; no IGDB hits for it");
+      return [];
+    }
+    throw error;
+  }
+}
+
+/** Whether IGDB answers a request with no text under these headers; a refusal of it raises the alarm. */
+async function igdbStillOpen(headers: Record<string, string>): Promise<boolean> {
+  if (Date.now() - igdbOpenAtMs < IGDB_OPEN_FOR_MS) return true;
+  try {
+    await getJson(IGDB_GAMES, { method: "POST", headers, body: "fields id; limit 1;" });
+    igdbOpenAtMs = Date.now();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Forgets that IGDB answered lately; for tests. */
+export function forgetIgdbOpen(): void {
+  igdbOpenAtMs = 0;
 }
 
 /** Autocomplete ranks the tiger above the tiger moths; it has one page, so the next one is empty. */
