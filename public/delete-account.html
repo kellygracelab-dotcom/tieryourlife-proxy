@@ -2,6 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>
+      // tieryourlife.com is the site's one address (Danylo, 20.11.2026): on
+      // Firebase's own hosts for it, and on www, the same page opens there.
+      if (
+        ["tieryourlife.web.app", "tieryourlife.firebaseapp.com", "www.tieryourlife.com"].indexOf(
+          location.hostname,
+        ) >= 0
+      )
+        location.replace(
+          "https://tieryourlife.com" + location.pathname + location.search + location.hash,
+        );
+    </script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TierYourLife — Deleting your account</title>
 <style>

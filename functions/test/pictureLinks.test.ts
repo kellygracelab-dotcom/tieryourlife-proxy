@@ -178,7 +178,7 @@ describe("a picture's own site that is busy", () => {
   });
 
   it("is asked with a name and a way to reach us, and no address of a person", () => {
-    assert.equal(USER_AGENT, "TierYourLife/1.0 (https://tieryourlife.web.app/privacy)");
+    assert.equal(USER_AGENT, "TierYourLife/1.0 (https://tieryourlife.com/privacy)");
     assert.doesNotMatch(USER_AGENT, /@/);
   });
 });
