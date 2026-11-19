@@ -131,8 +131,9 @@ export async function copyForPublication(
   const bucket = getStorage().bucket();
 
   // A copy already in this list's folder was looked at when it arrived, and
-  // nothing but this function can put one there.
-  const [existing] = await bucket.getFiles({ prefix: `published/${listId}/` });
+  // nothing but this function can put one there. A name with this attempt's own
+  // suffix cannot be there yet, so a publication does not ask.
+  const [existing] = nameSuffix === "" ? await bucket.getFiles({ prefix: `published/${listId}/` }) : [[]];
   const alreadyHere = new Set(
     existing.map((file) => file.name.slice(`published/${listId}/`.length)),
   );
@@ -147,7 +148,10 @@ export async function copyForPublication(
   // instance has (QA, 19.11.2026). Each is pinned to the version looked at, so one replaced in the
   // folder meanwhile is not the one copied: its copy fails and the publication with it.
   const outcomes: PictureOutcome[] = [];
-  const passed: { id: string; generation: string | number }[] = [];
+  // Pictures that all fit in one look are saved from the bytes looked at: they are that pinned
+  // version already, and a second download would only fetch them again.
+  const oneLook = fresh.length <= LOOKING_AT_ONCE;
+  const passed: { id: string; generation: string | number; bytes?: Buffer }[] = [];
   for (let at = 0; at < fresh.length; at += LOOKING_AT_ONCE) {
     const loaded = await Promise.all(fresh.slice(at, at + LOOKING_AT_ONCE).map((id) => downloadPinned(authorUid, id)));
     for (const one of loaded) if (one.bytes === null) outcomes.push({ id: one.id, ok: false, because: "missing" });
@@ -157,7 +161,7 @@ export async function copyForPublication(
     const verdicts = present.length > 0 ? await lookAt(present.map((one) => one.bytes)) : [];
     present.forEach((one, index) => {
       const decision = decideOwnPicture(one.bytes, verdicts[index] ?? null);
-      if (decision.ok) passed.push({ id: one.id, generation: one.generation });
+      if (decision.ok) passed.push({ id: one.id, generation: one.generation, ...(oneLook ? { bytes: one.bytes } : {}) });
       else outcomes.push({ id: one.id, ok: false, because: decision.because });
     });
     // Nothing is copied while anything is refused: the caller turns the whole publication down, and a
@@ -165,13 +169,13 @@ export async function copyForPublication(
     if (outcomes.some((one) => !one.ok && one.because !== "missing")) return [...settled, ...outcomes];
   }
 
-  // Read again, the version looked at, and saved as a new file: a copy would carry the private file's
-  // own metadata, its download token among it.
+  // Read again (unless kept from one look), the version looked at, and saved as a new file: a copy
+  // would carry the private file's own metadata, its download token among it.
   for (let at = 0; at < passed.length; at += LOOKING_AT_ONCE) {
     const saved = await Promise.allSettled(
       passed.slice(at, at + LOOKING_AT_ONCE).map(async (one) => {
         const path = publishedPath(listId, one.id + nameSuffix);
-        const [bytes] = await bucket.file(privatePath(authorUid, one.id), { generation: one.generation }).download();
+        const bytes = one.bytes ?? (await bucket.file(privatePath(authorUid, one.id), { generation: one.generation }).download())[0];
         await bucket.file(path).save(bytes, { contentType: "image/jpeg", resumable: false });
         onSaved(path);
       }),
