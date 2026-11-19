@@ -267,6 +267,7 @@ import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit
 import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 import { LIST_SOURCE_RULE, readListSource, type ListSource } from "./listSource";
 import { chargeVision, VisionLimit } from "./visionBudget";
+import { phaseClock } from "./phaseClock";
 import { countToday, nextDayMs } from "./dailyCount";
 import { routeUploadQuota } from "./uploadQuota";
 import {
@@ -3118,15 +3119,7 @@ async function publish(
 ): Promise<void> {
   const db = getFirestore();
   const collection = db.collection(PUBLISHED);
-
-  // Before anything is read or written: somebody who may not publish may not
-  // replace what they published either, or a ban would last exactly as long
-  // as it took them to edit an old list.
-  const ban = await readBan(identity);
-  if (isBanned(ban, Date.now())) {
-    response.status(403).json({ error: "You cannot publish at the moment", ...noticeFor(ban) });
-    return;
-  }
+  const clock = phaseClock();
 
   // A board published once is answered with its list, ahead of the count, so
   // an author at the limit gets theirs back. Unpublished, it is gone, and this publishes it anew.
@@ -3134,19 +3127,29 @@ async function publish(
   const fromBoard = existingId === null && boardUid !== null
     ? collection.where("authorUid", "==", byline.uid).where("boardUid", "==", boardUid).limit(1)
     : null;
-  if (fromBoard !== null) {
-    const earlier = await fromBoard.get();
-    if (!earlier.empty) return answerRepeat(response, earlier.docs[0]);
+  // The first reads go together (19.11.2026: one after another they added up);
+  // what they say is still answered in this order.
+  const [ban, earlierFromBoard, hold, existing] = await Promise.all([
+    readBan(identity),
+    fromBoard === null ? Promise.resolve(null) : fromBoard.get(),
+    // A list already up is held as well: pouring the withdrawn one into it would otherwise do.
+    db.collection(PUBLISH_HOLDS).doc(byline.uid).get(),
+    existingId ? collection.doc(existingId).get() : Promise.resolve(null),
+  ]);
+  // Before anything is written or answered: somebody who may not publish may not
+  // replace what they published either, or a ban would last exactly as long
+  // as it took them to edit an old list.
+  if (isBanned(ban, Date.now())) {
+    response.status(403).json({ error: "You cannot publish at the moment", ...noticeFor(ban) });
+    return;
   }
-  // A list already up is held as well: pouring the withdrawn one into it would otherwise do.
-  const hold = await getFirestore().collection(PUBLISH_HOLDS).doc(byline.uid).get();
+  if (earlierFromBoard !== null && !earlierFromBoard.empty) return answerRepeat(response, earlierFromBoard.docs[0]);
   const held = hold.exists && ((hold.get("untilMs") as number | undefined) ?? 0) > Date.now();
 
   // Whose list this is, settled before the body is judged (a replaced list's
   // tiers set its limit): replacing somebody else's list should cost nothing.
   let previous: StoredList | null = null;
-  if (existingId) {
-    const existing = await collection.doc(existingId).get();
+  if (existing !== null) {
     if (!existing.exists) {
       response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
       return;
@@ -3254,12 +3257,13 @@ async function publish(
     return;
   }
 
-  // Asked before the pictures, because it costs one call and no bytes.
-  // Answered after the board is stored, because the answer is a report about
-  // a list and there has to be a list to report.
+  // Asked before the pictures, because it costs one call and no bytes, and
+  // not waited for: the answer is a report about a list, made after the board
+  // is stored, because there has to be a list to report.
   const words = wordsOf(decision.draft);
-  const wording = byline.speaker === null && words.length >= ENOUGH_TO_JUDGE ? await realModeration(words) : null;
-  const concern = wording === null ? "none" : decideWordingConcern(wording);
+  const concernLater: Promise<WordingConcern> = byline.speaker === null && words.length >= ENOUGH_TO_JUDGE
+    ? realModeration(words).then((wording) => (wording === null ? "none" : decideWordingConcern(wording)), () => "none" as const)
+    : Promise.resolve("none");
   const previousImages = (previous?.items ?? []).map((item) => {
     const url = (item as { imageUrl?: unknown } | null)?.imageUrl;
     return typeof url === "string" ? url : null;
@@ -3327,15 +3331,46 @@ async function publish(
     const cover = credits[credits.length - 1];
     coverManual = coverCatalogue ?? (cover === null ? undefined : (cover as ManualAttribution | "cleared"));
   }
+  clock.mark("checks");
+
+  // The author's own pictures, the pictures from other sites and the face are
+  // copied while Commons is asked, each looked at as before: none of them waits
+  // for Commons or for another (19.11.2026: one after another they were most of
+  // the four seconds). Every copy made for the list is listed in `saved` and
+  // removed unless the list is written.
+  const saved: string[] = [];
+  const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
+  const ownCopies = copyForPublication(
+    identity.uid,
+    target,
+    picturesWanted(decision.draft),
+    undefined,
+    { ...copies, charge: (looks) => chargeVision(identity.uid, "pictures", looks) },
+  );
+  const outsideCopies = copyOutside(`published/${target}/`, outsideUrls, pictureTools, { nameSuffix, committed });
+  const faceCopy = checkedFace(byline.uid, byline.photoUrl, pictureTools);
+  // Each is awaited below; one that fails before then must not count as unhandled.
+  for (const started of [ownCopies, outsideCopies, faceCopy] as Promise<unknown>[]) started.catch(() => undefined);
+  // A publication turned down from here waits for the copies under way, and removes the list's.
+  const dropCopies = async (): Promise<void> => {
+    const [, outsideDone] = await Promise.allSettled([ownCopies, outsideCopies, faceCopy]);
+    const outsideSaved = outsideDone.status === "fulfilled" && outsideDone.value.ok ? outsideDone.value.saved : [];
+    await Promise.all([...saved, ...outsideSaved].map((path) => pictureTools.remove(path).catch(() => undefined)));
+  };
+
   const files = commonsFilesOf(cards);
   const commons = files.length > 0 && !isDemoEmulator() ? await askCommonsFully(files) : { found: new Map(), unasked: 0, retryAfterMs: null };
   // The house waits for Commons' word: without its licence a picture is not copied and
   // stays a direct Wikimedia address, which Wikimedia refuses some apps.
-  if (byline.speaker !== null && commons.unasked > 0) return wikimediaNotReady(response, "SOURCE_BUSY", commons.retryAfterMs, { busy: ["wikimedia"] });
+  if (byline.speaker !== null && commons.unasked > 0) {
+    await dropCopies();
+    return wikimediaNotReady(response, "SOURCE_BUSY", commons.retryAfterMs, { busy: ["wikimedia"] });
+  }
   const attributions = attributionsOf(cards, commons.found);
   // The house names where each new picture from another site was found.
   const withoutPage = byline.speaker === null ? null : firstWithoutPage(cards, attributions);
   if (withoutPage !== null) {
+    await dropCopies();
     response.status(422).json({ error: "Say where this picture was found", code: "PICTURE_LINK_NEEDED", itemIndex: withoutPage });
     return;
   }
@@ -3353,14 +3388,22 @@ async function publish(
   const catalogueUrls = snapshotFits(asCopied) ? wantedCopies : [];
   const catalogueCommitted = previousPictures === null ? new Map<string, string>() : committedOutsideCopies(previousPictures, catalogueUrls, `published/${target}/`, pictureTools.bucket);
 
-  const [outside, authorPhotoUrl, catalogue] = await Promise.all([
-    copyOutside(`published/${target}/`, outsideUrls, pictureTools, { nameSuffix, committed }),
-    checkedFace(byline.uid, byline.photoUrl, pictureTools),
-    copyCataloguePictures(`published/${target}/`, catalogueUrls, catalogueCopyTools(pictureTools), { nameSuffix, committed: catalogueCommitted }),
-  ]);
+  let outside: Awaited<typeof outsideCopies>;
+  let authorPhotoUrl: string | null;
+  let catalogue: Awaited<ReturnType<typeof copyCataloguePictures>>;
+  try {
+    [outside, authorPhotoUrl, catalogue] = await Promise.all([
+      outsideCopies,
+      faceCopy,
+      copyCataloguePictures(`published/${target}/`, catalogueUrls, catalogueCopyTools(pictureTools), { nameSuffix, committed: catalogueCommitted }),
+    ]);
+  } catch (error) {
+    await dropCopies();
+    throw error;
+  }
   if (!outside.ok) {
     // The catalogue copies made wait in the shared folder for the list sent again.
-    await keepCopiesForLater(catalogue.saved);
+    await Promise.all([dropCopies(), keepCopiesForLater(catalogue.saved)]);
     if ("overDailyLimit" in outside) {
       response.status(429).json({ error: "Too many pictures from other sites today", code: "WEB_PICTURES_DAILY_LIMIT" });
       return;
@@ -3381,22 +3424,16 @@ async function publish(
   if (notCopied.length > 0) {
     console.warn(`House publication of ${target}: ${notCopied.length} of ${catalogueUrls.length} catalogue pictures not copied`);
     // The copies made are not fetched again: the next attempt takes them from the shared folder.
-    await Promise.all([...outside.saved.map((path) => pictureTools.remove(path).catch(() => undefined)), keepCopiesForLater(catalogue.saved)]);
+    await Promise.all([dropCopies(), keepCopiesForLater(catalogue.saved)]);
     return wikimediaNotReady(response, "PICTURES_NOT_COPIED", null, { imageUrls: notCopied });
   }
 
   // Attempt-specific names cannot overwrite the current snapshot or another
   // attempt's files. Until the transaction commits, all new copies are removed.
-  const saved = [...outside.saved, ...catalogue.saved];
-  const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
+  saved.push(...outside.saved, ...catalogue.saved);
   const stored = await removeUnlessWritten(saved, (path) => pictureTools.remove(path), async () => {
-    const outcomes = await copyForPublication(
-      identity.uid,
-      target,
-      picturesWanted(decision.draft),
-      undefined,
-      { ...copies, charge: (looks) => chargeVision(identity.uid, "pictures", looks) },
-    );
+    const outcomes = await ownCopies;
+    clock.mark("pictures");
     const refused = outcomes.find(
       (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
     );
@@ -3612,19 +3649,23 @@ async function publish(
     return { document, topicId, addresses, revision };
   });
   if (stored === null) return;
+  clock.mark("written");
   const { document, topicId, addresses, revision } = stored;
   // Catalogue pictures that had no time to be copied (a slow catalogue) are copied within the quarter of an hour.
   const leftToCopy = catalogueUrls.filter((url) => !catalogue.copies.has(url)).length;
-  if (leftToCopy > 0) await queuePictureCopies(target, leftToCopy);
   const dropped = outside.dropped > 0 ? { droppedPictures: outside.dropped } : {};
-  await noteWordingConcern(target, document.title, identity, concern, document.anonymous);
-  if (held) await noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined);
-
+  // What follows the write needs nothing from each other, so it goes at once,
+  // and all of it is done before the answer: an instance may stop once it has answered.
+  const after: Promise<unknown>[] = [
+    leftToCopy > 0 ? queuePictureCopies(target, leftToCopy) : Promise.resolve(),
+    concernLater.then((concern) => noteWordingConcern(target, document.title, identity, concern, document.anonymous)),
+    held ? noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined) : Promise.resolve(),
+  ];
   if (existingId) {
-    await syncCredits(existingId, document.anonymous, byline.uid, document.authorName);
+    after.push(syncCredits(existingId, document.anonymous, byline.uid, document.authorName));
     // The board was edited for a month; the copies it no longer names are
     // nobody's, because the snapshot that pointed at them has been replaced.
-    await discardUnusedPublished(existingId, [
+    after.push(discardUnusedPublished(existingId, [
       ...addresses.keys(),
       ...publishedNamesIn(existingId, [
         ...document.items.map((item) => item.imageUrl),
@@ -3635,7 +3676,14 @@ async function publish(
       ...previousImages,
       previous?.coverImageUrl,
       ...(previous?.previewImages ?? []),
-    ]));
+    ])));
+  }
+  const failed = (await Promise.allSettled(after)).find((one): one is PromiseRejectedResult => one.status === "rejected");
+  if (failed) throw failed.reason;
+  clock.mark("after");
+  // One line per publication, no names: where its time went.
+  console.log(`Publish timing ${JSON.stringify({ kind: existingId ? "update" : "new", own: picturesWanted(decision.draft).length, outside: outsideUrls.length, catalogue: catalogueUrls.length, ...clock.stages() })}`);
+  if (existingId) {
     response.status(200).json({ id: existingId, topicId, underReview: document.underReview, revision, ...dropped });
     return;
   }
