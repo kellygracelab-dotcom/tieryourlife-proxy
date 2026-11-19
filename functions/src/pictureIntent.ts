@@ -327,5 +327,11 @@ export function wikipediaSuggestion(body: unknown, typed: string): string | null
   const suggestion = ((body as { query?: { searchinfo?: { suggestion?: unknown } } } | null)?.query?.searchinfo?.suggestion);
   if (typeof suggestion !== "string") return null;
   const text = suggestion.trim().slice(0, 100);
-  return text.length >= 2 && nameKey(text) !== nameKey(typed) ? text : null;
+  return text.length >= 2 && nameKey(text) !== nameKey(typed) && keepsNumbers(typed, text) ? text : null;
+}
+
+/** Whether [text] holds the numbers [typed] holds, in order: a spelling fixes letters, never a year or a count. */
+export function keepsNumbers(typed: string, text: string): boolean {
+  const numbers = (value: string) => (value.match(/\p{N}+/gu) ?? []).join(" ");
+  return numbers(typed) === numbers(text);
 }

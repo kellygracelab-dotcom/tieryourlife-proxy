@@ -6,6 +6,8 @@
 
 /** A person importing a big library uploads hundreds in a day; a script hosting files on us, far more. */
 export const UPLOADS_PER_DAY = 2000;
+/** A guest's pictures live on in our folder with nothing to sweep them by: fewer a day (QA, 19.11.2026). */
+export const GUEST_UPLOADS_PER_DAY = 200;
 
 /** Enough of the head for every signature below; WebP's is the longest. */
 export const HEAD_BYTES = 12;
@@ -32,13 +34,28 @@ export function pictureTypeOf(head: Uint8Array): "image/jpeg" | "image/png" | "i
 }
 
 /**
- * A GIF of more than one image, or a WebP flagged or chunked as an animation.
+ * A GIF of more than one image, a WebP flagged or chunked as an animation, or an animated PNG.
  * Vision looks at the first frame only, so these never go out from another site.
  */
 export function isAnimated(bytes: Uint8Array): boolean {
   const type = pictureTypeOf(bytes);
   if (type === "image/gif") return gifImages(bytes) > 1;
   if (type === "image/webp") return webpAnimated(bytes);
+  if (type === "image/png") return pngAnimated(bytes);
+  return false;
+}
+
+/** An APNG: an `acTL` chunk before the first image data (since 19.11.2026). */
+function pngAnimated(bytes: Uint8Array): boolean {
+  const text = (at: number) => String.fromCharCode(...bytes.subarray(at, at + 4));
+  let at = 8;
+  while (at + 8 <= bytes.length) {
+    const size = (((bytes[at] ?? 0) << 24) | ((bytes[at + 1] ?? 0) << 16) | ((bytes[at + 2] ?? 0) << 8) | (bytes[at + 3] ?? 0)) >>> 0;
+    const name = text(at + 4);
+    if (name === "acTL") return true;
+    if (name === "IDAT" || name === "IEND") return false;
+    at += 12 + size;
+  }
   return false;
 }
 
@@ -88,8 +105,11 @@ export async function judgeUpload(
   head: Uint8Array,
   uploadsToday: () => Promise<number>,
   erased: () => Promise<boolean>,
+  isGuest: () => Promise<boolean> = async () => false,
 ): Promise<UploadVerdict> {
   if (await erased()) return "accountErased";
   if (!looksLikePicture(head)) return "notAPicture";
-  return (await uploadsToday()) > UPLOADS_PER_DAY ? "overDailyLimit" : "keep";
+  const count = await uploadsToday();
+  if (count > UPLOADS_PER_DAY) return "overDailyLimit";
+  return count > GUEST_UPLOADS_PER_DAY && (await isGuest()) ? "overDailyLimit" : "keep";
 }

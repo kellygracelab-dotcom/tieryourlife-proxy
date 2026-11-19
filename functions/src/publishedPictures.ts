@@ -6,7 +6,9 @@
  */
 import { getStorage } from "firebase-admin/storage";
 import { storageMediaUrl } from "./publicMedia";
-import { decideSafe, type Likelihood, type SafeSearchVerdict, type SafetyRefusal } from "./safety";
+import { isAnimated } from "./pictureBytes";
+import { chargeVision } from "./visionBudget";
+import { decideSafe, type Likelihood, type SafeSearchVerdict, type SafetyDecision, type SafetyRefusal } from "./safety";
 import { isDemoEmulator, SAFE_VERDICT } from "./emulator";
 
 /** Where a person's own pictures live, readable by them alone. */
@@ -118,7 +120,11 @@ export async function copyForPublication(
   listId: string,
   pictureIds: string[],
   lookAt: LookAtPictures = realSafeSearch,
-  { nameSuffix = "", onSaved = () => undefined }: { nameSuffix?: string; onSaved?: (path: string) => void } = {},
+  {
+    nameSuffix = "",
+    onSaved = () => undefined,
+    charge = async () => undefined,
+  }: { nameSuffix?: string; onSaved?: (path: string) => void; charge?: (looks: number) => Promise<void> } = {},
 ): Promise<PictureOutcome[]> {
   if (pictureIds.length === 0) return [];
 
@@ -137,53 +143,42 @@ export async function copyForPublication(
   const fresh = pictureIds.filter((id) => !alreadyHere.has(id + nameSuffix));
   if (fresh.length === 0) return settled;
 
-  const loaded = await Promise.all(
-    fresh.map(async (id) => {
-      try {
-        const [bytes] = await bucket.file(privatePath(authorUid, id)).download();
-        return { id, bytes };
-      } catch {
-        return { id, bytes: null };
-      }
-    }),
-  );
+  // Looked at a few at a time, never all held at once: two hundred photographs of 4 MB are more than an
+  // instance has (QA, 19.11.2026). Each is pinned to the version looked at, so one replaced in the
+  // folder meanwhile is not the one copied: its copy fails and the publication with it.
+  const outcomes: PictureOutcome[] = [];
+  const passed: { id: string; generation: string | number }[] = [];
+  for (let at = 0; at < fresh.length; at += LOOKING_AT_ONCE) {
+    const loaded = await Promise.all(fresh.slice(at, at + LOOKING_AT_ONCE).map((id) => downloadPinned(authorUid, id)));
+    for (const one of loaded) if (one.bytes === null) outcomes.push({ id: one.id, ok: false, because: "missing" });
+    const present = loaded.filter((one): one is Pinned & { bytes: Buffer } => one.bytes !== null);
+    // Counted against the account's day before Vision is asked (src/visionBudget.ts); over it, this throws.
+    if (present.length > 0) await charge(present.length);
+    const verdicts = present.length > 0 ? await lookAt(present.map((one) => one.bytes)) : [];
+    present.forEach((one, index) => {
+      const decision = decideOwnPicture(one.bytes, verdicts[index] ?? null);
+      if (decision.ok) passed.push({ id: one.id, generation: one.generation });
+      else outcomes.push({ id: one.id, ok: false, because: decision.because });
+    });
+    // Nothing is copied while anything is refused: the caller turns the whole publication down, and a
+    // half-copied folder would be litter. The rest need not be looked at.
+    if (outcomes.some((one) => !one.ok && one.because !== "missing")) return [...settled, ...outcomes];
+  }
 
-  const present = loaded.filter((one): one is { id: string; bytes: Buffer } => one.bytes !== null);
-  const verdicts = present.length > 0 ? await lookAt(present.map((one) => one.bytes)) : [];
-
-  const outcomes: PictureOutcome[] = loaded
-    .filter((one) => one.bytes === null)
-    .map((one) => ({ id: one.id, ok: false, because: "missing" as const }));
-
-  const passed: { id: string; bytes: Buffer }[] = [];
-  present.forEach((one, index) => {
-    // A verdict that never arrived is not a verdict against. It is the same
-    // case as UNKNOWN, and `decideSafe` already says what to do with that.
-    const verdict = verdicts[index] ?? { adult: "UNKNOWN", racy: "UNKNOWN", violence: "UNKNOWN" };
-    const decision = decideSafe(verdict);
-    if (decision.ok) {
-      passed.push(one);
-    } else {
-      outcomes.push({ id: one.id, ok: false, because: decision.because });
-    }
-  });
-
-  // Nothing is copied while anything is still refused: the caller turns the
-  // whole publication down, and a half-copied folder would be litter.
-  if (outcomes.some((one) => !one.ok && one.because !== "missing")) return [...settled, ...outcomes];
-
-  const saved = await Promise.allSettled(
-    passed.map(async (one) => {
-      const path = publishedPath(listId, one.id + nameSuffix);
-      await bucket.file(path).save(one.bytes, {
-        contentType: "image/jpeg",
-        resumable: false,
-      });
-      onSaved(path);
-    }),
-  );
-  const failed = saved.find((one): one is PromiseRejectedResult => one.status === "rejected");
-  if (failed) throw failed.reason;
+  // Read again, the version looked at, and saved as a new file: a copy would carry the private file's
+  // own metadata, its download token among it.
+  for (let at = 0; at < passed.length; at += LOOKING_AT_ONCE) {
+    const saved = await Promise.allSettled(
+      passed.slice(at, at + LOOKING_AT_ONCE).map(async (one) => {
+        const path = publishedPath(listId, one.id + nameSuffix);
+        const [bytes] = await bucket.file(privatePath(authorUid, one.id), { generation: one.generation }).download();
+        await bucket.file(path).save(bytes, { contentType: "image/jpeg", resumable: false });
+        onSaved(path);
+      }),
+    );
+    const failed = saved.find((one): one is PromiseRejectedResult => one.status === "rejected");
+    if (failed) throw failed.reason;
+  }
 
   return [
     ...settled,
@@ -194,6 +189,41 @@ export async function copyForPublication(
       address: addressOf(bucket.name, publishedPath(listId, one.id + nameSuffix)),
     })),
   ];
+}
+
+/** Own photographs downloaded and looked at together: one Vision call's worth, at most 64 MB held. */
+const LOOKING_AT_ONCE = 16;
+
+interface Pinned {
+  id: string;
+  bytes: Buffer | null;
+  generation: string | number;
+}
+
+/** A photograph's bytes and the version they are, or no bytes when it is gone or unreadable. */
+async function downloadPinned(uid: string, id: string): Promise<Pinned> {
+  const bucket = getStorage().bucket();
+  try {
+    const [metadata] = await bucket.file(privatePath(uid, id)).getMetadata();
+    const generation = metadata.generation;
+    if (generation === undefined) return { id, bytes: null, generation: 0 };
+    const [bytes] = await bucket.file(privatePath(uid, id), { generation }).download();
+    return { id, bytes, generation };
+  } catch {
+    return { id, bytes: null, generation: 0 };
+  }
+}
+
+/**
+ * Whether somebody's own photograph may be shown to everybody (QA, 19.11.2026). Vision sees an
+ * animation's first frame only, so an animation is not shown; and a photograph Vision could not
+ * read, or say anything about, is not taken as safe: it is refused as "unchecked", to be sent as a still.
+ * A Vision that is out of reach throws instead, and the publication is asked again.
+ */
+export function decideOwnPicture(bytes: Uint8Array, verdict: SafeSearchVerdict | null): SafetyDecision {
+  if (isAnimated(bytes)) return { ok: false, because: "unchecked" };
+  if (verdict === null || verdict.adult === "UNKNOWN" || verdict.violence === "UNKNOWN") return { ok: false, because: "unchecked" };
+  return decideSafe(verdict);
 }
 
 /**
@@ -430,8 +460,9 @@ export async function copyAsFace(uid: string, pictureId: string): Promise<string
     return null;
   }
 
-  const [verdict] = await realSafeSearch([bytes]);
-  if (!verdict || !decideSafe(verdict).ok) return null;
+  await chargeVision(uid, "faces", 1);
+  const [verdict] = await safeSearchOrNothing([bytes]);
+  if (!decideOwnPicture(bytes, verdict ?? null).ok) return null;
 
   const path = `avatars/${uid}/${pictureId}`;
   await bucket.file(path).save(bytes, { contentType: "image/jpeg", resumable: false });

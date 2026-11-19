@@ -74,7 +74,9 @@ import {
   builtInWant,
   cleanId,
   judgeHits,
+  keepsNumbers,
   otherLayout,
+  sameName,
   trimmedTail,
   typeOfNames,
   wantKey,
@@ -219,6 +221,11 @@ export async function routePictures(
     return;
   }
   if (method === "POST" && rest.length === 1 && rest[0] === "keep") {
+    // A guest adds no picture from the web, as with a link (QA D9, 19.11.2026): refused before anything is fetched.
+    if (identity.isAnonymous) {
+      response.status(403).json({ error: "Sign in first", code: "NOT_SIGNED_IN" });
+      return;
+    }
     const url = (body as { url?: unknown } | null)?.url;
     if (typeof url !== "string") {
       response.status(400).json({ error: "Which picture?", code: "NO_URL" });
@@ -339,9 +346,17 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   const first = await searchAsTyped(input, metered);
   if (first === null || "limited" in first) return first;
   let answer: PicturesAnswer = first;
-  if (input.page === 1 && !busyAnswer(first) && goodMatches(input.typed, first.items) === 0 && !isDemoEmulator()) {
-    const retried = await secondAttempt(input, first);
-    answer = retried ?? (await webWhenEmpty(input, first));
+  if (input.page === 1 && !busyAnswer(first) && !isDemoEmulator()) {
+    // The web's page titles hold every misspelling: only the catalogues say whether a name was found.
+    const catalogued = first.items.filter((hit) => hit.source !== "web");
+    if (goodMatches(input.typed, catalogued) === 0) {
+      const retried = await secondAttempt(input, first, false);
+      answer = retried ?? (await webWhenEmpty(input, first));
+    } else if (!catalogued.some((hit) => namedAs(hit, input.typed))) {
+      // Something only like it, "Physics of the intersteller medium" for "Intersteller" (QA D6, 19.11.2026):
+      // Wikipedia's spelling is given when it finds a thing by exactly that name.
+      answer = (await secondAttempt(input, first, true)) ?? first;
+    }
   }
   const typed = answer.searchedAs?.text ?? input.typed;
   const retried = answer.searchedAs !== undefined;
@@ -349,19 +364,31 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   return { ...sent, items: withChosen(judgeHits(answer.items, typed, input.scope, input.want ?? null, retried, input.page === 1), chosen, retried) };
 }
 
-/** The second attempt's answer for [input], or null when none is worth giving. */
-async function secondAttempt(input: SearchInput, first: PicturesAnswer): Promise<PicturesAnswer | null> {
+/** Whether [hit] is called [typed], by its title or its other name. */
+function namedAs(hit: PictureHit, typed: string): boolean {
+  return sameName(hit.title, typed) || sameName(hit.alias, typed);
+}
+
+/**
+ * The second attempt's answer for [input], or null when none is worth giving. [spellingOnly]: the first
+ * found something like the name, so only Wikipedia's spelling is tried, and taken only when it finds a
+ * thing by exactly that name. A spelling never changes a number: "1984" is no "1988" (QA D2, 19.11.2026).
+ */
+async function secondAttempt(input: SearchInput, first: PicturesAnswer, spellingOnly: boolean): Promise<PicturesAnswer | null> {
   const chosenRef = getFirestore().collection(CACHE).doc(cacheKey(input, false, "retry"));
   const chosen = await chosenRef.get().catch(() => null);
   const at = chosen?.get("at")?.toMillis?.() ?? 0;
   const known = chosen?.exists && Date.now() - at < CACHE_FRESH_MS ? (chosen.get("tries") as { text: string; how: Retry }[] | undefined) : undefined;
-  const tries = known ?? (await retryTexts(input.typed, input.language, first.items.length === 0));
+  const tries = known ?? (await retryTexts(input.typed, input.language, first.items.length === 0, spellingOnly));
   if (!known) await chosenRef.set({ tries, at: Timestamp.now() }).catch(() => undefined);
-  for (const attempt of tries.slice(0, 2)) {
+  // Kept before 19.11.2026, a spelling may still change a number.
+  const worth = tries.filter((attempt) => (attempt.how !== "spelling" || keepsNumbers(input.typed, attempt.text)) && (!spellingOnly || attempt.how === "spelling"));
+  for (const attempt of worth.slice(0, 2)) {
     // The same search, so it is not counted again; the web, if any, was asked for the text as typed.
     const again = await searchAsTyped({ ...input, typed: attempt.text, noWeb: true }, false);
     if (again === null || "limited" in again || busyAnswer(again)) continue;
     if (goodMatches(attempt.text, again.items) === 0) continue;
+    if (spellingOnly && !again.items.some((hit) => hit.source !== "web" && namedAs(hit, attempt.text))) continue;
     // What the text as typed found stays below.
     const rest = first.rest === undefined && again.rest === undefined ? {} : { rest: again.rest === true || first.rest === true };
     return { ...again, items: appendNew(again.items, first.items), searchedAs: attempt, ...rest };
@@ -397,8 +424,12 @@ async function webWhenEmpty(input: SearchInput, answer: PicturesAnswer): Promise
  * The texts a second attempt tries, best first: the title without its tail, the other layout, Wikipedia's
  * spelling. The other layout only when nothing at all was found: "Крёстный отец" is no Latin typed wrong.
  */
-async function retryTexts(typed: string, language: string, nothing: boolean): Promise<{ text: string; how: Retry }[]> {
+async function retryTexts(typed: string, language: string, nothing: boolean, spellingOnly: boolean): Promise<{ text: string; how: Retry }[]> {
   const tries: { text: string; how: Retry }[] = [];
+  if (spellingOnly) {
+    const spelled = await spelling(typed, language);
+    return spelled ? [{ text: spelled, how: "spelling" }] : [];
+  }
   const trimmed = trimmedTail(typed);
   if (trimmed) tries.push({ text: trimmed, how: "trimmed" });
   const layout = nothing ? otherLayout(trimmed ?? typed, language) : null;

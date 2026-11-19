@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addressOf, discardCopiesIn, isPhotoCopiedFrom, withoutPhotosFrom, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
+import { addressOf, decideOwnPicture, discardCopiesIn, isPhotoCopiedFrom, withoutPhotosFrom, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
 import type { SafeSearchVerdict } from "../src/safety";
 
 describe("taking a list down", () => {
@@ -136,5 +136,22 @@ describe("an erased author's photographs in other people's copies", () => {
       previewImages: [catalogue],
     });
     assert.equal(withoutPhotosFrom({ items: [{ imageUrl: catalogue }], coverImageUrl: null, previewImages: [] }, "COPY", ORIGINAL), null);
+  });
+});
+
+describe("whether an own photograph may be shown to everybody (QA, 19.11.2026)", () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+  const calm: SafeSearchVerdict = { adult: "VERY_UNLIKELY", racy: "UNLIKELY", violence: "VERY_UNLIKELY" };
+  it("takes a still Vision judged safe", () => {
+    assert.deepEqual(decideOwnPicture(jpeg, calm), { ok: true });
+    assert.deepEqual(decideOwnPicture(jpeg, { ...calm, adult: "VERY_LIKELY" }), { ok: false, because: "adult" });
+  });
+  it("refuses what Vision could not judge: no answer, an unknown verdict, an animation", () => {
+    assert.deepEqual(decideOwnPicture(jpeg, null), { ok: false, because: "unchecked" });
+    assert.deepEqual(decideOwnPicture(jpeg, { ...calm, adult: "UNKNOWN" }), { ok: false, because: "unchecked" });
+    assert.deepEqual(decideOwnPicture(jpeg, { ...calm, violence: "UNKNOWN" }), { ok: false, because: "unchecked" });
+    const frame = [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 0, 0];
+    const gif = Buffer.from([...Buffer.from("GIF89a"), 1, 0, 1, 0, 0, 0, 0, ...frame, ...frame, 0x3b]);
+    assert.deepEqual(decideOwnPicture(gif, calm), { ok: false, because: "unchecked" });
   });
 });

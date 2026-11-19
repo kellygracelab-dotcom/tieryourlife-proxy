@@ -5,6 +5,7 @@ import {
   cleanId,
   fitsType,
   judgeHits,
+  keepsNumbers,
   nameKey,
   otherLayout,
   otherScript,
@@ -184,6 +185,12 @@ describe("the second attempt", () => {
     assert.equal(wikipediaSuggestion({ query: { searchinfo: { suggestion: "interstellar" } } }, "Intersteller"), "interstellar");
     assert.equal(wikipediaSuggestion({ query: { searchinfo: { suggestion: "interstellar" } } }, "Interstellar"), null);
     assert.equal(wikipediaSuggestion({ query: {} }, "x"), null);
+    // QA D2, 19.11.2026: "1984" became "1988", the 1988 Olympics first.
+    assert.equal(wikipediaSuggestion({ query: { searchinfo: { suggestion: "1988" } } }, "1984"), null);
+    assert.equal(wikipediaSuggestion({ query: { searchinfo: { suggestion: "blade runner 2049" } } }, "blade runer 2049"), "blade runner 2049");
+    assert.equal(keepsNumbers("Rocky 2", "rocky 3"), false);
+    assert.equal(keepsNumbers("Rocky", "rocky 2"), false);
+    assert.equal(keepsNumbers("Intersteller", "interstellar"), true);
     assert.equal(wikipediaOf("pt-BR"), "pt");
     assert.equal(wikipediaOf("zh-Hant"), "zh");
   });

@@ -43,7 +43,8 @@ function atLeast(value: Likelihood, threshold: Likelihood): boolean {
   return seen >= bar;
 }
 
-export type SafetyRefusal = "adult" | "racy" | "violence";
+/** "unchecked" (since 19.11.2026): an own photograph Vision cannot judge, an animation or one it could not read. */
+export type SafetyRefusal = "adult" | "racy" | "violence" | "unchecked";
 
 export type SafetyDecision = { ok: true } | { ok: false; because: SafetyRefusal };
 

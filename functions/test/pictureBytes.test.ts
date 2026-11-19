@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { UPLOADS_PER_DAY, isAnimated, judgeUpload, looksLikePicture, ownPictureOwner } from "../src/pictureBytes";
+import { GUEST_UPLOADS_PER_DAY, UPLOADS_PER_DAY, isAnimated, judgeUpload, looksLikePicture, ownPictureOwner } from "../src/pictureBytes";
 import { gifOf, webpOf } from "./pictureFixtures";
 import { STUB_PICTURE } from "../src/emulator";
 
@@ -47,6 +47,13 @@ describe("judgeUpload", () => {
     assert.equal(await judgeUpload(jpeg, async () => UPLOADS_PER_DAY + 1, live), "overDailyLimit");
   });
 
+  it("takes fewer a day from a guest", async () => {
+    const guest = async () => true;
+    assert.equal(await judgeUpload(jpeg, async () => GUEST_UPLOADS_PER_DAY, live, guest), "keep");
+    assert.equal(await judgeUpload(jpeg, async () => GUEST_UPLOADS_PER_DAY + 1, live, guest), "overDailyLimit");
+    assert.equal(await judgeUpload(jpeg, async () => GUEST_UPLOADS_PER_DAY + 1, live, async () => false), "keep");
+  });
+
   it("does not count a file that is not a picture", async () => {
     let counted = false;
     const verdict = await judgeUpload(ascii("%PDF"), async () => {
@@ -88,6 +95,14 @@ describe("isAnimated", () => {
     assert.equal(isAnimated(extendedStill), false);
     assert.equal(isAnimated(flagged), true);
     assert.equal(isAnimated(chunked), true);
+  });
+
+  it("knows an animated PNG by its acTL chunk before the image data", () => {
+    const chunk = (name: string, data: number[]) => [...[0, 0, 0, data.length], ...[...name].map((c) => c.charCodeAt(0)), ...data, 0, 0, 0, 0];
+    const png = (...chunks: number[][]) => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunks.flat()]);
+    const header = chunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]);
+    assert.equal(isAnimated(png(header, chunk("acTL", [0, 0, 0, 2, 0, 0, 0, 0]), chunk("IDAT", [1]))), true);
+    assert.equal(isAnimated(png(header, chunk("IDAT", [1]), chunk("IEND", []))), false);
   });
 
   it("leaves a JPEG, a PNG and bytes cut short alone", () => {
