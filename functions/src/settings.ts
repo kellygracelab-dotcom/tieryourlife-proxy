@@ -24,8 +24,8 @@ export const APPEARANCE_DOCUMENT = "appearance";
 export const COLOUR_NAMES = ["lavender", "matcha", "peach", "sky", "phone", "custom"] as const;
 export type ColourName = (typeof COLOUR_NAMES)[number];
 
-/** The hue each ready colour is built from (HCT, 0-359); lavender keeps its own hand-made colours. */
-export const PRESET_HUES: Readonly<Record<"matcha" | "peach" | "sky", number>> = { matcha: 125, peach: 42, sky: 212 };
+/** The ready colours with fixed tables in test/theme-vectors.json; lavender keeps each client's own hand-made colours. */
+export const PRESET_NAMES = ["matcha", "peach", "sky"] as const;
 
 export interface ColourChoice {
   name: ColourName;
