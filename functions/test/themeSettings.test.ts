@@ -6,13 +6,13 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Response } from "express";
 import type { Identity } from "../src/auth";
 import { CLOCK_AHEAD_MS } from "../src/started";
-import { COLOUR_NAMES, PRESET_HUES, colourLands, readColourBody, settingsRoute, settingsWire } from "../src/settings";
+import { COLOUR_NAMES, PRESET_NAMES, colourLands, readColourBody, settingsRoute, settingsWire } from "../src/settings";
 import { install, type Fakes } from "./fakeFirebase";
 
 interface Vectors {
   tolerance: number;
   names: Record<string, string>;
-  presets: Record<string, { hue: number; seed: string; mainButtonNearestTier: Record<"light" | "dark", { deltaE2000: number }> }>;
+  presets: Record<string, { palettes: Record<string, { hue: number; chroma: number }>; mainButtonNearestTier: Record<"light" | "dark", { deltaE2000: number }>; light: Record<string, string>; dark: Record<string, string> }>;
   ownHues: { hue: number; light: Record<string, string>; dark: Record<string, string> }[];
   settingValues: { accepted: unknown[]; refused: { body: unknown; detail: string }[] };
 }
@@ -28,20 +28,21 @@ describe("the colour vectors", () => {
     assert.equal(run.status, 0, run.stderr);
   });
 
-  it("name every colour the server takes, and the hues the server knows", () => {
+  it("name every colour the server takes, with a table for each ready one", () => {
     assert.deepEqual(Object.keys(vectors.names).sort(), [...COLOUR_NAMES].sort());
-    assert.deepEqual(Object.fromEntries(Object.entries(vectors.presets).map(([name, one]) => [name, one.hue])), PRESET_HUES);
+    assert.deepEqual(Object.keys(vectors.presets).sort(), [...PRESET_NAMES].sort());
   });
 
-  it("keep each ready colour's main button further from the nearest tier than today's lavender is", () => {
+  // The Designer's picks of 19.11.2026: matcha dark 9.2 and sky dark 9.5 were taken knowingly.
+  it("keep each ready colour's main button clear of the nearest tier colour", () => {
     for (const [name, one] of Object.entries(vectors.presets)) {
-      assert.ok(one.mainButtonNearestTier.light.deltaE2000 >= 10, `${name} light`);
-      assert.ok(one.mainButtonNearestTier.dark.deltaE2000 >= 10, `${name} dark`);
+      assert.ok(one.mainButtonNearestTier.light.deltaE2000 >= 9, `${name} light`);
+      assert.ok(one.mainButtonNearestTier.dark.deltaE2000 >= 9, `${name} dark`);
     }
   });
 
-  it("give every hue all the roles, light and dark", () => {
-    for (const one of vectors.ownHues) {
+  it("give every ready colour and every hue all the roles, light and dark", () => {
+    for (const one of [...Object.values(vectors.presets), ...vectors.ownHues]) {
       assert.equal(Object.keys(one.light).length, 36);
       assert.deepEqual(Object.keys(one.dark), Object.keys(one.light));
       for (const colour of [...Object.values(one.light), ...Object.values(one.dark)]) assert.match(colour, /^#[0-9A-F]{6}$/);

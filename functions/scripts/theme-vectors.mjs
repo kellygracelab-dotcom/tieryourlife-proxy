@@ -7,17 +7,27 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deepStrictEqual } from "node:assert/strict";
-import { Hct, SchemeTonalSpot, hexFromArgb, argbFromHex, labFromArgb, MaterialDynamicColors } from "@material/material-color-utilities";
+import { DynamicScheme, Hct, TonalPalette, hexFromArgb, argbFromHex, labFromArgb, MaterialDynamicColors } from "@material/material-color-utilities";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const file = join(here, "..", "test", "theme-vectors.json");
 const pkg = JSON.parse(readFileSync(join(here, "..", "node_modules", "@material", "material-color-utilities", "package.json"), "utf8"));
 
-/** Kept in step with PRESET_HUES in src/settings.ts (the test checks it). */
-const PRESETS = { matcha: 125, peach: 42, sky: 212 };
+/**
+ * The ready colours, chosen by the Designer on 19.11.2026 against artboard 59
+ * (`_coordination/colour-presets-2026-11-19/PRESETS.md`): the main colour and
+ * the neutral tint each their own hue and chroma, so matcha is not khaki nor sky turquoise.
+ */
+const PRESETS = {
+  matcha: { primary: { hue: 136, chroma: 28 }, neutral: { hue: 138, chroma: 7 } },
+  peach: { primary: { hue: 41, chroma: 38 }, neutral: { hue: 71, chroma: 4 } },
+  sky: { primary: { hue: 220, chroma: 36 }, neutral: { hue: 237, chroma: 9 } },
+};
 const OWN_HUES = [0, 30, 60, 90, 150, 180, 240, 270, 277, 300, 330, 359];
 const SEED_CHROMA = 36;
 const SEED_TONE = 50;
+/** The own colour's neutral chroma (its neutral variant +2); 10 turned warm hues pink (Designer, 19.11.2026). */
+const OWN_NEUTRAL = 8;
 
 const ROLES = [
   "primary", "onPrimary", "primaryContainer", "onPrimaryContainer", "inversePrimary",
@@ -74,16 +84,27 @@ function nearestTier(primary, tiers) {
   return { tier, deltaE2000: Math.round(distance * 10) / 10 };
 }
 
-function palette(hue) {
-  const seed = Hct.from(hue, SEED_CHROMA, SEED_TONE).toInt();
-  const roles = (dark) => {
-    const scheme = new SchemeTonalSpot(Hct.fromInt(seed), dark, 0);
-    return Object.fromEntries(ROLES.map((role) => [role, hex(MaterialDynamicColors[role].getArgb(scheme))]));
-  };
-  const light = roles(false), dark = roles(true);
+/** The 36 roles of a TonalSpot scheme (spec 2021, contrast 0) over these five palettes. */
+function rolesOf(palettes, dark) {
+  const tonal = ({ hue, chroma }) => TonalPalette.fromHueAndChroma(hue, chroma);
+  const scheme = new DynamicScheme({
+    sourceColorArgb: tonal(palettes.primary).keyColor.toInt(),
+    variant: 2, // Variant.TONAL_SPOT (0.3.0 does not export the enum)
+    contrastLevel: 0,
+    isDark: dark,
+    primaryPalette: tonal(palettes.primary),
+    secondaryPalette: tonal(palettes.secondary),
+    tertiaryPalette: tonal(palettes.tertiary),
+    neutralPalette: tonal(palettes.neutral),
+    neutralVariantPalette: tonal(palettes.neutralVariant),
+  });
+  return Object.fromEntries(ROLES.map((role) => [role, hex(MaterialDynamicColors[role].getArgb(scheme))]));
+}
+
+function withRoles(palettes) {
+  const light = rolesOf(palettes, false), dark = rolesOf(palettes, true);
   return {
-    hue,
-    seed: hex(seed),
+    palettes,
     mainButtonNearestTier: {
       light: nearestTier(argbFromHex(light.primary), TIERS.light),
       dark: nearestTier(argbFromHex(dark.primary), TIERS.dark),
@@ -93,14 +114,44 @@ function palette(hue) {
   };
 }
 
+/** A ready colour: its own five palettes, TonalSpot's secondary and tertiary around its main hue. */
+function preset({ primary, neutral }) {
+  return withRoles({
+    primary,
+    secondary: { hue: primary.hue, chroma: 16 },
+    tertiary: { hue: (primary.hue + 60) % 360, chroma: 24 },
+    neutral,
+    neutralVariant: { hue: neutral.hue, chroma: neutral.chroma + 2 },
+  });
+}
+
+/** The person's own colour: TonalSpot from one hue, its neutrals a little stronger (8 and 10 in place of 6 and 8). */
+function ownColour(hue) {
+  const seed = Hct.from(hue, SEED_CHROMA, SEED_TONE).toInt();
+  const at = Hct.fromInt(seed).hue;
+  return {
+    hue,
+    seed: hex(seed),
+    ...withRoles({
+      primary: { hue: at, chroma: 36 },
+      secondary: { hue: at, chroma: 16 },
+      tertiary: { hue: (at + 60) % 360, chroma: 24 },
+      neutral: { hue: at, chroma: OWN_NEUTRAL },
+      neutralVariant: { hue: at, chroma: OWN_NEUTRAL + 2 },
+    }),
+  };
+}
+
 export function build() {
   return {
     about:
       "Colour themes (Danylo, 18.11.2026; artboards 58-59). Web and Android copy this file into their tests unchanged and must build the same colours. Made by functions/scripts/theme-vectors.mjs; contract in CONTRACT.md, boards, Settings.",
     algorithm: {
       library: `@material/material-color-utilities ${pkg.version}`,
-      seed: `Hct.from(hue, ${SEED_CHROMA}, ${SEED_TONE}) as an ARGB colour; the scheme is built from Hct.fromInt of that colour`,
-      scheme: "SchemeTonalSpot (spec 2021), contrast level 0; light and dark from the same seed",
+      scheme:
+        "DynamicScheme with variant TONAL_SPOT (spec 2021), contrast level 0, over five TonalPalette.fromHueAndChroma palettes (primary, secondary, tertiary, neutral, neutralVariant); light and dark from the same palettes",
+      presets: "matcha, peach and sky are the fixed tables under presets: a client takes their light and dark roles as they are (palettes say how they were made)",
+      ownColour: `seed = Hct.from(hue, ${SEED_CHROMA}, ${SEED_TONE}) as an ARGB colour, h = Hct.fromInt(seed).hue; palettes primary (h, 36), secondary (h, 16), tertiary (h + 60, 24), neutral (h, ${OWN_NEUTRAL}), neutralVariant (h, ${OWN_NEUTRAL + 2}). With neutral 6 and 8 this is exactly SchemeTonalSpot.`,
       tolerance: "each of red, green and blue within 1 of the file",
       mainButton: "primary; mainButtonNearestTier is its CIEDE2000 distance to the closest tier colour S-D (today's lavender: 9.6 light, 12.8 dark)",
     },
@@ -108,14 +159,14 @@ export function build() {
     tiers: TIERS,
     names: {
       lavender: "the default and today's look: each client's own hand-made colours, not built from a hue",
-      matcha: `built from hue ${PRESETS.matcha}`,
-      peach: `built from hue ${PRESETS.peach}`,
-      sky: `built from hue ${PRESETS.sky}`,
+      matcha: "the fixed table presets.matcha",
+      peach: "the fixed table presets.peach",
+      sky: "the fixed table presets.sky",
       phone: "Android 12+: the phone's own wallpaper colours; the website and older Android show lavender",
-      custom: "built from the setting's hue",
+      custom: "built from the setting's hue (algorithm.ownColour)",
     },
-    presets: Object.fromEntries(Object.entries(PRESETS).map(([name, hue]) => [name, palette(hue)])),
-    ownHues: OWN_HUES.map(palette),
+    presets: Object.fromEntries(Object.entries(PRESETS).map(([name, made]) => [name, preset(made)])),
+    ownHues: OWN_HUES.map(ownColour),
     settingValues: {
       accepted: [
         { name: "lavender", hue: null, changedAt: 1795500000000 },
