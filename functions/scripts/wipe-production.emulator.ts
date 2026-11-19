@@ -98,8 +98,8 @@ async function seed(): Promise<void> {
   await Promise.all(FILES.map((name) => bucket.file(name).save(Buffer.from(name), { resumable: false, contentType: "image/webp" })));
   const auth = getAuth(app);
   const people: [string, string][] = [
-    [OWNER, "kellygracelab@gmail.com"],
-    [PARTNER, "ArtimanJustice@gmail.com"],
+    [OWNER, "owner@example.com"],
+    [PARTNER, "partner@example.com"],
     [STRANGER, "stranger@example.com"],
     [MODERATOR, "moderator@example.com"],
   ];
@@ -112,7 +112,8 @@ async function seed(): Promise<void> {
 
 /** The script as Danylo runs it. */
 function wipe(args: string[], typed = ""): { status: number | null; out: string } {
-  const result = spawnSync(process.execPath, [join(__dirname, "wipe-production.js"), "--project", PROJECT, "--bucket", BUCKET, ...args], {
+  const keep = args.some((arg) => arg.startsWith("--keep")) ? [] : ["--keep", OWNER, "--keep", PARTNER];
+  const result = spawnSync(process.execPath, [join(__dirname, "wipe-production.js"), "--project", PROJECT, "--bucket", BUCKET, ...keep, ...args], {
     input: typed,
     encoding: "utf8",
   });
@@ -159,9 +160,24 @@ describe("wiping production, on the emulators", () => {
     has(/^KEEP\s+storage\s+sections\/games\/\s+1 files/m);
     has(/^KEEP-UNSURE\s+storage\s+mystery\/\*\s+1 files/m);
     has(/^DELETE\s+auth\s+users\s+3 users\s+everybody else, 1 of them guests/m);
-    has(/^KEEP\s+auth\s+user\s+1 user\s+kellygracelab@gmail.com owner-uid/m);
-    has(/^KEEP\s+auth\s+user\s+1 user\s+artimanjustice@gmail.com partner-uid/m);
+    has(/^KEEP\s+auth\s+user\s+1 user\s+owner@example\.com owner-uid/m);
+    has(/^KEEP\s+auth\s+user\s+1 user\s+partner@example\.com partner-uid/m);
     assert.doesNotMatch(out, /WARNING/);
+    assert.deepEqual(await snapshot(), seeded);
+  });
+
+  it("refuses to run without a list of accounts to keep", async () => {
+    const { status, out } = wipe(["--execute", "--keep-file", join(__dirname, "no-such-keep-file.json")], `${PROJECT}\n`);
+    assert.equal(status, 2, out);
+    assert.match(out, /No account to keep/);
+    assert.deepEqual(await snapshot(), seeded);
+  });
+
+  it("refuses to execute when a uid to keep belongs to nobody", async () => {
+    const { status, out } = wipe(["--execute", "--keep", OWNER, "--keep", "partner-uid-typo"], `${PROJECT}\n`);
+    assert.equal(status, 2, out);
+    assert.match(out, /WARNING: no Auth user has uid partner-uid-typo/);
+    assert.match(out, /Nothing was changed/);
     assert.deepEqual(await snapshot(), seeded);
   });
 

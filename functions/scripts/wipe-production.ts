@@ -2,8 +2,14 @@
  * A one-off wipe of everything people made: lists, boards, rankings, follows,
  * proposals, reports, the log, their files and their Auth accounts. What the
  * service needs to run stays: the built-in sections, roles, config and the
- * owner's two accounts. A dry run unless `--execute`, and `--execute` asks for
- * the project id typed back before it deletes anything.
+ * accounts it is told to keep. A dry run unless `--execute`, and `--execute`
+ * asks for the project id typed back before it deletes anything.
+ *
+ * The accounts kept are named by uid, never written here (the repository is
+ * public): `--keep <uid>` once per account, or a file `wipe-production.keep.json`
+ * in the folder it runs from, `{ "uids": ["…", "…"] }`, which git ignores
+ * (`--keep-file <path>` names another). Without either it refuses to run, and
+ * a uid no account has stops `--execute`: a typo must not wipe the owner.
  *
  *   npm run wipe-production -- --project tieryourlife             (dry run)
  *   npm run wipe-production -- --project tieryourlife --execute
@@ -11,6 +17,7 @@
  * Runs on application default credentials, or on the emulators when all
  * three emulator variables are set.
  */
+import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { applicationDefault, initializeApp, type App } from "firebase-admin/app";
 import { getAuth, type UserRecord } from "firebase-admin/auth";
@@ -20,7 +27,43 @@ import { BUILT_IN_SECTION_IDS } from "../src/sections";
 
 export type Verdict = "DELETE" | "KEEP" | "KEEP-UNSURE";
 
-export const KEPT_EMAILS: readonly string[] = ["kellygracelab@gmail.com", "artimanjustice@gmail.com"];
+/** Where the accounts to keep are listed when no `--keep` or `--keep-file` says otherwise. Ignored by git. */
+export const DEFAULT_KEEP_FILE = "wipe-production.keep.json";
+
+const UID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** The uids in a keep file's text, `{ "uids": [...] }`, or why it cannot be read. */
+export function readKeepFile(text: string): string[] | { error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { error: "The keep file is not JSON." };
+  }
+  const uids = (parsed as { uids?: unknown } | null)?.uids;
+  if (!Array.isArray(uids) || uids.length === 0) return { error: 'The keep file needs { "uids": ["<uid>", ...] } with at least one uid.' };
+  const wrong = uids.find((uid) => typeof uid !== "string" || !UID.test(uid));
+  if (wrong !== undefined) return { error: `Not a uid in the keep file: ${JSON.stringify(wrong)}` };
+  return [...new Set(uids as string[])];
+}
+
+/**
+ * The accounts to keep: those passed as `--keep`, else those in `--keep-file`,
+ * else those in the default file. None at all is an error, so a missing list
+ * can never mean "keep nobody".
+ */
+export function keptUids(options: Pick<Options, "keep" | "keepFile">, readText: (path: string) => string | null): Set<string> | { error: string } {
+  if (options.keep.length > 0) return new Set(options.keep);
+  const path = options.keepFile ?? DEFAULT_KEEP_FILE;
+  const text = readText(path);
+  if (text === null) {
+    return { error: `No account to keep: pass --keep <uid> once per account, or list them in ${path} as { "uids": [...] }. Nothing was read or changed.` };
+  }
+  const uids = readKeepFile(text);
+  return "error" in uids ? { error: `${path}: ${uids.error} Nothing was read or changed.` } : new Set(uids);
+}
+
+const readTextOrNull = (path: string): string | null => (existsSync(path) ? readFileSync(path, "utf8") : null);
 
 interface CollectionRule {
   /** SOME keeps the documents `keepsDocument` says are the built-ins' and deletes the rest. */
@@ -93,31 +136,43 @@ export function storageRule(path: string): StorageRule {
   return { verdict: "KEEP-UNSURE", group: path.includes("/") ? `${top}/*` : path, what: "not written by any code read for this script" };
 }
 
-export function keepsUser(user: Pick<UserRecord, "email" | "providerData">): boolean {
-  const emails = [user.email, ...user.providerData.map((one) => one.email)];
-  return emails.some((email) => typeof email === "string" && KEPT_EMAILS.includes(email.toLowerCase()));
+export function keepsUser(user: Pick<UserRecord, "uid">, kept: ReadonlySet<string>): boolean {
+  return kept.has(user.uid);
 }
 
 export interface Options {
   projectId: string;
   bucket: string;
   execute: boolean;
+  /** Uids passed as `--keep`. */
+  keep: string[];
+  keepFile: string | null;
 }
 
 export function readOptions(argv: readonly string[]): Options | { error: string } {
   let projectId: string | null = null;
   let bucket: string | null = null;
   let execute = false;
+  const keep: string[] = [];
+  let keepFile: string | null = null;
   for (let at = 0; at < argv.length; at++) {
     const [flag, inline] = argv[at].split(/=(.*)/s, 2);
     const value = () => inline ?? argv[++at];
     if (flag === "--project") projectId = value() ?? null;
     else if (flag === "--bucket") bucket = value() ?? null;
     else if (flag === "--execute" && inline === undefined) execute = true;
-    else return { error: `Unknown argument: ${argv[at]}` };
+    else if (flag === "--keep") {
+      const uid = value();
+      if (uid === undefined || !UID.test(uid)) return { error: `--keep wants a uid, not ${JSON.stringify(uid ?? "")}` };
+      keep.push(uid);
+    } else if (flag === "--keep-file") {
+      keepFile = value() ?? null;
+      if (!keepFile) return { error: "--keep-file wants a path" };
+    } else return { error: `Unknown argument: ${argv[at]}` };
   }
   if (!projectId) return { error: "Which project? Pass --project <id>." };
-  return { projectId, bucket: bucket ?? `${projectId}.firebasestorage.app`, execute };
+  if (keep.length > 0 && keepFile !== null) return { error: "Pass --keep or --keep-file, not both." };
+  return { projectId, bucket: bucket ?? `${projectId}.firebasestorage.app`, execute, keep: [...new Set(keep)], keepFile };
 }
 
 const EMULATOR_VARIABLES = ["FIRESTORE_EMULATOR_HOST", "FIREBASE_AUTH_EMULATOR_HOST", "FIREBASE_STORAGE_EMULATOR_HOST"];
@@ -149,10 +204,11 @@ export interface Plan {
   storage: StoragePlan[];
   keptUsers: UserRecord[];
   doomedUsers: UserRecord[];
-  missingEmails: string[];
+  /** Uids to keep that no account has. */
+  missingUids: string[];
 }
 
-export async function makePlan(app: App, bucket: string): Promise<Plan> {
+export async function makePlan(app: App, bucket: string, kept: ReadonlySet<string>): Promise<Plan> {
   const db = getFirestore(app);
   // The known ones too: a collection holding only subcollections, like accounts can, may not be listed.
   const listed = (await db.listCollections()).map((one) => one.id);
@@ -170,15 +226,15 @@ export async function makePlan(app: App, bucket: string): Promise<Plan> {
   }
 
   const users = await allUsers(app);
-  const keptUsers = users.filter(keepsUser);
-  const found = new Set(keptUsers.flatMap((user) => [user.email, ...user.providerData.map((one) => one.email)]).map((email) => email?.toLowerCase()));
+  const keptUsers = users.filter((user) => keepsUser(user, kept));
+  const found = new Set(keptUsers.map((user) => user.uid));
   return {
     collections,
     boards,
     storage: [...groups.values()].sort((left, right) => left.rule.group.localeCompare(right.rule.group)),
     keptUsers,
-    doomedUsers: users.filter((user) => !keepsUser(user)),
-    missingEmails: KEPT_EMAILS.filter((email) => !found.has(email)),
+    doomedUsers: users.filter((user) => !keepsUser(user, kept)),
+    missingUids: [...kept].filter((uid) => !found.has(uid)),
   };
 }
 
@@ -239,7 +295,7 @@ export function describePlan(plan: Plan): string[] {
   for (const user of plan.keptUsers) {
     lines.push(row("KEEP", "auth", "user", "1 user", `${describeUser(user)}; its boards, lists and follows still go`));
   }
-  for (const email of plan.missingEmails) lines.push(`WARNING: no Auth user has ${email}, so none is kept for it.`);
+  for (const uid of plan.missingUids) lines.push(`WARNING: no Auth user has uid ${uid}: --execute refuses until the keep list is right.`);
   return lines;
 }
 
@@ -287,12 +343,21 @@ async function main(): Promise<number> {
     console.error(`Set all of ${EMULATOR_VARIABLES.join(", ")} or none of them.`);
     return 2;
   }
+  const kept = keptUids(options, readTextOrNull);
+  if ("error" in kept) {
+    console.error(kept.error);
+    return 2;
+  }
   console.log(`Project ${options.projectId}, bucket ${options.bucket}, ${target === "live" ? "LIVE" : "local emulators"}.`);
   console.log(options.execute ? "EXECUTE: this deletes what is listed below." : "Dry run: nothing is changed.");
 
   const app = initializeApp({ credential: applicationDefault(), projectId: options.projectId, storageBucket: options.bucket }, "wipe");
-  const plan = await makePlan(app, options.bucket);
+  const plan = await makePlan(app, options.bucket, kept);
   describePlan(plan).forEach((line) => console.log(line));
+  if (options.execute && plan.missingUids.length > 0) {
+    console.log("\nA uid to keep belongs to no account (see the warning above). Nothing was changed.");
+    return 2;
+  }
   if (!options.execute) {
     console.log("\nDry run: nothing was changed. Add --execute to delete what is marked DELETE.");
     console.log(BEFORE_AND_AFTER);

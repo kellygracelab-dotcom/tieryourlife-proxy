@@ -7,3 +7,5 @@ lib/
 .env
 .DS_Store
 lib-test/
+# The accounts a production wipe keeps, by uid: never in the public repository.
+wipe-production.keep.json
