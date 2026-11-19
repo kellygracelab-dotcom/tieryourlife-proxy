@@ -48,6 +48,22 @@ export function pointsAt(url: unknown, bucket: string, path: string): boolean {
   return normal === prefix || normal.startsWith(`${prefix}?`) || normal.startsWith(`${prefix}#`);
 }
 
+/**
+ * Whether `POST /lists/face/{pictureId}` was a photo uploaded from the device
+ * (`?upload=1`). Only that fills the slot. A card's picture made a face (cut,
+ * moved, or from one's own lists) goes the same route without it, as every
+ * client before sent: it must never take the slot or delete the photo there.
+ */
+export function isPhotoUpload(query: Record<string, unknown>): boolean {
+  const value = Array.isArray(query.upload) ? query.upload[0] : query.upload;
+  return value === "1" || value === "true";
+}
+
+/** After a face was copied: an upload from the device goes in the slot; anything else leaves it alone (null). */
+export async function slotAfterFace(uid: string, pictureId: string, url: string, query: Record<string, unknown>, nowMs = Date.now()): Promise<PhotoSlot | null> {
+  return isPhotoUpload(query) ? keepUploadedPhoto(uid, pictureId, url, nowMs) : null;
+}
+
 /** Puts a new upload in the slot; the photo it replaces goes everywhere it was shown, in favour of the new one. */
 export async function keepUploadedPhoto(uid: string, pictureId: string, url: string, nowMs = Date.now()): Promise<PhotoSlot> {
   const db = getFirestore();

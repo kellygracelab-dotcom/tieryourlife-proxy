@@ -1,7 +1,7 @@
 import { defineString } from "firebase-functions/params";
 import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, keepCopiesForLater, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { copySwitches } from "./pictureCopies";
-import { keepUploadedPhoto, removeUploadedPhoto, restoreUploadedPhoto, UNDO_WINDOW_MS } from "./facePhoto";
+import { removeUploadedPhoto, restoreUploadedPhoto, slotAfterFace, UNDO_WINDOW_MS } from "./facePhoto";
 import { onRequest } from "firebase-functions/v2/https";
 import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
@@ -839,7 +839,7 @@ export const lists = onRequest(
               });
         case "POST":
           if (makingAFace) {
-            return await makeFace(response, identity, segments[1] ?? "");
+            return await makeFace(response, identity, segments[1] ?? "", query);
           }
           if (aboutAnAuthor) {
             return await follow(response, identity, authorUid);
@@ -897,7 +897,7 @@ export const lists = onRequest(
  * somewhere everybody may, looked at by Vision on the same terms as a
  * published board. Catalogue art already has an address of its own.
  */
-async function makeFace(response: Response, identity: Identity, pictureId: string): Promise<void> {
+async function makeFace(response: Response, identity: Identity, pictureId: string, query: Record<string, unknown>): Promise<void> {
   if (pictureId === RESTORE_FACE) return restoreFace(response, identity);
   if (!isPictureId(pictureId)) {
     response.status(400).json({ error: "Which picture?", code: "INVALID" });
@@ -913,8 +913,9 @@ async function makeFace(response: Response, identity: Identity, pictureId: strin
     response.status(422).json({ error: "That picture cannot be a face", code: "PICTURE_REFUSED" });
     return;
   }
-  // The upload is the account's photo now (`facePhoto.ts`); the one it replaces goes.
-  const photo = await keepUploadedPhoto(identity.uid, pictureId, address);
+  // Only a photo uploaded from the device (`?upload=1`) is the account's photo, replacing the one before;
+  // a card's picture worn as a face leaves the slot alone (`facePhoto.ts`).
+  const photo = await slotAfterFace(identity.uid, pictureId, address, query);
   response.status(200).json({ url: address, photo });
 }
 
