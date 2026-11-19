@@ -7,8 +7,8 @@ import { banFrom } from "../src/bans";
 
 const DAY = 24 * 60 * 60 * 1000;
 const google = { providerId: "google.com", uid: "104729" };
-const keys = identityKeys("someone@gmail.com", [google]);
-const person = (uid: string) => ({ uid, email: "someone@gmail.com", emailVerified: true, providerData: [google] });
+const keys = identityKeys("someone@example.com", [google]);
+const person = (uid: string) => ({ uid, email: "someone@example.com", emailVerified: true, providerData: [google] });
 
 let fakes: Fakes;
 beforeEach(() => {

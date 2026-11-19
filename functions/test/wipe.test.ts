@@ -1,19 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { UserRecord } from "firebase-admin/auth";
 import {
   collectionRule,
-  KEPT_EMAILS,
+  DEFAULT_KEEP_FILE,
   keepsDocument,
   keepsUser,
+  keptUids,
+  readKeepFile,
   readOptions,
   storageRule,
   targetOf,
 } from "../scripts/wipe-production";
 import { BUILT_IN_SECTION_IDS } from "../src/sections";
-
-const user = (email: string | undefined, providerEmails: string[] = []) =>
-  ({ email, providerData: providerEmails.map((one) => ({ email: one })) }) as unknown as UserRecord;
 
 describe("the wipe's collections", () => {
   it("deletes everything people made", () => {
@@ -64,17 +62,36 @@ describe("the wipe's files", () => {
 });
 
 describe("the wipe's people", () => {
-  it("keeps the owner's two accounts, by email in any case or by a provider's email", () => {
-    assert.deepEqual(KEPT_EMAILS, ["kellygracelab@gmail.com", "artimanjustice@gmail.com"]);
-    assert.equal(keepsUser(user("kellygracelab@gmail.com")), true);
-    assert.equal(keepsUser(user("ArtimanJustice@Gmail.com")), true);
-    assert.equal(keepsUser(user(undefined, ["kellygracelab@gmail.com"])), true);
+  const kept = new Set(["owner-uid", "partner-uid"]);
+
+  it("keeps exactly the accounts named by uid", () => {
+    assert.equal(keepsUser({ uid: "owner-uid" }, kept), true);
+    assert.equal(keepsUser({ uid: "partner-uid" }, kept), true);
   });
 
-  it("deletes everybody else, guests included", () => {
-    assert.equal(keepsUser(user("someone@example.com")), false);
-    assert.equal(keepsUser(user(undefined)), false);
-    assert.equal(keepsUser(user("kellygracelab@gmail.com.evil.test")), false);
+  it("deletes everybody else, guests and look-alikes included", () => {
+    assert.equal(keepsUser({ uid: "stranger-uid" }, kept), false);
+    assert.equal(keepsUser({ uid: "owner-uid2" }, kept), false);
+    assert.equal(keepsUser({ uid: "OWNER-UID" }, kept), false);
+  });
+
+  it("reads the keep file's uids and refuses one it cannot trust", () => {
+    assert.deepEqual(readKeepFile('{"uids":["owner-uid","partner-uid","owner-uid"]}'), ["owner-uid", "partner-uid"]);
+    assert.ok("error" in (readKeepFile("owner-uid") as object));
+    assert.ok("error" in (readKeepFile('{"uids":[]}') as object));
+    assert.ok("error" in (readKeepFile('{"emails":["someone@example.com"]}') as object));
+    assert.ok("error" in (readKeepFile('{"uids":["../x"]}') as object));
+  });
+
+  it("takes --keep first, then --keep-file, then the default file, and never an empty list", () => {
+    const files: Record<string, string> = { [DEFAULT_KEEP_FILE]: '{"uids":["from-default"]}', "other.json": '{"uids":["from-other"]}' };
+    const readText = (path: string) => files[path] ?? null;
+    assert.deepEqual([...(keptUids({ keep: ["a", "b"], keepFile: null }, readText) as Set<string>)], ["a", "b"]);
+    assert.deepEqual([...(keptUids({ keep: [], keepFile: "other.json" }, readText) as Set<string>)], ["from-other"]);
+    assert.deepEqual([...(keptUids({ keep: [], keepFile: null }, readText) as Set<string>)], ["from-default"]);
+    assert.ok("error" in keptUids({ keep: [], keepFile: null }, () => null));
+    assert.ok("error" in keptUids({ keep: [], keepFile: "missing.json" }, readText));
+    assert.ok("error" in keptUids({ keep: [], keepFile: null }, () => '{"uids":[]}'));
   });
 });
 
@@ -84,8 +101,12 @@ describe("the wipe's arguments", () => {
       projectId: "tieryourlife",
       bucket: "tieryourlife.firebasestorage.app",
       execute: false,
+      keep: [],
+      keepFile: null,
     });
-    assert.deepEqual(readOptions(["--project=demo-x", "--bucket=b", "--execute"]), { projectId: "demo-x", bucket: "b", execute: true });
+    assert.deepEqual(readOptions(["--project=demo-x", "--bucket=b", "--execute"]), { projectId: "demo-x", bucket: "b", execute: true, keep: [], keepFile: null });
+    assert.deepEqual(readOptions(["--project", "p", "--keep", "a", "--keep=b", "--keep", "a"]), { projectId: "p", bucket: "p.firebasestorage.app", execute: false, keep: ["a", "b"], keepFile: null });
+    assert.deepEqual(readOptions(["--project", "p", "--keep-file", "k.json"]), { projectId: "p", bucket: "p.firebasestorage.app", execute: false, keep: [], keepFile: "k.json" });
   });
 
   it("wants a project and refuses what it does not know", () => {
@@ -93,6 +114,9 @@ describe("the wipe's arguments", () => {
     assert.ok("error" in readOptions(["--project"]));
     assert.ok("error" in readOptions(["--project", "p", "--yes"]));
     assert.ok("error" in readOptions(["--project", "p", "--execute=no"]));
+    assert.ok("error" in readOptions(["--project", "p", "--keep"]));
+    assert.ok("error" in readOptions(["--project", "p", "--keep", "someone@example.com"]));
+    assert.ok("error" in readOptions(["--project", "p", "--keep", "a", "--keep-file", "k.json"]));
   });
 
   it("runs on all three emulators or on none, never on a mix", () => {

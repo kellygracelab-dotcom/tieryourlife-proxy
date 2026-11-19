@@ -16,26 +16,26 @@ const DAY = 24 * 60 * 60 * 1000;
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
 // The same Google account: as its new ID token names it, and as Auth held it before the erasure.
-const token = { "google.com": ["104729"], email: ["someone@gmail.com"] };
-const authRecord = { email: "someone@gmail.com", emailVerified: true, providerData: [{ providerId: "google.com", uid: "104729" }] };
+const token = { "google.com": ["104729"], email: ["someone@example.com"] };
+const authRecord = { email: "someone@example.com", emailVerified: true, providerData: [{ providerId: "google.com", uid: "104729" }] };
 
 describe("identityKeys", () => {
   it("names the same person the same way from a new account's token and from the erased account's record", () => {
-    const fromToken = identityKeys("someone@gmail.com", signInsOfToken(token));
+    const fromToken = identityKeys("someone@example.com", signInsOfToken(token));
     const fromRecord = identityKeys(authRecord.emailVerified ? authRecord.email : null, authRecord.providerData);
     assert.deepEqual([...fromToken].sort(), [...fromRecord].sort());
     assert.equal(fromToken.length, 2);
   });
 
   it("is a SHA-256 of `email:<address>` and `<provider>:<id>`, never the address itself", () => {
-    const keys = identityKeys(" Someone@Gmail.com ", [{ providerId: "google.com", uid: "104729" }]);
-    assert.deepEqual(keys, [sha256("email:someone@gmail.com"), sha256("google.com:104729")]);
+    const keys = identityKeys(" Someone@Example.com ", [{ providerId: "google.com", uid: "104729" }]);
+    assert.deepEqual(keys, [sha256("email:someone@example.com"), sha256("google.com:104729")]);
     assert.ok(keys.every((key) => /^[0-9a-f]{64}$/.test(key)));
   });
 
   it("leaves out an address nobody verified, and a password account's own id, which is that address", () => {
-    assert.deepEqual(identityKeys(null, [{ providerId: "password", uid: "someone@gmail.com" }]), []);
-    assert.deepEqual(identityKeys(null, signInsOfToken({ email: ["someone@gmail.com"] })), []);
+    assert.deepEqual(identityKeys(null, [{ providerId: "password", uid: "someone@example.com" }]), []);
+    assert.deepEqual(identityKeys(null, signInsOfToken({ email: ["someone@example.com"] })), []);
   });
 
   it("reads nothing from a token without identities", () => {
