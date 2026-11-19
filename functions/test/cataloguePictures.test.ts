@@ -209,8 +209,9 @@ describe("a copy and the picture it was made from", () => {
     const copy = copyOf(LIST, PHOTO);
     const foreign = addressOf(BUCKET, `published/${OTHER}/${LIST}-${outsideName(PHOTO)}`);
     const pending = copyOf(LIST, PHOTO, "_p_0f8fad5b-d9cb-469f-a165-70867728950e");
-    const shown = `https://tieryourlife.web.app/img/original/published/${LIST}/${outsideName(PHOTO)}`;
-    for (const one of [copy, foreign, pending, shown]) {
+    const shown = `https://tieryourlife.com/img/original/published/${LIST}/${outsideName(PHOTO)}`;
+    const shownBefore = `https://tieryourlife.web.app/img/original/published/${LIST}/${outsideName(PHOTO)}`;
+    for (const one of [copy, foreign, pending, shown, shownBefore]) {
       assert.equal(copyNameOf(one), outsideName(PHOTO), one);
       assert.equal(pictureKey(one), pictureKey(PHOTO), one);
       assert.equal(isCopyOf(one, PHOTO), true);

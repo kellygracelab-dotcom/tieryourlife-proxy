@@ -244,7 +244,7 @@ const BEFORE_AND_AFTER = [
   "Before typing the id:",
   "  1. Close every TierYourLife tab in every browser and stop the app on every phone.",
   "After it finishes, before anybody signs in again:",
-  "  2. Clear site data for tieryourlife.web.app and tieryourlife.firebaseapp.com in every browser.",
+  "  2. Clear site data for tieryourlife.com, tieryourlife.web.app and tieryourlife.firebaseapp.com in every browser.",
   "  3. Clear the app's data on every phone (Settings > Apps > TierYourLife > Storage > Clear data).",
 ].join("\n");
 

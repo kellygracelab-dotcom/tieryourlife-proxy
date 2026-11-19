@@ -2,7 +2,18 @@ import type { Response } from "express";
 
 const BUCKET = "tieryourlife.firebasestorage.app";
 const STORAGE = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/`;
-const ORIGINAL = "https://tieryourlife.web.app/img/original/";
+/** The site's one address since 20.11.2026: answers name pictures there. */
+const ORIGINAL = "https://tieryourlife.com/img/original/";
+/**
+ * Every address the site has had, read as the same picture: boards, pages and
+ * apps keep sending the web.app and firebaseapp.com forms they were given.
+ */
+const ORIGINALS = [
+  ORIGINAL,
+  "https://www.tieryourlife.com/img/original/",
+  "https://tieryourlife.web.app/img/original/",
+  "https://tieryourlife.firebaseapp.com/img/original/",
+];
 const KINDS = new Set(["published", "avatars", "sections", "topics"]);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const PICTURE = /^[A-Za-z0-9_-]+$/;
@@ -16,7 +27,8 @@ function publicPath(parts: string[]): string | null {
 }
 
 function pathOf(url: string): string | null {
-  if (url.startsWith(ORIGINAL)) return publicPath(url.slice(ORIGINAL.length).split(/[?#]/)[0].split("/"));
+  const site = ORIGINALS.find((prefix) => url.startsWith(prefix));
+  if (site !== undefined) return publicPath(url.slice(site.length).split(/[?#]/)[0].split("/"));
   if (!url.startsWith(STORAGE)) return null;
   const query = url.indexOf("?", STORAGE.length);
   if (query < 0 || new URLSearchParams(url.slice(query + 1).split("#")[0]).get("alt") !== "media") return null;

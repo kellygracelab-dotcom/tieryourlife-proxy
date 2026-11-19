@@ -46,8 +46,12 @@ The one description of what the proxy answers, read by the website and by the An
 
 In `lists` JSON responses, image fields (including covers, cards, preview images,
 section/topic pictures, collages and author faces) use the existing absolute
-`https://tieryourlife.web.app/img/original/{published|avatars|sections|topics}/{id}/{picture}`
-address for recognized public objects in `tieryourlife.firebasestorage.app`.
+`https://tieryourlife.com/img/original/{published|avatars|sections|topics}/{id}/{picture}`
+address for recognized public objects in `tieryourlife.firebasestorage.app`
+(`https://tieryourlife.web.app/img/original/…` until 20.11.2026). Requests may
+still send the site's earlier addresses (`tieryourlife.web.app`,
+`tieryourlife.firebaseapp.com`, `www.tieryourlife.com`): they are read as the
+same picture.
 This lets older Android image loaders display them when Storage requires App
 Check. Other image hosts remain unchanged. `users/` and pending `proposals/`
 never become public addresses; their existing authentication/token and visibility
@@ -406,7 +410,7 @@ An accepted translation replacement advances the list's `updatedAt`, so an origi
 
 **`429 SEARCH_LIMIT`**: the account (guests too, by uid) has used its searches: 1000 in this UTC hour or 3000 this UTC day. Body `{error: "Too many picture searches", code: "SEARCH_LIMIT", retryAt}`, `retryAt` the epoch milliseconds when the full window opens again (the next UTC hour, or UTC midnight), and header `Retry-After` in whole seconds to that moment. What counts: a request that has to ask at least one catalogue and builds on no quick answer already kept, so a quick search and the whole one after it count once, a next page counts, and an answer already kept (served from the cache) counts nothing and is served even past the limit. The refusal itself is not counted, so asking again while refused does not move `retryAt`. A client should not ask again before `retryAt` (a pasted list stops looking up the titles left). A client from before this limit treats it as any refused search: the app falls back to asking TMDB and Wikidata from the phone, the website says the catalogues are down.
 
-Outgoing requests (searches, picture downloads, `refreshPictures`) carry `User-Agent: TierYourLife/1.0 (https://tieryourlife.web.app/privacy)`: Wikimedia and Open Library allow more to a client that says how to reach it, and the privacy page gives the contact address. A picture download that a source answers with 429 or 5xx is tried once more after its `Retry-After` when that is at most 3 seconds (1 second when it gives none); otherwise it is `SOURCE_BUSY`, and a host that answered 429 or 503 is left alone by that instance until its `Retry-After` (5 minutes when it gives none, at most an hour). iNaturalist's observations are asked only for taxa still without an open photo after their own photos (at most 6).
+Outgoing requests (searches, picture downloads, `refreshPictures`) carry `User-Agent: TierYourLife/1.0 (https://tieryourlife.com/privacy)`: Wikimedia and Open Library allow more to a client that says how to reach it, and the privacy page gives the contact address. A picture download that a source answers with 429 or 5xx is tried once more after its `Retry-After` when that is at most 3 seconds (1 second when it gives none); otherwise it is `SOURCE_BUSY`, and a host that answered 429 or 503 is left alone by that instance until its `Retry-After` (5 minutes when it gives none, at most an hour). iNaturalist's observations are asked only for taxa still without an open photo after their own photos (at most 6).
 
 **Deezer is not a picture source** (not in the first release: the right to show its covers publicly is unclear). No answer holds `source: "deezer"` or a `*.dzcdn.net` address, and answers cached before it was turned off are not served. A client must not expect `deezer` among the sources, but must still draw a card whose `imageUrl` is on `cdn-images.dzcdn.net` or `e-cdns-images.dzcdn.net`: boards kept in the account (`PUT /boards`) keep those covers as sent, and a published list may hold them until `scripts/remove-deezer-covers.ts` is run.
 

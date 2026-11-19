@@ -108,7 +108,7 @@ export function hasSlowSources(scope: PictureScope): boolean {
  * Wikimedia and Open Library allow more to a client that says how to reach it:
  * the privacy page gives the contact address, so none is sent here.
  */
-export const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.web.app/privacy)";
+export const USER_AGENT = "TierYourLife/1.0 (https://tieryourlife.com/privacy)";
 
 /** A catalogue that answered 429 or 5xx without saying for how long is left alone this long. */
 export const CATALOGUE_REST_MS = 5 * 60 * 1000;

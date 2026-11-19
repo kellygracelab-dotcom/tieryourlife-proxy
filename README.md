@@ -225,9 +225,10 @@ works there, but `/generate` still wants an ID token from the Auth emulator.
 firebase deploy --only functions
 ```
 
-There is no `hosting` block in `firebase.json` on purpose. `tieryourlife.web.app`
-is the web version now, deployed from its own repository, and a deploy from here
-must not be able to replace it. The pages in `public/` are what stood at that
+There is no `hosting` block in `firebase.json` on purpose. The site,
+`https://tieryourlife.com` (formerly `tieryourlife.web.app`), is the web
+version now, deployed from its own repository, and a deploy from here must not
+be able to replace it. The pages in `public/` are what stood at that
 address before; the privacy policy and the account deletion page live on there
 under the same paths.
 

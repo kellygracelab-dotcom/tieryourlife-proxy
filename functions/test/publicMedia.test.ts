@@ -10,7 +10,9 @@ import { replacedSectionPicture, storedPathOf } from "../src/sectionPictures";
 
 const BUCKET = "tieryourlife.firebasestorage.app";
 const PREFIX = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/`;
-const SITE = "https://tieryourlife.web.app/img/original/";
+const SITE = "https://tieryourlife.com/img/original/";
+/** The addresses the site had before 20.11.2026, which boards and old apps still hold. */
+const OLD_SITES = ["https://tieryourlife.web.app/img/original/", "https://tieryourlife.firebaseapp.com/img/original/", "https://www.tieryourlife.com/img/original/"];
 const LIST = "AbCdEfGhIjKlMnOpQrSt";
 const PICTURE = "w-0123456789abcdef0123456789abcdef_p_11888bec-19d6-48d1-b81c-d57119c6f4cd";
 const path = `published/${LIST}/${PICTURE}`;
@@ -27,6 +29,17 @@ describe("public image API compatibility", () => {
       assert.equal(storageMediaUrl(SITE + object), old);
       assert.equal(publicMediaUrl(SITE + object), SITE + object);
     }
+  });
+
+  it("reads the site's earlier addresses as the same picture, and answers with tieryourlife.com", () => {
+    for (const old of OLD_SITES) {
+      assert.equal(storageMediaUrl(old + path), raw, old);
+      assert.equal(storageMediaUrl(old + path + "?v=2#x"), raw, old);
+      assert.equal(publicMediaUrl(old + path), shown, old);
+      assert.equal(storageMediaUrl(old + "users/owner/photo"), old + "users/owner/photo", old);
+    }
+    assert.equal(storageMediaUrl("https://tieryourlife.com.evil.test/img/original/" + path), "https://tieryourlife.com.evil.test/img/original/" + path);
+    assert.equal(storageMediaUrl("http://tieryourlife.com/img/original/" + path), "http://tieryourlife.com/img/original/" + path);
   });
 
   it("does not route private proposals, user pictures, other buckets or malformed paths through the site", () => {
@@ -46,7 +59,8 @@ describe("public image API compatibility", () => {
       `${SITE}published/list/../photo`, `${SITE}published/list/encoded%2Fname`,
       `${SITE}published/${"a".repeat(129)}/photo`,
       `${SITE}published/list/${"p".repeat(1024)}`,
-      shown.replace("web.app/", "web.app.evil.test/"),
+      shown.replace("tieryourlife.com/", "tieryourlife.com.evil.test/"),
+      `https://tieryourlife.web.app.evil.test/img/original/${path}`,
       "https://image.tmdb.org/t/p/w500/poster.jpg",
     ];
     for (const url of excluded) {
