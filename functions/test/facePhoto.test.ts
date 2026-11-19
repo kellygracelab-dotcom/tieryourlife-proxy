@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { addressOf } from "../src/publishedPictures";
 import {
   finishRemoval,
@@ -29,7 +29,10 @@ beforeEach(() => {
   fakes = install();
   fakes.users.set("me", { uid: "me", providerData: [], photoURL: first });
 });
-afterEach(() => fakes.restore());
+afterEach(() => {
+  mock.restoreAll();
+  fakes.restore();
+});
 
 function seedShowing(face: string | null) {
   fakes.db.seed("publishedLists/l1", { authorUid: "me", authorPhotoUrl: face });
@@ -190,5 +193,62 @@ describe("POST /lists/face without ?upload=1 (a card's picture worn as a face)",
     await keepUploadedPhoto("me", "up1", first, 1000);
     assert.deepEqual(await slotAfterFace("me", "up2", second, { upload: "1" }, NOW), { pictureId: "up2", url: second, setAt: NOW });
     assert.ok(fakes.log.includes("deleteFile avatars/me/up1"));
+  });
+});
+
+describe("while the photo is worn, the server may not change the account's face (QA D12, 19.11.2026)", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const authModule = require("firebase-admin/auth") as { getAuth: () => unknown };
+  const denied = Object.assign(new Error("insufficient permission"), { code: "auth/insufficient-permission" });
+
+  /** Auth as in production: reads accounts, refuses to change them. */
+  function authReadsOnly(): void {
+    mock.method(authModule, "getAuth", () => ({
+      getUser: async (uid: string) => fakes.users.get(uid),
+      updateUser: async () => {
+        throw denied;
+      },
+    }));
+  }
+
+  it("an upload still replaces the photo everywhere, the client putting it on the account", async () => {
+    fakes.files.push("avatars/me/up1");
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    seedShowing(first);
+    authReadsOnly();
+    assert.deepEqual(await keepUploadedPhoto("me", "up2", second, 2000), { pictureId: "up2", url: second, setAt: 2000 });
+    assert.equal((fakes.db.get("publishedLists/l1") as Record<string, unknown>).authorPhotoUrl, second);
+    assert.ok(fakes.log.includes("deleteFile avatars/me/up1"));
+  });
+
+  it("Remove still answers, saying it was worn, and Undo says so too", async () => {
+    fakes.files.push("avatars/me/up1");
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    seedShowing(first);
+    authReadsOnly();
+    const removed = await removeUploadedPhoto("me", NOW);
+    assert.equal(removed?.wasWorn, true);
+    assert.equal(settingsWire(fakes.db.get("accounts/me/settings/appearance") as Record<string, unknown>).photo, null);
+    assert.equal((fakes.db.get("rankings/x_me") as Record<string, unknown>).authorPhotoUrl, null);
+    assert.deepEqual(await restoreUploadedPhoto("me", NOW + 1000), { ok: true, photo: { pictureId: "up1", url: first, setAt: 1000 }, wasWorn: true });
+  });
+
+  it("changes nothing in the slot when a step fails: the upload's slot and the removal go back", async () => {
+    fakes.files.push("avatars/me/up1", "avatars/me/up0");
+    await keepUploadedPhoto("me", "up0", addressOf(BUCKET, "avatars/me/up0"), 500);
+    await removeUploadedPhoto("me", NOW - 1000);
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    const before = structuredClone(fakes.db.get("accounts/me/settings/appearance"));
+    mock.method(authModule, "getAuth", () => ({
+      getUser: async () => {
+        throw new Error("Auth is down");
+      },
+    }));
+    await assert.rejects(keepUploadedPhoto("me", "up2", second, 2000), /Auth is down/);
+    assert.deepEqual(fakes.db.get("accounts/me/settings/appearance"), before);
+    assert.ok(!fakes.log.includes("deleteFile avatars/me/up1"));
+    await assert.rejects(removeUploadedPhoto("me", NOW), /Auth is down/);
+    assert.deepEqual(fakes.db.get("accounts/me/settings/appearance"), before);
+    assert.ok(!fakes.log.includes("deleteFile avatars/me/up0"), "the earlier removal can still be undone");
   });
 });

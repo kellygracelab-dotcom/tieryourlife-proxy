@@ -75,8 +75,28 @@ export async function keepUploadedPhoto(uid: string, pictureId: string, url: str
     transaction.set(ref, { photo: slot }, { merge: true });
     return before;
   });
-  if (previous !== null && previous.pictureId !== pictureId) await retirePhoto(uid, previous, url);
+  if (previous !== null && previous.pictureId !== pictureId) {
+    try {
+      await retirePhoto(uid, previous, url);
+    } catch (error) {
+      // All or nothing (QA D12, 19.11.2026): the slot goes back to the photo before, and the upload
+      // sent again does the rest; what was already switched to the new photo shows a photo of theirs.
+      await putSlotBack(uid, slot, { photo: previous });
+      throw error;
+    }
+  }
   return slot;
+}
+
+/** Sets [back] while the slot is still [ours]: a failed change undone, unless something newer came meanwhile. */
+async function putSlotBack(uid: string, ours: PhotoSlot | null, back: Record<string, unknown>): Promise<void> {
+  const ref = appearanceOf(uid);
+  await getFirestore()
+    .runTransaction(async (transaction) => {
+      const now = readPhotoSlot((await transaction.get(ref)).get("photo"));
+      if ((now?.pictureId ?? null) === (ours?.pictureId ?? null)) transaction.set(ref, back, { merge: true });
+    })
+    .catch((error) => console.error("Face photo slot not put back", error));
 }
 
 /** A removed photo kept for Undo: its copy stays this long, then goes. */
@@ -104,16 +124,26 @@ export function readRemovedPhoto(value: unknown): RemovedPhoto | null {
 export async function removeUploadedPhoto(uid: string, nowMs = Date.now()): Promise<RemovedPhoto | null> {
   const db = getFirestore();
   const ref = appearanceOf(uid);
-  const { before, earlier } = await db.runTransaction(async (transaction) => {
+  const { before, earlier, storedEarlier } = await db.runTransaction(async (transaction) => {
     const doc = await transaction.get(ref);
     const before = readPhotoSlot(doc.exists ? doc.get("photo") : null);
-    const earlier = readRemovedPhoto(doc.exists ? doc.get("removedPhoto") : null);
+    const storedEarlier: unknown = doc.exists ? doc.get("removedPhoto") ?? null : null;
+    const earlier = readRemovedPhoto(storedEarlier);
     if (before !== null) transaction.set(ref, { photo: null, removedPhoto: { ...before, removedAt: nowMs, wasWorn: false } }, { merge: true });
-    return { before, earlier };
+    return { before, earlier, storedEarlier };
   });
   if (before === null) return null;
-  if (earlier !== null && earlier.pictureId !== before.pictureId) await deleteCopy(uid, earlier.pictureId);
-  const wasWorn = await unshowPhoto(uid, before, null);
+  let wasWorn: boolean;
+  try {
+    wasWorn = await unshowPhoto(uid, before, null);
+  } catch (error) {
+    // All or nothing (QA D12, 19.11.2026): the photo goes back in the slot, the removal before it as it
+    // was; "Remove your photo" sent again finishes what was already set to the letter.
+    await putSlotBack(uid, null, { photo: before, removedPhoto: storedEarlier });
+    throw error;
+  }
+  // Only once this removal stands: the earlier one's copy can no longer be put back.
+  if (earlier !== null && earlier.pictureId !== before.pictureId) await deleteCopy(uid, earlier.pictureId).catch(() => undefined);
   const removed: RemovedPhoto = { ...before, removedAt: nowMs, wasWorn };
   if (wasWorn) await ref.set({ removedPhoto: removed }, { merge: true });
   return removed;
@@ -217,13 +247,19 @@ async function unshowPhoto(uid: string, old: PhotoSlot, replacement: string | nu
     await batch.commit();
   }
 
+  let worn: boolean;
   try {
-    const user = await getAuth().getUser(uid);
-    if (!showing(user.photoURL ?? null)) return false;
-    await getAuth().updateUser(uid, { photoURL: replacement });
-    return true;
+    worn = showing((await getAuth().getUser(uid)).photoURL ?? null);
   } catch (error) {
     if ((error as { code?: string }).code !== "auth/user-not-found") throw error;
     return false;
   }
+  if (!worn) return false;
+  // The account's face is the client's to set, and both do after these calls (the new `url`; the letter
+  // when `wasWorn`). Changed here too where the server may; where it may not (`auth/insufficient-permission`,
+  // QA D12, 19.11.2026), the rest stands and the client's change does it.
+  await getAuth()
+    .updateUser(uid, { photoURL: replacement })
+    .catch((error: { code?: string; message?: string } | null) => console.warn("Account face left to the client", error?.code ?? error?.message ?? error));
+  return true;
 }
