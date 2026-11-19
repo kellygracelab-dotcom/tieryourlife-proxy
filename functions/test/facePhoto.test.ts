@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { addressOf } from "../src/publishedPictures";
-import { finishRemoval, keepUploadedPhoto, pointsAt, readPhotoSlot, removeUploadedPhoto, restoreUploadedPhoto, sweepRemovedPhotos, UNDO_WINDOW_MS } from "../src/facePhoto";
-
-const NOW = 1_800_000_000_000;
+import {
+  finishRemoval,
+  isPhotoUpload,
+  keepUploadedPhoto,
+  pointsAt,
+  readPhotoSlot,
+  removeUploadedPhoto,
+  restoreUploadedPhoto,
+  slotAfterFace,
+  sweepRemovedPhotos,
+  UNDO_WINDOW_MS,
+} from "../src/facePhoto";
 import { settingsWire } from "../src/settings";
 import { install, type Fakes } from "./fakeFirebase";
 import { chooseUpload, uploadsByAccount } from "../scripts/face-slots";
+
+const NOW = 1_800_000_000_000;
 
 const BUCKET = "fake-bucket";
 const first = addressOf(BUCKET, "avatars/me/up1");
@@ -152,5 +163,32 @@ describe("filling the slots of accounts from before (npm run face-slots)", () =>
     assert.equal(chooseUpload(mine, first, BUCKET)!.pictureId, "up1");
     assert.equal(chooseUpload(mine, null, BUCKET)!.pictureId, "up2");
     assert.equal(chooseUpload(mine, card, BUCKET)!.pictureId, "up2");
+  });
+});
+
+describe("POST /lists/face without ?upload=1 (a card's picture worn as a face)", () => {
+  it("knows an upload only by the flag", () => {
+    assert.equal(isPhotoUpload({ upload: "1" }), true);
+    assert.equal(isPhotoUpload({ upload: "true" }), true);
+    assert.equal(isPhotoUpload({ upload: ["1"] }), true);
+    for (const query of [{}, { upload: "0" }, { upload: "" }, { upload: "yes" }, { photo: "1" }]) assert.equal(isPhotoUpload(query), false, JSON.stringify(query));
+  });
+
+  it("leaves the slot and the uploaded photo alone, as every client before sent it", async () => {
+    fakes.files.push("avatars/me/up1", "avatars/me/card7");
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    seedShowing(first);
+    const before = structuredClone(fakes.db.get("accounts/me/settings/appearance"));
+    assert.equal(await slotAfterFace("me", "card7", addressOf(BUCKET, "avatars/me/card7"), {}, NOW), null);
+    assert.deepEqual(fakes.db.get("accounts/me/settings/appearance"), before);
+    assert.ok(!fakes.log.some((line) => line.startsWith("deleteFile")), "no file deleted");
+    assert.equal((fakes.db.get("publishedLists/l1") as Record<string, unknown>).authorPhotoUrl, first);
+    assert.equal(fakes.users.get("me")!.photoURL, first);
+  });
+
+  it("with ?upload=1 the new photo takes the slot and the old one goes", async () => {
+    await keepUploadedPhoto("me", "up1", first, 1000);
+    assert.deepEqual(await slotAfterFace("me", "up2", second, { upload: "1" }, NOW), { pictureId: "up2", url: second, setAt: NOW });
+    assert.ok(fakes.log.includes("deleteFile avatars/me/up1"));
   });
 });
