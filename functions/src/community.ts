@@ -266,6 +266,8 @@ import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRev
 import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit, type ManualAttribution } from "./pictureAttribution";
 import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 import { LIST_SOURCE_RULE, readListSource, type ListSource } from "./listSource";
+import { chargeVision, VisionLimit } from "./visionBudget";
+import { countToday, nextDayMs } from "./dailyCount";
 import {
   cleanTopicName,
   refusedTopicLocale,
@@ -726,6 +728,16 @@ function badTopicCredit(response: Response, reason: string): void {
  * as the first segment, a direct call does not; only that first one goes,
  * since a later "lists" is a route of its own (/lists/admin/lists).
  */
+/** The longest path segment taken: a uid is at most 128 characters, a list id 20. */
+export const MAX_SEGMENT = 200;
+/** The longest search sent: clients send at most 100 characters; what is longer is no name. */
+export const MAX_QUERY_SENT = 500;
+
+export function tooLongQuery(raw: unknown): boolean {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return values.some((value) => typeof value === "string" && [...value].length > MAX_QUERY_SENT);
+}
+
 export function segmentsOf(path: string): string[] {
   const segments = path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part.length > 0);
   return segments[0] === "lists" ? segments.slice(1) : segments;
@@ -769,6 +781,13 @@ export const lists = onRequest(
     const listingMine = !verb && id === "mine";
     const listingFollowing = !verb && id === "following";
     const query = request.query as Record<string, unknown>;
+    // No id, uid or word here is this long; Firestore would refuse it as a 503 (QA D10, 19.11.2026).
+    if (segments.some((segment) => segment.length > MAX_SEGMENT)) {
+      return void response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
+    }
+    if (tooLongQuery(request.query.q)) {
+      return void response.status(400).json({ error: `Search for at most ${MAX_QUERY_SENT} characters`, code: "QUERY_TOO_LONG" });
+    }
     if (movesLists(request.method, segments, verb, makingAFace || aboutAnAuthor)) noteSectionCountsAfter(response);
 
     try {
@@ -886,6 +905,10 @@ export const lists = onRequest(
           return void response.status(405).json({ error: "Use GET, POST, PATCH or DELETE" });
       }
     } catch (error) {
+      if (error instanceof VisionLimit) {
+        response.setHeader("Retry-After", String(Math.max(1, Math.ceil((error.retryAtMs - Date.now()) / 1000))));
+        return void response.status(429).json({ error: "Too many pictures checked today", code: "VISION_DAILY_LIMIT", retryAt: error.retryAtMs });
+      }
       console.error("Community request failed", error);
       response.status(503).json({ error: "Unavailable", code: "UNAVAILABLE" });
     }
@@ -3368,7 +3391,7 @@ async function publish(
       target,
       picturesWanted(decision.draft),
       undefined,
-      copies,
+      { ...copies, charge: (looks) => chargeVision(identity.uid, "pictures", looks) },
     );
     const refused = outcomes.find(
       (one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing",
@@ -4011,7 +4034,7 @@ async function addedPictures(identity: Identity, folderId: string, draft: Publis
   const saved = [...outside.saved, ...catalogue.saved];
   const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
   try {
-    const outcomes = await copyForPublication(identity.uid, folderId, picturesWanted(draft), undefined, copies);
+    const outcomes = await copyForPublication(identity.uid, folderId, picturesWanted(draft), undefined, { ...copies, charge: (looks) => chargeVision(identity.uid, "pictures", looks) });
     const refused = outcomes.find((one): one is Extract<typeof one, { ok: false }> => !one.ok && one.because !== "missing");
     if (refused) {
       await removeAll(saved);
@@ -4332,6 +4355,10 @@ async function refreshAuthor(response: Response, identity: Identity): Promise<vo
   response.status(200).json({ updated: mine.size });
 }
 
+/** New reports a day: a guest's weigh nothing yet still fill the queue; a signed-in person rarely files more than a few. */
+export const GUEST_REPORTS_PER_DAY = 10;
+export const REPORTS_PER_DAY = 50;
+
 /**
  * A complaint, kept for a person to read. Nothing is taken down automatically:
  * there is one pair of eyes behind this and the app says so rather than
@@ -4362,10 +4389,21 @@ async function report(
   if (reporterRole !== null && await refusedAsStaffTarget(response, reporterRole, stored.authorUid)) return;
 
   // One report per person per list: a second is the same complaint, not a
-  // stronger one.
+  // stronger one, and is not counted again. New ones are counted per day, so
+  // nobody buries the queue under complaints (QA, 19.11.2026).
+  const reportRef = db.collection(REPORTS).doc(`${listId}_${identity.uid}`);
+  if (!(await reportRef.get()).exists) {
+    const limit = identity.isAnonymous ? GUEST_REPORTS_PER_DAY : REPORTS_PER_DAY;
+    if (!(await countToday("reportUsage", identity.uid, "reports", 1, limit))) {
+      const retryAt = nextDayMs(Date.now());
+      response.setHeader("Retry-After", String(Math.max(1, Math.ceil((retryAt - Date.now()) / 1000))));
+      response.status(429).json({ error: "Too many reports today", code: "REPORT_DAILY_LIMIT", retryAt });
+      return;
+    }
+  }
   const anonymous = isAnonymous(stored);
   const weighs = await weighsNow(identity);
-  await db.collection(REPORTS).doc(`${listId}_${identity.uid}`).set({
+  await reportRef.set({
     listId,
     listTitle: stored.title,
     authorUid: anonymous ? "" : stored.authorUid,

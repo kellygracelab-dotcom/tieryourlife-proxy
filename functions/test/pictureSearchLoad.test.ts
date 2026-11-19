@@ -341,6 +341,16 @@ describe("iNaturalist", () => {
   });
 });
 
+describe("POST /lists/pictures/keep", () => {
+  it("refuses a guest before fetching anything (QA D9)", async () => {
+    const reply: Reply = { status: 0, body: {}, headers: {} };
+    const response = { status(code: number) { reply.status = code; return response; }, json(body: Record<string, unknown>) { reply.body = body; return response; }, setHeader() { return response; } };
+    await routePictures("POST", ["keep"], {}, { url: "https://upload.wikimedia.org/x.jpg" }, response as never, { uid: "guest", isAnonymous: true } as Identity);
+    assert.deepEqual([reply.status, reply.body.code], [403, "NOT_SIGNED_IN"]);
+    assert.equal(asked.length, 0);
+  });
+});
+
 describe("stage 1: the list's section, how sure, a second attempt", () => {
   type Item = { id: string; confidence?: string; doubts?: string[]; matchedName?: string };
   const items = (reply: Reply) => reply.body.items as Item[];
@@ -393,6 +403,42 @@ describe("stage 1: the list's section, how sure, a second attempt", () => {
     const once = wikipedia();
     await get({ q: "Lyon kng", scope: "all", section: "other" });
     assert.equal(wikipedia(), once);
+  });
+
+  /** Wikipedia suggests [suggestion] for every name. */
+  function wikipediaSays(suggestion: string): void {
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "en.wikipedia.org") {
+        asked.push(url);
+        return Response.json({ query: { searchinfo: { suggestion }, search: [] } });
+      }
+      return plain(input);
+    });
+  }
+
+  it("takes Wikipedia's spelling when the name found only things like it, and one by exactly that name (QA D6)", async () => {
+    wikipediaSays("lion");
+    // "Lio" begins "Lion": something like it, nothing called it.
+    const typo = await get({ q: "Lio", scope: "all" });
+    assert.deepEqual(typo.body.searchedAs, { text: "lion", how: "spelling" });
+    assert.equal(counted(), 1);
+  });
+
+  it("keeps what was found when the spelling finds nothing by that name", async () => {
+    wikipediaSays("lioness");
+    const typo = await get({ q: "Lio", scope: "all" });
+    assert.equal(typo.status, 200);
+    assert.equal(typo.body.searchedAs, undefined);
+    assert.ok(items(typo).length > 0);
+  });
+
+  it("never spells a number into another (QA D2)", async () => {
+    wikipediaSays("Lion 1988");
+    const year = await get({ q: "Lion 1984", scope: "all" });
+    assert.equal(year.body.searchedAs, undefined);
+    assert.ok(!asked.some((url) => url.host !== "en.wikipedia.org" && url.searchParams.toString().includes("1988")));
   });
 
   it("asks iNaturalist for plants in all, and for animals alone in the animals scope", async () => {

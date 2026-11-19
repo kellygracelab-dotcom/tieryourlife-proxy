@@ -1,4 +1,5 @@
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
+import { getAuth } from "firebase-admin/auth";
 import { getStorage } from "firebase-admin/storage";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { HEAD_BYTES, judgeUpload, ownPictureOwner } from "./pictureBytes";
@@ -26,7 +27,11 @@ export const checkUpload = onObjectFinalized(
       const usage = getFirestore().doc(`${UPLOAD_USAGE}/${dayKey(Date.now())}/uploads/${uid}`);
       await usage.set({ count: FieldValue.increment(1) }, { merge: true });
       return ((await usage.get()).get("count") as number | undefined) ?? 0;
-    }, () => isErased(uid));
+    }, () => isErased(uid), async () => {
+      // Asked only past a guest's day: a signed-in person has a provider, an anonymous account none.
+      const user = await getAuth().getUser(uid).catch(() => null);
+      return user === null || user.providerData.length === 0;
+    });
     if (verdict === "keep") return;
 
     await file.delete({ ignoreNotFound: true });
