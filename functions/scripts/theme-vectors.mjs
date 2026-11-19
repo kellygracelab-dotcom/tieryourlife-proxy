@@ -103,8 +103,10 @@ function rolesOf(palettes, dark) {
 
 function withRoles(palettes) {
   const light = rolesOf(palettes, false), dark = rolesOf(palettes, true);
+  // Hues to two places: the last digits of a computed hue differ between platforms.
+  const recorded = Object.fromEntries(Object.entries(palettes).map(([role, { hue, chroma }]) => [role, { hue: Math.round(hue * 100) / 100, chroma }]));
   return {
-    palettes,
+    palettes: recorded,
     mainButtonNearestTier: {
       light: nearestTier(argbFromHex(light.primary), TIERS.light),
       dark: nearestTier(argbFromHex(dark.primary), TIERS.dark),

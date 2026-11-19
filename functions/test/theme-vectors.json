@@ -371,23 +371,23 @@
       "seed": "#A86279",
       "palettes": {
         "primary": {
-          "hue": 359.8412415102059,
+          "hue": 359.84,
           "chroma": 36
         },
         "secondary": {
-          "hue": 359.8412415102059,
+          "hue": 359.84,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 59.84124151020592,
+          "hue": 59.84,
           "chroma": 24
         },
         "neutral": {
-          "hue": 359.8412415102059,
+          "hue": 359.84,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 359.8412415102059,
+          "hue": 359.84,
           "chroma": 10
         }
       },
@@ -483,23 +483,23 @@
       "seed": "#AD6353",
       "palettes": {
         "primary": {
-          "hue": 30.649701175937608,
+          "hue": 30.65,
           "chroma": 36
         },
         "secondary": {
-          "hue": 30.649701175937608,
+          "hue": 30.65,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 90.64970117593761,
+          "hue": 90.65,
           "chroma": 24
         },
         "neutral": {
-          "hue": 30.649701175937608,
+          "hue": 30.65,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 30.649701175937608,
+          "hue": 30.65,
           "chroma": 10
         }
       },
@@ -595,23 +595,23 @@
       "seed": "#A56A32",
       "palettes": {
         "primary": {
-          "hue": 60.37041792799926,
+          "hue": 60.37,
           "chroma": 36
         },
         "secondary": {
-          "hue": 60.37041792799926,
+          "hue": 60.37,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 120.37041792799926,
+          "hue": 120.37,
           "chroma": 24
         },
         "neutral": {
-          "hue": 60.37041792799926,
+          "hue": 60.37,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 60.37041792799926,
+          "hue": 60.37,
           "chroma": 10
         }
       },
@@ -707,23 +707,23 @@
       "seed": "#8F7425",
       "palettes": {
         "primary": {
-          "hue": 90.46755889275848,
+          "hue": 90.47,
           "chroma": 36
         },
         "secondary": {
-          "hue": 90.46755889275848,
+          "hue": 90.47,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 150.46755889275846,
+          "hue": 150.47,
           "chroma": 24
         },
         "neutral": {
-          "hue": 90.46755889275848,
+          "hue": 90.47,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 90.46755889275848,
+          "hue": 90.47,
           "chroma": 10
         }
       },
@@ -819,23 +819,23 @@
       "seed": "#4F8354",
       "palettes": {
         "primary": {
-          "hue": 149.63102741580065,
+          "hue": 149.63,
           "chroma": 36
         },
         "secondary": {
-          "hue": 149.63102741580065,
+          "hue": 149.63,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 209.63102741580065,
+          "hue": 209.63,
           "chroma": 24
         },
         "neutral": {
-          "hue": 149.63102741580065,
+          "hue": 149.63,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 149.63102741580065,
+          "hue": 149.63,
           "chroma": 10
         }
       },
@@ -931,23 +931,23 @@
       "seed": "#308474",
       "palettes": {
         "primary": {
-          "hue": 180.54855648496337,
+          "hue": 180.55,
           "chroma": 36
         },
         "secondary": {
-          "hue": 180.54855648496337,
+          "hue": 180.55,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 240.54855648496337,
+          "hue": 240.55,
           "chroma": 24
         },
         "neutral": {
-          "hue": 180.54855648496337,
+          "hue": 180.55,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 180.54855648496337,
+          "hue": 180.55,
           "chroma": 10
         }
       },
@@ -1043,23 +1043,23 @@
       "seed": "#427DA3",
       "palettes": {
         "primary": {
-          "hue": 240.34640855615393,
+          "hue": 240.35,
           "chroma": 36
         },
         "secondary": {
-          "hue": 240.34640855615393,
+          "hue": 240.35,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 300.34640855615396,
+          "hue": 300.35,
           "chroma": 24
         },
         "neutral": {
-          "hue": 240.34640855615393,
+          "hue": 240.35,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 240.34640855615393,
+          "hue": 240.35,
           "chroma": 10
         }
       },
@@ -1155,23 +1155,23 @@
       "seed": "#6176AC",
       "palettes": {
         "primary": {
-          "hue": 269.4677911697312,
+          "hue": 269.47,
           "chroma": 36
         },
         "secondary": {
-          "hue": 269.4677911697312,
+          "hue": 269.47,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 329.4677911697312,
+          "hue": 329.47,
           "chroma": 24
         },
         "neutral": {
-          "hue": 269.4677911697312,
+          "hue": 269.47,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 269.4677911697312,
+          "hue": 269.47,
           "chroma": 10
         }
       },
@@ -1267,23 +1267,23 @@
       "seed": "#6874AD",
       "palettes": {
         "primary": {
-          "hue": 276.54674453680855,
+          "hue": 276.55,
           "chroma": 36
         },
         "secondary": {
-          "hue": 276.54674453680855,
+          "hue": 276.55,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 336.54674453680855,
+          "hue": 336.55,
           "chroma": 24
         },
         "neutral": {
-          "hue": 276.54674453680855,
+          "hue": 276.55,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 276.54674453680855,
+          "hue": 276.55,
           "chroma": 10
         }
       },
@@ -1379,23 +1379,23 @@
       "seed": "#7F6EA9",
       "palettes": {
         "primary": {
-          "hue": 299.75552042349966,
+          "hue": 299.76,
           "chroma": 36
         },
         "secondary": {
-          "hue": 299.75552042349966,
+          "hue": 299.76,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 359.75552042349966,
+          "hue": 359.76,
           "chroma": 24
         },
         "neutral": {
-          "hue": 299.75552042349966,
+          "hue": 299.76,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 299.75552042349966,
+          "hue": 299.76,
           "chroma": 10
         }
       },
@@ -1491,23 +1491,23 @@
       "seed": "#986697",
       "palettes": {
         "primary": {
-          "hue": 330.46060072801816,
+          "hue": 330.46,
           "chroma": 36
         },
         "secondary": {
-          "hue": 330.46060072801816,
+          "hue": 330.46,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 30.460600728018164,
+          "hue": 30.46,
           "chroma": 24
         },
         "neutral": {
-          "hue": 330.46060072801816,
+          "hue": 330.46,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 330.46060072801816,
+          "hue": 330.46,
           "chroma": 10
         }
       },
@@ -1603,23 +1603,23 @@
       "seed": "#A8627A",
       "palettes": {
         "primary": {
-          "hue": 359.06555107069073,
+          "hue": 359.07,
           "chroma": 36
         },
         "secondary": {
-          "hue": 359.06555107069073,
+          "hue": 359.07,
           "chroma": 16
         },
         "tertiary": {
-          "hue": 59.06555107069073,
+          "hue": 59.07,
           "chroma": 24
         },
         "neutral": {
-          "hue": 359.06555107069073,
+          "hue": 359.07,
           "chroma": 8
         },
         "neutralVariant": {
-          "hue": 359.06555107069073,
+          "hue": 359.07,
           "chroma": 10
         }
       },
