@@ -268,6 +268,7 @@ import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 import { LIST_SOURCE_RULE, readListSource, type ListSource } from "./listSource";
 import { chargeVision, VisionLimit } from "./visionBudget";
 import { countToday, nextDayMs } from "./dailyCount";
+import { routeUploadQuota } from "./uploadQuota";
 import {
   cleanTopicName,
   refusedTopicLocale,
@@ -809,6 +810,9 @@ export const lists = onRequest(
       }
       if (segments[0] === PICTURES_PATH && segments[1] === "link" && segments.length === 2 && request.method === "GET") {
         return await routeLinkQuota(response, identity);
+      }
+      if (segments[0] === PICTURES_PATH && segments[1] === "uploads" && segments.length === 2 && request.method === "GET") {
+        return await routeUploadQuota(query, response, identity);
       }
       if (segments[0] === PICTURES_PATH) {
         return await routePictures(request.method, segments.slice(1), query, request.body, response, identity);

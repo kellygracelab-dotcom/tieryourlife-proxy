@@ -3,10 +3,8 @@ import { getAuth } from "firebase-admin/auth";
 import { getStorage } from "firebase-admin/storage";
 import { onObjectFinalized } from "firebase-functions/v2/storage";
 import { HEAD_BYTES, judgeUpload, ownPictureOwner } from "./pictureBytes";
-import { dayKey } from "./quota";
+import { uploadUsagePath } from "./uploadQuota";
 import { isErased } from "./auth";
-
-const UPLOAD_USAGE = "pictureUploads";
 
 /**
  * The bucket lives in us-east1 and a Storage trigger has to sit beside it.
@@ -24,7 +22,7 @@ export const checkUpload = onObjectFinalized(
     const head = Number(event.data.size) > 0 ? (await file.download({ start: 0, end: HEAD_BYTES - 1 }))[0] : Buffer.alloc(0);
 
     const verdict = await judgeUpload(head, async () => {
-      const usage = getFirestore().doc(`${UPLOAD_USAGE}/${dayKey(Date.now())}/uploads/${uid}`);
+      const usage = getFirestore().doc(uploadUsagePath(uid, Date.now()));
       await usage.set({ count: FieldValue.increment(1) }, { merge: true });
       return ((await usage.get()).get("count") as number | undefined) ?? 0;
     }, () => isErased(uid), async () => {
