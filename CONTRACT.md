@@ -416,6 +416,17 @@ Outgoing requests (searches, picture downloads, `refreshPictures`) carry `User-A
 
 **`GET /lists/pictures/uploads[?count=n]`** (since 19.11.2026): account or guest. How many own pictures may still go to `users/{uid}/pictures/` today: `checkUpload` removes every upload past the day's limit after it lands, and the card loses its picture, so a client asks here before uploading, **once for a whole selection** (`count` = how many it is about to send, 1-100), not per picture. `200 {uploads: {used, left, limit, guest, warnAt, resetsAt}}`: `limit` 200 for a guest, 2000 for an account; `warnAt` 180 for a guest (at `used >= warnAt` the client may softly offer to sign in), `null` for an account; `resetsAt` the next UTC midnight. With `count` larger than `left`: `429 {code: "SIGN_IN_FOR_MORE_UPLOADS", retryAt, uploads}` for a guest ("Sign in to add more pictures", with sign-in), `429 {code: "UPLOAD_DAILY_LIMIT", retryAt, uploads}` for an account ("try again tomorrow"), both with `Retry-After`; nothing is counted by asking. `count` that is not a whole 1-100: `400 INVALID`. A guest who signs in keeps the uid and the day's count, with the account's limit. Old clients never ask and upload as before.
 
+**For clients, the upload limit in short:**
+
+| Question | Answer |
+|---|---|
+| Where the refusal comes | **Only before uploading**, from `GET /lists/pictures/uploads?count=n`. The upload itself (straight to Storage) cannot be answered: one past the limit is removed after it lands, its card left without a picture. Publishing does not refuse for it: a removed picture is `missing` there and its card publishes without art. |
+| Codes | `429 SIGN_IN_FOR_MORE_UPLOADS` for a guest (show "Sign in to add more pictures" with sign-in), `429 UPLOAD_DAILY_LIMIT` for an account ("try again tomorrow", `retryAt`). Both carry `retryAt` (epoch ms, the next UTC midnight), `Retry-After` (seconds) and `uploads`. |
+| When to ask | Once per selection, before the first file goes, with `count` = the files chosen (above 100: ask with 100, then again for the rest). Not per picture. |
+| Which field says "near the limit" | `uploads.left` (what is left today) and `uploads.warnAt` (a `used` value). A guest is near when `uploads.used >= uploads.warnAt`, that is **`left <= 20` of 200**; then show a soft offer to sign in, once per selection. `warnAt` is `null` for an account: no early hint. |
+| A selection that partly fits | `count > left` is the 429 for all of it; a client may upload the first `left` of them and show the refusal for the rest. |
+| When the check cannot be made | Network error or `5xx`: upload as before; the server still enforces the limit. |
+
 **`POST /lists/pictures/keep`**: account (since 19.11.2026 a guest gets `403 NOT_SIGNED_IN` before anything is fetched, as with `link`). Body `{url}`: copies a web picture into the caller's own folder, for a browser that cannot read another site's bytes. `200 {pictureId}`. `400 NO_URL`, `422 {code}` with `BAD_URL`, `KEEP_LIMIT`, `NOT_ALLOWED` (not https, or a private address), `UNREACHABLE` (a busy source included), `NOT_A_PICTURE` (only JPEG, PNG, WebP, GIF), `TOO_BIG`.
 
 ## `boards`
