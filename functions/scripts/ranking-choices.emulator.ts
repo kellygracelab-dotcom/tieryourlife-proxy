@@ -282,6 +282,14 @@ describe("rankings sheet: the author first, likes, added cards, withdrawal and e
     return files.map((file) => file.name.slice(`published/${folder}/`.length)).sort();
   }
 
+  /** The files in [folder] marked retired: kept for other people's boards, removed by the daily upkeep later (20.11.2026). */
+  async function retiredIn(folder: string, anyAddress: string): Promise<string[]> {
+    const bucket = getStorage(app).bucket(anyAddress.split("/v0/b/")[1]!.split("/")[0]!);
+    const [files] = await bucket.getFiles({ prefix: `published/${folder}/` });
+    const marked = await Promise.all(files.map(async (file) => ((await file.getMetadata())[0].metadata?.retiredAt ? file.name.slice(`published/${folder}/`.length) : null)));
+    return marked.filter((name): name is string => name !== null).sort();
+  }
+
   before(async () => {
     assertEmulatorsOnly();
     [author, one, two, three] = await Promise.all([person("sheet-author"), person("sheet-one"), person("sheet-two"), person("sheet-three")]);
@@ -388,16 +396,19 @@ describe("rankings sheet: the author first, likes, added cards, withdrawal and e
     assert.equal((await filesIn(folder, cards[0].imageUrl)).length, 3);
     const shown = ((await sheet(two.token)).body.rankings as { uid: string; addedCards?: unknown[]; allRows?: unknown }[]).find((one_) => one_.uid === one.uid)!;
     assert.deepEqual([shown.addedCards?.length, shown.allRows], [3, [[3, 0], [1, 4, 5]]]);
-    // Sent back as read, the lion keeps its copy; the photograph and the outside picture go.
+    // Sent back as read, the lion keeps its copy; the photograph and the outside picture are retired,
+    // kept for boards that show them and removed by the daily upkeep later (20.11.2026).
+    const all = await filesIn(folder, cards[0].imageUrl);
     const again = await call(one.token, "PUT", `/lists/${list}/rankings/mine`, { tierLabels: ["S"], rows: [[3, 2]], addedCards: [cards[0]] });
     assert.equal(again.status, 200, JSON.stringify(again));
     assert.equal((again.body.addedCards as { imageUrl: string }[])[0].imageUrl, cards[0].imageUrl);
-    const left = await filesIn(folder, cards[0].imageUrl);
-    assert.deepEqual(left, [decodeURIComponent(cards[0].imageUrl.split("%2F").pop()!.split("?")[0]!)]);
-    // Without added cards they all go, and old readers' rows never held them.
+    const lion = decodeURIComponent(cards[0].imageUrl.split("%2F").pop()!.split("?")[0]!);
+    assert.deepEqual(await filesIn(folder, cards[0].imageUrl), all);
+    assert.deepEqual(await retiredIn(folder, cards[0].imageUrl), all.filter((name) => name !== lion));
+    // Without added cards they are all retired, and old readers' rows never held them.
     const plain = await call(one.token, "PUT", `/lists/${list}/rankings/mine`, placing);
     assert.equal(plain.body.addedCards, undefined);
-    assert.deepEqual(await filesIn(folder, cards[0].imageUrl), []);
+    assert.deepEqual(await retiredIn(folder, cards[0].imageUrl), all);
   });
 
   it("withdraws a ranking with the likes it was given and its copies", async () => {
