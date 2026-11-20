@@ -540,6 +540,8 @@ CSV blocks: `daily`, `totals`, `funnel`, `retention`, `lists`, `topics`, `sectio
 | Crash-free sessions | 1 − `crashedSessions` / `sessions` | As reported by the apps. |
 | Accounts (guests, Google) | nightly from Firebase Auth | Exact at the time of the count; "used" = token refreshed, about hourly while the app is open. |
 
+The Android app sends batches and the `X-TYL-Client` / `X-TYL-Locale` headers only from the Play build (release), since versionCode 598: debug, fast and instrumented-test builds send neither, so emulators stay out of `active`, DAU and the funnel. Their requests still pass App Check with the same app id and count in the server's own counters, without a version. An earlier debug build reached the statistics once (20.11.2026, version 596).
+
 The site sends batches only from a browser that already has a Firebase account (guest or Google): it creates no guest for statistics. Web `active`, DAU and the funnel leave out readers without an account; their requests still count in the server's `list.view` and searches. Counts held in such a browser go with its first batch after it gets an account.
 
 Before the apps send batches (stage 2), the client-side numbers are 0: show them as "—" with "needs the new app".
