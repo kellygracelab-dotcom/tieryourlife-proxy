@@ -3,6 +3,7 @@ import { getFirestore } from "firebase-admin/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { decideSweep, lastSeen } from "./guests";
 import { sweepExpiredBans } from "./banIdentities";
+import { countAccount, emptyAccounts, saveAccountCounts, sweepStats } from "./stats";
 
 /** Firebase's own ceiling for one page of users, and for one batch delete. */
 const PAGE_SIZE = 1000;
@@ -35,19 +36,28 @@ export const sweepGuests = onSchedule(
     await sweepExpiredBans(nowMs)
       .then((removed) => console.log(`Ban sweep: removed ${removed} expired kept bans`))
       .catch((error) => console.error("Ban sweep failed", error));
+    // Yesterday's statistics gates and searches past ninety days (`stats.ts`); a failure holds up nothing else.
+    await sweepStats(nowMs)
+      .then((swept) => console.log(`Statistics sweep: ${swept.gates} days of gates, ${swept.searchDays} days of searches removed`))
+      .catch((error) => console.error("Statistics sweep failed", error));
     const auth = getAuth();
     const doomed: string[] = [];
+    // Accounts by kind for the usage statistics, counted as the pages go by: numbers only, no uid kept.
+    const accounts = { guests: emptyAccounts(), google: emptyAccounts() };
 
     let pageToken: string | undefined;
     do {
       const page = await auth.listUsers(PAGE_SIZE, pageToken);
       for (const user of page.users) {
+        const createdMs = Date.parse(user.metadata.creationTime) || nowMs;
+        countAccount(accounts, { providerCount: user.providerData.length, createdMs, lastUsedMs: Date.parse(user.metadata.lastRefreshTime ?? "") || Date.parse(user.metadata.lastSignInTime) || createdMs }, nowMs);
         if (decideSweep(toCandidate(user, nowMs), nowMs).sweep) {
           doomed.push(user.uid);
         }
       }
       pageToken = page.pageToken;
     } while (pageToken && doomed.length < MAX_PER_RUN);
+    await saveAccountCounts(accounts, !pageToken, nowMs).catch((error) => console.error("Account counts not saved", error));
 
     if (doomed.length === 0) {
       console.log("Guest sweep: nothing abandoned");

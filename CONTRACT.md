@@ -10,6 +10,7 @@ The one description of what the proxy answers, read by the website and by the An
 - [Public image addresses](#public-image-addresses)
 - [Limits](#limits)
 - [`lists`](#lists): feed, publishing, follows, reports, rankings, topics, sections, staff, house lists, picture search
+- [Usage statistics](#usage-statistics): server counters, `POST /lists/stats`, `GET /lists/admin/stats`
 - [`boards`](#boards)
 - [`adoptGuestCredits`, `credits`, `generate`, `tmdb`](#adoptguestcredits)
 - [Background functions](#background-functions)
@@ -437,6 +438,112 @@ Outgoing requests (searches, picture downloads, `refreshPictures`) carry `User-A
 
 **`POST /lists/pictures/keep`**: account (since 19.11.2026 a guest gets `403 NOT_SIGNED_IN` before anything is fetched, as with `link`). Body `{url}`: copies a web picture into the caller's own folder, for a browser that cannot read another site's bytes. `200 {pictureId}`. `400 NO_URL`, `422 {code}` with `BAD_URL`, `KEEP_LIMIT`, `NOT_ALLOWED` (not https, or a private address), `UNREACHABLE` (a busy source included), `NOT_A_PICTURE` (only JPEG, PNG, WebP, GIF), `TOO_BIG`.
 
+## Usage statistics
+
+Since 20.11.2026 (stage 1: server counters, the admin answer, the client endpoint ready for stage 2). Plan: `_coordination/analytics-2026-11-20/metrics-proposal.md`.
+
+**What is kept.** Daily sums only: UTC day, event, and one cut at a time by platform, app version, language or region. No uid, device id, advertising id, IP or address is in the statistics. Lists, topics and sections are counted per id (they are public); searches as the typed words, cleaned (below). Nothing is sold or shared.
+
+**Where the cuts come from.**
+- **Platform**: from the App Check token's app id (`…:android:…`, `…:web:…`), on every request; clients send nothing for it.
+- **Version, language, region**: only when the client sends them. Optional request headers on any `lists` or `boards` call: `X-TYL-Client: android/1.4.2` (or `web/<build>`) and `X-TYL-Locale: ru-RU` (the language and region **set on the device or in the browser**, never from the IP). Without the headers a request is still counted, with no version, language or region. In a batch (below) they go in the body instead.
+
+**Searches.** A query is lower-cased, spaces collapsed, cut to 60 characters. Not counted at all when it looks like an e-mail address, a phone number or has six or more digits in a row. Kept as daily counts for 90 days (`sweepGuests` removes older days), and the admin answer shows only queries counted **3 or more times in the period asked**.
+
+**Counted by the server itself (stage 1, no client change):**
+
+| Event | When |
+|---|---|
+| `list.view` | `GET /lists/{id}` answered 200 (per list too) |
+| `list.take` | `POST /lists/{id}/taken` 2xx (per list too) |
+| `list.publish`, `list.republish` | `POST /lists` 2xx; `POST /lists/{id}` 2xx |
+| `author.follow`, `topic.follow` | `POST /lists/follow/{uid}`; `POST /lists/topics/{id}/follow` (per topic too) |
+| `topic.open`, `section.open` | first page of `GET /lists?topic=` / `?category=` (per topic / section too) |
+| `search.lists`, `search.lists.miss` | first page of `GET /lists?q=`; miss when `lists` came back empty (per query too) |
+| `search.pictures`, `search.pictures.miss` | `GET /lists/pictures?q=` page 1: counted on the quick part or a whole answer, missed on the rest part or a whole answer with no `items` (per query and section too) |
+| `account.erased` | `DELETE /boards/account` 204 |
+| `server.5xx`, `server.appCheckRefused`, `server.searchLimit`, `server.sourceBusy`, `server.sourcesDown` | any answer ≥500 from `lists` or `boards`; `401 APP_UNVERIFIED`; `429 SEARCH_LIMIT`; `503 SOURCE_BUSY`; `502 SOURCES_DOWN` |
+
+Each night `sweepGuests` also counts the Firebase Auth accounts, guests and Google apart: total, created in the last 24 hours, used (token refreshed) in the last 1, 7 and 30 days. Only the numbers are kept (`statsAccounts/{day}`); `complete: false` when the sweep stopped early.
+
+### `POST /lists/stats` (stage 2: a client's batch)
+
+App Check, any signed-in identity (a guest too). **Send nothing while the user has turned "Send usage statistics" off**; crash counting may have its own switch. Send at most one batch per session (when the app goes to the background, or on `pagehide` for the web), and on the next start for anything left. All fields optional except as noted:
+
+```json
+{
+  "version": "1.4.2",
+  "locale": "ru-RU",
+  "active": { "gap": 3, "sinceFirst": 9, "firstWeek": "2026-W46" },
+  "steps": ["first_launch", "first_board"],
+  "features": { "game.smart.done": 1, "share.image": 2 },
+  "sessions": 2,
+  "crashedSessions": 0,
+  "crashes": [{ "type": "IllegalStateException", "place": "BoardScreen.kt:120 render" }],
+  "referrer": { "domain": "reddit.com", "utm": "post" }
+}
+```
+
+- **`active`**: on the device's first batch of its local day, and only then. `gap`: days since the previous day this device sent `active`, 1–30; **31** for the first ever day, or a gap longer than 30. `sinceFirst`: days since the first launch (0 on that day). `firstWeek`: the ISO week of the first launch, `YYYY-Www`. The device keeps its first-launch date and last active day itself; neither is sent.
+- **`steps`**: each sent **once per install, ever** (the device remembers what it sent): `first_launch`, `open_list` (opened somebody's or a house list), `first_board`, `first_card`, `full_list` (a board with 5+ cards all placed), `first_game` (finished), `shared`, `signed_in`, `published`. Send `first_launch` in the same batch as the first `active`.
+- **`features`**: counts since the last batch, 1–200 each, names from this list only: `session`, `game.{smart|king|bracket|losers}.{start|done}`, `share.image`, `share.link`, `picture.own`, `picture.link`, `picture.pick.{commons|tmdb|igdb|inaturalist|wikidata|deezer|anilist|openlibrary|web|other}` (the source of a picture chosen from search), `picture.pos.{1|2-3|4-10|11+}` (its place in the results), `board.tier`, `board.ranked` (a board made, by kind).
+- **`sessions`, `crashedSessions`**: sessions since the last batch and how many of them ended in a crash (Android learns it on the next start).
+- **`crashes`**: at most 5: exception `type` (≤80) and `place`, the top frame's class, method or file:line (≤120). No message text, no user data. The web sends `window.onerror` / `unhandledrejection` as `type` = error name, `place` = file:line of the build.
+- **`referrer`** (web, first visit of a session): `domain` without `www.` and without the path, `utm` = `utm_source`. Never the full address.
+- Unknown fields and names are dropped silently, so a newer client is safe with an older server.
+
+Answers: `204` counted. `400 INVALID` not an object, or `active` malformed. `429 TOO_MANY` past 50 batches from one account on one platform in a UTC day (do not retry today).
+
+**Against inflating the numbers.** App Check, a Firebase identity, and a gate per UTC day per account per platform: `active` counts once, each step once, `active.crashed` once, whatever the client sends. The gate is a one-way hash of day, platform and account (`statsGate/{day}/accounts/{hash}`), used for nothing else and removed by the next night's `sweepGuests`.
+
+### `GET /lists/admin/stats` (the admin screen)
+
+**The owner only** (`403 NOT_YOURS` for moderators and everyone else): the searches people typed are in it.
+
+Query: `from`, `to` (UTC days `YYYY-MM-DD`, both included; defaults: the last 7 days to today; at most 366 days; `to` not after today), `platform` (`all` default, `android`, `web`, `ios`, `other`), `compare=1` (the same number of days just before, for the tiles and totals), `format=csv&block=<name>` for one block as a CSV download (`text/csv`, `Content-Disposition: attachment`).
+
+Answer (200):
+
+```text
+period     {from, to, days, todayIsPartial, platform}
+previous   {from, to} | null
+tiles      {mau, dauAverage, newcomers, d7, published, crashFreeUsers, crashFreeSessions}
+           each {value, previous, change}; change = (value - previous) / previous, null when unknown
+daily      [{day, active, step.first_launch, sessions, sessions.crashed, list.view, list.take, list.publish,
+             search.pictures, search.pictures.miss, search.lists, search.lists.miss, account.erased,
+             server.5xx, server.appCheckRefused, server.searchLimit, active.android?, active.web?}]
+totals     {event: n} for the period (every event above and every client feature as f.<name>); previousTotals likewise or null
+funnel     [{step, n}] in the order of the steps above: devices that reached it in the period
+retention  [{week, size, d1, d7, d30}] for first-launch weeks starting in the period; a share 0..1,
+           null until every device of the week has had that day
+rolling    {asOf: to, dau, wau, mau}
+audience   {versions, languages, regions: [{value, n}] of active devices; accounts: the latest nightly Auth count up to `to`, or null}
+top        {lists [{id, title, views, takes}], topics [{id, name, opens, follows}], sections [{id, opens}],
+            pictureSearch / pictureMisses [{q, section, n, miss}], listSearch / listMisses [{q, n, miss}],
+            crashes [{type, place, version, n, first, last}], referrers [{domain, utm, n}]}
+           (100 each at most, from the last 90 days of the period at most)
+links      {crashlytics, playConsole, searchConsole}
+```
+
+CSV blocks: `daily`, `totals`, `funnel`, `retention`, `lists`, `topics`, `sections`, `pictureSearch`, `pictureMisses`, `listSearch`, `listMisses`, `crashes`, `referrers`, `versions`, `languages`, `regions`. A cell beginning with `= + - @` is prefixed with `'`. The answer is read fresh each time: no hourly cache.
+
+**How exact each number is.** Label them on the screen as below.
+
+| Number | How it is counted | Exact? |
+|---|---|---|
+| Server events, searches, top lists, topics, sections | every answered request | **Approximate, slightly under.** Each server instance holds its counts up to 30 seconds and writes them in one go; an instance stopped without warning loses what it held (one stopped normally writes first). |
+| DAU (`active` on a day) | once per account per platform per day (gate) | Exact for devices with statistics on and a stage-2 app. A Google account on two phones counts once on Android; a guest is one device. |
+| WAU, MAU (rolling) | each device's first active day in the window, found by its `gap` | Exact under the same conditions. Days are the device's local days counted on the server's UTC day, so a window edge can be off by one day for a device far from UTC. |
+| Newcomers, funnel | `first_launch` and the steps, once per install | Per install. A reinstall or cleared site data counts as new. |
+| D1, D7, D30 | `active` with `sinceFirst` 1, 7, 30 over the week's `first_launch` | Per install, as above. A device that turned statistics off after its first launch counts as gone. |
+| Crash-free users | 1 − (devices with a crashed session that day) / DAU | Exact per device per day, for stage-2 apps. |
+| Crash-free sessions | 1 − `crashedSessions` / `sessions` | As reported by the apps. |
+| Accounts (guests, Google) | nightly from Firebase Auth | Exact at the time of the count; "used" = token refreshed, about hourly while the app is open. |
+
+Before the apps send batches (stage 2), the client-side numbers are 0: show them as "—" with "needs the new app".
+
+**Crashes.** Crashlytics stays the place for stack traces (`links.crashlytics`); the top crashes above come from the apps' own batches. A BigQuery import of Crashlytics is not built: see the report of 20.11.2026.
+
 ## `boards`
 
 The copy of a person's boards their account keeps. Not the published list: the board itself, pool and trash included. All routes: App Check and user.
@@ -544,7 +651,7 @@ What stays: a ban in force when the account is erased. It is kept as **`bannedId
 ## Background functions
 
 Not callable:
-- `sweepGuests`: daily, deletes guest identities unused for 30 days, and `bannedIdentities` records whose `until` has passed.
+- `sweepGuests`: daily, deletes guest identities unused for 30 days, and `bannedIdentities` records whose `until` has passed. Since 20.11.2026 it also counts Auth accounts for the usage statistics, removes earlier days' `statsGate` and searches older than 90 days (see **Usage statistics**).
 - `sweepPictures`: daily. An own picture no kept board names (trash included) is marked `retiredAt` after its first day and deleted 30 days after the mark if still nothing names it; a board naming it again drops the mark. An account keeping the most boards it may (200) has nothing deleted, since its further boards live only on its devices (since 20.11.2026; before, such pictures went after their first day).
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `refreshPictures`: daily, keeps the catalogue pictures of published lists, ranking snapshots and the cards readers added to their rankings alive and within the catalogues' terms. IGDB covers with an `id` are asked again every day (Twitch's 24-hour rule), TMDB pictures with an `id` every 90 days (TMDB's six months), at most 150 a run; every other catalogue address is fetched once a week (HEAD, or one byte), at most 300 a run. An address that answers 404 or 410 is looked up by its card's `id` (AniList, Steam, Open Library, TMDB), and where the catalogue shows something else now, every list and ranking snapshot that shows it is moved to the new address, cover and collage too, with the old one kept in `attribution.formerUrls`; `updatedAt` stays. A catalogue that answers 429 or 5xx is left for the run and rests as for searches. **A catalogue that answers 401 or 403** from its API (our key switched off, access closed), to a search, a refresh by id, Twitch's IGDB token, Commons' file details or the `tmdb` proxy, is counted per catalogue on each instance, and the instance logs at most one ERROR line a minute per catalogue with the running count: `{severity: "ERROR", message: "PICTURE_SOURCE_DENIED", source, status, count}` (`source` one of `tmdb`, `igdb` (Twitch too), `web` (the paid web search, with `reason`: `key` or `credits`), `anilist`, `steam`, `openlibrary`, `wikimedia`, `inaturalist`, `wikidata`; the hosts that serve their pictures are not counted, as a 403 there is usually one gone picture's). IGDB's firewall answers 403 to a search text that looks like an attack (`<script>`, `javascript:`, `../`, `${jndi:`) before it reads our key; such a 403 is checked with a request without text under the same token: answered, the refusal was the text's, the search goes on without IGDB and a warning is logged, no alarm; refused as well, the alarm is raised (since 18.11.2026). Cloud Logging files both lines as errors with the fields under `jsonPayload`; this repository defines no alert policy on them. Since 14.11.2026 the project has two in Cloud Monitoring (made by the Backend chat with Danylo's leave, not deployed from here): a log-match policy on `jsonPayload.message="PICTURE_SOURCE_DENIED"` and one on `"PICTURE_ALARM"` (both `resource.type="cloud_run_revision"`, `severity>=ERROR`), each emailing Danylo at most once an hour, closed after a day without a new line. Nothing is deleted: an address with no id, or whose catalogue no longer has the picture, stays and is noted in `pictureChecks/{key}` (`{url, checkedAt, refreshedAt?, status: ok|moved|dead|gone, movedTo?}`). A ranking or a republication that sends a card's former address is matched as that card at its address now. Private boards are not moved yet.
