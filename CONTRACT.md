@@ -540,6 +540,8 @@ CSV blocks: `daily`, `totals`, `funnel`, `retention`, `lists`, `topics`, `sectio
 | Crash-free sessions | 1 − `crashedSessions` / `sessions` | As reported by the apps. |
 | Accounts (guests, Google) | nightly from Firebase Auth | Exact at the time of the count; "used" = token refreshed, about hourly while the app is open. |
 
+The site sends batches only from a browser that already has a Firebase account (guest or Google): it creates no guest for statistics. Web `active`, DAU and the funnel leave out readers without an account; their requests still count in the server's `list.view` and searches. Counts held in such a browser go with its first batch after it gets an account.
+
 Before the apps send batches (stage 2), the client-side numbers are 0: show them as "—" with "needs the new app".
 
 **Crashes.** Crashlytics stays the place for stack traces (`links.crashlytics`); `top.crashes` come from the apps' own batches. Since 20.11.2026 the `crashlytics` block holds Google's own numbers for Android, crashes and ANRs included, from Crashlytics' daily BigQuery export (`firebase_crashlytics`, US, batch only). `sweepGuests` reads the last three full UTC days every night into `statsCrashlytics/{day}`: counts, issue title and subtitle (a class and method) and app version only; no installation id leaves BigQuery. `installDays` sums each day's distinct installs, so one device crashing on two days counts twice.
