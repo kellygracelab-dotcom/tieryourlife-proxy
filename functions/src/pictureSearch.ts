@@ -102,7 +102,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 21;
+const CACHE_SHAPE = 22;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -575,8 +575,8 @@ async function askCatalogues(
   // person saw first is what they see when the same search comes from the cache (18.11.2026).
   const quick = new Set(quickSourcesFor(input.scope));
   const fast = hits.filter((_, at) => quick.has(sources[at]!));
-  const all = mergeHits(input.typed, hits, input.scope, rankFor(input, chosen), scoreFor(input));
-  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(input, chosen), scoreFor(input)), all) : all;
+  const all = mergeHits(input.typed, hits, input.scope, rankFor(input, chosen), scoreFor(input, chosen));
+  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(input, chosen), scoreFor(input, chosen)), all) : all;
   const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap, ...(chosen ? { chosen } : {}) };
   const cache = getFirestore().collection(CACHE);
   if (keep.parts && asked.some(([, answer]) => answer !== null)) {
@@ -597,7 +597,7 @@ async function askCatalogues(
  * come before all: its catalogue's first, then its own from Commons (stage 2).
  */
 function rankFor(input: SearchInput, chosen: Chosen | null = null): (hit: PictureHit) => number {
-  const want = input.want ?? null;
+  const want = rankingWant(input, chosen);
   const keys = new Set(chosen?.keys ?? []);
   // The item's own Wikidata picture comes first where it shows a kind, or where nothing else does ("all"):
   // an animals list keeps iNaturalist's "Octopus" above Wikidata's "Octopoda".
@@ -605,9 +605,15 @@ function rankFor(input: SearchInput, chosen: Chosen | null = null): (hit: Pictur
   return (hit) => (keys.has(entityKey(hit)) && lifted(hit) ? (hit.source === "wikidata" ? -1 : -2) : wantRank(hit, input.scope, want));
 }
 
-function scoreFor(input: SearchInput): (hit: PictureHit) => number {
-  const want = input.want ?? null;
+function scoreFor(input: SearchInput, chosen: Chosen | null = null): (hit: PictureHit) => number {
+  const want = rankingWant(input, chosen);
   return (hit) => wantScore(hit, want, hitScore(hit, input.typed));
+}
+
+/** What the hits are ranked for: the list's want, or, where it says nothing, what its chosen item implies. */
+function rankingWant(input: SearchInput, chosen: Chosen | null): Want | null {
+  const want = input.want ?? null;
+  return want === null && chosen?.implied ? { kind: "type", type: chosen.implied } : want;
 }
 
 /** What a quick search already heard from each catalogue, each while it is fresh. */
@@ -944,9 +950,11 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     limit: "20",
     format: "json",
   });
-  // Stage 2: where the list or the scope says what it holds, Wikipedia's search is asked beside Wikidata's.
-  // It knows redirects ("GTA 5", "Man Utd"), corrects spelling, and ranks by what people read.
-  const entityStep = input.page === 1 && ((input.want ?? null) !== null || input.scope !== "all");
+  // Stage 2: on a first page Wikipedia's search is asked beside Wikidata's. It knows redirects ("GTA 5",
+  // "Man Utd"), corrects spelling, and ranks by what people read. Also where the list says nothing (`all`
+  // without a section): a fresh board's "Pancakes" or "Omelette" is the dish, not the films of the name
+  // TMDB lists first (20.11.2026).
+  const entityStep = input.page === 1;
   const [found, read] = await Promise.all([
     wikimediaJson(`https://www.wikidata.org/w/api.php?${search}`, "search") as Promise<{ search?: { id?: unknown; match?: { text?: unknown } }[] }>,
     entityStep ? askWikipedia(input) : Promise.resolve([]),

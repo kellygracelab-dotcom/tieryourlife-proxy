@@ -11,7 +11,7 @@
  * Pages about a name, and items of no class, count against it. The lead over the next item is how sure.
  */
 import { CLASS_TABLE } from "./pictureClassTable";
-import { sameName, type Confidence, type Doubt, type Want } from "./pictureIntent";
+import { sameOrPlural, type Confidence, type Doubt, type ThingType, type Want } from "./pictureIntent";
 import type { PictureHit, PictureKind, PictureScope } from "./pictureSources";
 
 type TableKind =
@@ -210,7 +210,7 @@ export function entityScore(facts: EntityFacts, found: Found, typed: string, wan
   const first = wantedKinds(want, scope)?.first;
   if (first && anyIn(first, [...facts.classes, ...facts.supers])) total += 3;
   total += 0.8 * Math.log10(1 + facts.sitelinks);
-  if (facts.names.some((name) => sameName(name, typed))) total += 2.5;
+  if (facts.names.some((name) => sameOrPlural(name, typed))) total += 2.5;
   if (found.disambiguation || notAThing(facts)) total -= 6;
   if (facts.pictured || Object.keys(facts.ids).length > 0) total += 0.5;
   return total;
@@ -225,6 +225,12 @@ export interface Chosen {
   ids: Partial<Record<CatalogueField, string>>;
   /** Keys of the hits that show it (`entityKey`), filled as they are found. */
   keys: string[];
+  /**
+   * What the list is taken to hold where it says nothing (no section or topic, scope `all`): a dish's
+   * other hits are ranked as a Food list's, so "Pancakes" on a board called "Breakfast" shows food,
+   * not the films called "Pancakes" (20.11.2026).
+   */
+  implied?: ThingType;
 }
 
 /**
@@ -240,7 +246,7 @@ export function chooseEntity(candidates: readonly { facts: EntityFacts; found: F
   const best = scored[0];
   if (!best) return null;
   const lead = best.score - (scored[1]?.score ?? 0);
-  const named = best.facts.names.some((name) => sameName(name, typed));
+  const named = best.facts.names.some((name) => sameOrPlural(name, typed));
   const fits = factsFit(best.facts, want, scope);
   if (fits === false || notAThing(best.facts) || best.found.disambiguation) return null;
   let confidence: Confidence | null = null;
@@ -248,7 +254,8 @@ export function chooseEntity(candidates: readonly { facts: EntityFacts; found: F
   // Without its name, only Wikidata's own search (names and aliases) vouches for it: Wikipedia's matches any text.
   else if ((named || (fits === true && best.found.wikidata !== undefined)) && lead >= 0.8) confidence = "medium";
   if (confidence === null) return null;
-  return { item: best.facts.id, confidence, kind: kindOfFacts(best.facts, want, scope), ids: best.facts.ids, keys: [`wikidata:${best.facts.id}`] };
+  const implied = want === null && scope === "all" && anyIn("food", [...best.facts.classes, ...best.facts.supers]) ? "food" : undefined;
+  return { item: best.facts.id, confidence, kind: kindOfFacts(best.facts, want, scope), ids: best.facts.ids, keys: [`wikidata:${best.facts.id}`], ...(implied ? { implied } : {}) };
 }
 
 /** The key by which a hit is one item's: a TMDB id is a movie's, a series' or a person's. */
