@@ -80,6 +80,16 @@ somebody else's list are the parts that involve a server.</p>
     <td>So somebody can read them and act</td>
   </tr>
   <tr>
+    <td>Usage statistics from the app: its version, the language and region set
+    on your device, how many days have passed since you first opened it, which
+    first steps you have taken (a first board, a finished game, a share and so
+    on), how often features are used, and how many sessions ended in a crash,
+    with the error's type and its place in the code but no message text</td>
+    <td>While "Send usage statistics" is on in the app's Settings. It is on until
+    you turn it off.</td>
+    <td>To see what people use, what to make next and what to fix</td>
+  </tr>
+  <tr>
     <td>Crash reports and diagnostics</td>
     <td>If the app crashes</td>
     <td>To find out what broke</td>
@@ -160,6 +170,15 @@ kept.</p>
 <p>To count each person once a day, the server keeps a one-way key made from
 the day, the platform and your account. It cannot be turned back into your
 account, is used for nothing else, and is deleted the next night.</p>
+<p>The app also sends its own statistics, listed in the table above, at most
+once per visit. Your device remembers the day you first opened the app and the
+last day it sent anything, and sends only how many days have passed, so two
+visits cannot be joined into one person.</p>
+<p>To stop it, turn off Settings → Send usage statistics in the app. The app
+then sends none of its own statistics. The requests it makes anyway, such as
+opening a list or searching, are still counted in the daily totals above,
+because counting them is part of answering them, and they never carry who made
+them.</p>
 <p>Searches are counted by what was typed: lower-cased, with spaces tidied, and
 cut to 60 characters. A search that looks like an e-mail address or a phone
 number, or has six or more digits in a row, is not counted at all. Search
