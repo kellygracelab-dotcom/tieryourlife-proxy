@@ -1,54 +1,66 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { UNCLAIMED_GRACE_MS, decideDiscard, picturesOfBoard } from "../src/pictures";
+import { UNCLAIMED_GRACE_MS, UNCLAIMED_KEEP_MS, decideSweep, picturesOfBoard } from "../src/pictures";
 
 const NOW = 1_700_000_000_000;
+const DAY = 24 * 60 * 60 * 1000;
 
-function uploaded(id: string, agoMs: number) {
-  return { id, uploadedAtMs: NOW - agoMs };
+function uploaded(id: string, agoMs: number, retiredAgoMs: number | null = null) {
+  return { id, uploadedAtMs: NOW - agoMs, retiredAtMs: retiredAgoMs === null ? null : NOW - retiredAgoMs };
 }
 
-describe("decideDiscard", () => {
+const nothing = { retire: [], unretire: [], remove: [] };
+
+describe("decideSweep", () => {
   it("keeps a picture a board still points at", () => {
-    const doomed = decideDiscard([uploaded("a", 10 * UNCLAIMED_GRACE_MS)], new Set(["a"]), NOW);
-
-    assert.deepEqual(doomed, []);
+    assert.deepEqual(decideSweep([uploaded("a", 10 * UNCLAIMED_GRACE_MS)], new Set(["a"]), NOW, false), nothing);
   });
 
-  it("discards one nothing points at any more", () => {
-    const doomed = decideDiscard([uploaded("a", 2 * UNCLAIMED_GRACE_MS)], new Set(), NOW);
-
-    assert.deepEqual(doomed, ["a"]);
+  // 20.11.2026: a board that lives only on a device names pictures the server cannot see.
+  it("marks one nothing points at any more, and keeps it", () => {
+    assert.deepEqual(decideSweep([uploaded("a", 2 * UNCLAIMED_GRACE_MS)], new Set(), NOW, false), { ...nothing, retire: ["a"] });
   });
 
-  // The race this exists for: the file lands seconds before the board that
+  it("removes a marked one a month later, not a day sooner", () => {
+    assert.equal(UNCLAIMED_KEEP_MS, 30 * DAY);
+    const stored = [uploaded("old", 60 * DAY, 30 * DAY), uploaded("young", 60 * DAY, 29 * DAY)];
+    assert.deepEqual(decideSweep(stored, new Set(), NOW, false), { ...nothing, remove: ["old"] });
+  });
+
+  it("drops the mark of one a board names again", () => {
+    assert.deepEqual(decideSweep([uploaded("a", 60 * DAY, 40 * DAY)], new Set(["a"]), NOW, false), { ...nothing, unretire: ["a"] });
+  });
+
+  it("removes nothing of an account at the board limit, whose further boards live only on its devices", () => {
+    const stored = [uploaded("old", 90 * DAY, 60 * DAY), uploaded("new", 2 * DAY)];
+    assert.deepEqual(decideSweep(stored, new Set(), NOW, true), { ...nothing, retire: ["new"] });
+  });
+
+  // The race the grace exists for: the file lands seconds before the board that
   // names it, and a sweep in between would call it rubbish.
   it("leaves a picture that has only just arrived", () => {
-    const doomed = decideDiscard([uploaded("a", 60_000)], new Set(), NOW);
-
-    assert.deepEqual(doomed, []);
+    assert.deepEqual(decideSweep([uploaded("a", 60_000)], new Set(), NOW, false), nothing);
   });
 
   it("keeps one only the trash points at", () => {
     // A board in the trash can be restored for thirty days, and restoring it
     // to blank tiles is not restoring it.
-    const doomed = decideDiscard([uploaded("a", 5 * UNCLAIMED_GRACE_MS)], new Set(["a"]), NOW);
-
-    assert.deepEqual(doomed, []);
+    assert.deepEqual(decideSweep([uploaded("a", 5 * UNCLAIMED_GRACE_MS, 31 * DAY)], new Set(["a"]), NOW, false), { ...nothing, unretire: ["a"] });
   });
 
   it("sorts through a mixture without touching the wrong one", () => {
-    const doomed = decideDiscard(
+    const decision = decideSweep(
       [
         uploaded("kept", 5 * UNCLAIMED_GRACE_MS),
         uploaded("orphan", 5 * UNCLAIMED_GRACE_MS),
+        uploaded("long-gone", 90 * DAY, 31 * DAY),
         uploaded("fresh", 1000),
       ],
       new Set(["kept"]),
       NOW,
+      false,
     );
-
-    assert.deepEqual(doomed, ["orphan"]);
+    assert.deepEqual(decision, { retire: ["orphan"], unretire: [], remove: ["long-gone"] });
   });
 });
 

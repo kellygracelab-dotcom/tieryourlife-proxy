@@ -36,26 +36,49 @@ export function picturesOfBoard(board: Record<string, unknown>, uid: string): st
   return ids;
 }
 
+/**
+ * How long an own picture no kept board names stays before it goes (20.11.2026). A board can live only on
+ * a device -- not yet synced, kept offline, or beyond the account's limit -- and the server never sees it;
+ * deleting its pictures after a day left those cards empty. The sweep marks such a picture first
+ * (`retiredAt`, as published copies are marked) and removes it this long after, if still nothing names it.
+ */
+export const UNCLAIMED_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+
 export interface StoredPicture {
   id: string;
   uploadedAtMs: number;
+  /** When the sweep first found nothing naming it; null while something does, or before it looked. */
+  retiredAtMs: number | null;
+}
+
+export interface SweepDecision {
+  /** Nothing names these now: mark them, and keep them. */
+  retire: string[];
+  /** Named again: drop the mark. */
+  unretire: string[];
+  /** Marked at least [UNCLAIMED_KEEP_MS] ago and named by nothing since. */
+  remove: string[];
 }
 
 /**
- * Which of an account's pictures may go.
+ * What the daily sweep does with an account's pictures.
  *
  * [referenced] is every picture id named by any of that account's boards,
  * including the ones in its trash -- a board somebody threw away can be
  * restored for thirty days, and restoring it to a set of blank tiles is not
- * restoring it.
+ * restoring it. [atLimit]: the account keeps as many boards as it may, so
+ * any more live only on its devices; nothing of it is removed then.
  */
-export function decideDiscard(
-  stored: StoredPicture[],
-  referenced: Set<string>,
-  nowMs: number,
-): string[] {
-  return stored
-    .filter((picture) => !referenced.has(picture.id))
-    .filter((picture) => nowMs - picture.uploadedAtMs >= UNCLAIMED_GRACE_MS)
-    .map((picture) => picture.id);
+export function decideSweep(stored: StoredPicture[], referenced: Set<string>, nowMs: number, atLimit: boolean): SweepDecision {
+  const decision: SweepDecision = { retire: [], unretire: [], remove: [] };
+  for (const picture of stored) {
+    if (referenced.has(picture.id)) {
+      if (picture.retiredAtMs !== null) decision.unretire.push(picture.id);
+    } else if (picture.retiredAtMs === null) {
+      if (nowMs - picture.uploadedAtMs >= UNCLAIMED_GRACE_MS) decision.retire.push(picture.id);
+    } else if (!atLimit && nowMs - picture.retiredAtMs >= UNCLAIMED_KEEP_MS) {
+      decision.remove.push(picture.id);
+    }
+  }
+  return decision;
 }
