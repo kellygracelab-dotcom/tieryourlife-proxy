@@ -270,6 +270,7 @@ import { chargeVision, VisionLimit } from "./visionBudget";
 import { phaseClock } from "./phaseClock";
 import { countToday, nextDayMs } from "./dailyCount";
 import { routeUploadQuota } from "./uploadQuota";
+import { platformOf, routeAdminStats, routeClientStats, watchRequest } from "./stats";
 import {
   cleanTopicName,
   refusedTopicLocale,
@@ -342,6 +343,8 @@ const ADMIN_PATH = "admin";
 const EDITORIAL_PATH = "editorial";
 const TRANSLATIONS_PATH = "translations";
 const SEARCH_MISSES_PATH = "search-misses";
+/** `POST /lists/stats` (a client's usage batch) and `GET /lists/admin/stats` (the owner's screen). */
+const STATS_PATH = "stats";
 const PICTURES_PATH = "pictures";
 const SEARCH_MISSES = "searchMisses";
 const CANDIDATES_PATH = "candidates";
@@ -759,6 +762,8 @@ export const lists = onRequest(
     minInstances: 1,
   },
   async (request, response) => {
+    // Usage statistics, counted once the answer is out and without who asked (`stats.ts`, 20.11.2026).
+    watchRequest("lists", request, response, segmentsOf(request.path));
     if (!(await requireAppCheck(request, response))) {
       return;
     }
@@ -805,6 +810,9 @@ export const lists = onRequest(
       }
       if (segments[0] === ADMIN_PATH) {
         return await routeAdmin(request.method, segments.slice(1), query, response, identity);
+      }
+      if (segments[0] === STATS_PATH && segments.length === 1 && request.method === "POST") {
+        return await routeClientStats(request.body, response, identity.uid, platformOf(response));
       }
       if (segments[0] === PICTURES_PATH && segments[1] === "link" && segments.length === 2 && request.method === "POST") {
         return await routeLinkPicture(request.body, response, identity);
@@ -5886,6 +5894,10 @@ async function routeAdmin(
   }
   if (method === "GET" && rest.length === 1 && rest[0] === "lists") {
     return await readAdminLists(response, identity, query);
+  }
+  // Usage statistics: the owner's, not the moderators' -- the searches people typed are in it.
+  if (method === "GET" && rest.length === 1 && rest[0] === STATS_PATH) {
+    return await routeAdminStats(query, response, (await roleOf(identity)) === "owner");
   }
   response.status(404).json({ error: "No such route", code: "NOT_FOUND" });
 }

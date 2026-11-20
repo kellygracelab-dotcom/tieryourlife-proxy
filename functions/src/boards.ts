@@ -4,6 +4,7 @@ import type { Response } from "express";
 import { requireAppCheck } from "./appCheck";
 import { ERASED_ACCOUNTS, requireUser, type Identity } from "./auth";
 import { eraseAccount } from "./erase";
+import { watchRequest } from "./stats";
 import { STARTED_PATH, startedRoute } from "./started";
 import { SETTINGS_PATH, settingsRoute } from "./settings";
 import { originState } from "./boardOrigin";
@@ -171,6 +172,8 @@ export const boards = onRequest(
     maxInstances: 10,
   },
   async (request, response) => {
+    // Usage statistics: server errors and erased accounts, counted without who (`stats.ts`, 20.11.2026).
+    watchRequest("boards", request, response, request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "boards" && part.length > 0));
     if (!(await requireAppCheck(request, response))) {
       return;
     }

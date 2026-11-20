@@ -2,6 +2,7 @@ import { getAppCheck } from "firebase-admin/app-check";
 import type { Request } from "firebase-functions/https";
 import type { Response } from "express";
 import { isDemoEmulator } from "./emulator";
+import { APP_ID_LOCAL } from "./statsKeys";
 
 /**
  * Sent with both refusals so the app can tell them from the other 401 it can
@@ -23,7 +24,9 @@ export async function requireAppCheck(
     return false;
   }
   try {
-    await getAppCheck().verifyToken(token);
+    const verified = await getAppCheck().verifyToken(token);
+    // Which app asked (`1:<project>:android:<hash>`), for the usage statistics' platform (`stats.ts`).
+    if (response.locals) response.locals[APP_ID_LOCAL] = verified.appId;
     return true;
   } catch {
     response.status(401).json({ error: "Invalid App Check token", code: APP_UNVERIFIED });
