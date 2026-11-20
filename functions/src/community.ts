@@ -74,7 +74,7 @@ import {
   copyAsFace,
   copyForPublication,
   discardPublished,
-  discardUnusedPublished,
+  retireUnusedPublished,
   adoptForeignCopies,
   discardCopiesIn,
   sourcesInNames,
@@ -3663,9 +3663,9 @@ async function publish(
   ];
   if (existingId) {
     after.push(syncCredits(existingId, document.anonymous, byline.uid, document.authorName));
-    // The board was edited for a month; the copies it no longer names are
-    // nobody's, because the snapshot that pointed at them has been replaced.
-    after.push(discardUnusedPublished(existingId, [
+    // The board was edited for a month; the copies it no longer names are retired, not removed:
+    // other people's boards, rankings and Continue entries may still show them (20.11.2026).
+    after.push(retireUnusedPublished(existingId, [
       ...addresses.keys(),
       ...publishedNamesIn(existingId, [
         ...document.items.map((item) => item.imageUrl),
@@ -4010,8 +4010,8 @@ async function putMyRanking(response: Response, identity: Identity, listId: stri
   if ("refused" in result) return refuseRanking(response, result.refused, ban);
   if ("invalid" in result) return invalidRanking(response, result.invalid);
   if ("changed" in result) return publicationRefused(response, { code: "LIST_CHANGED" });
-  // The copies the earlier version showed and this one does not; another attempt's files are not among them.
-  await discardUnusedPublished(
+  // The copies the earlier version showed and this one does not, retired; another attempt's files are not among them.
+  await retireUnusedPublished(
     folderId,
     publishedNamesIn(folderId, pictures.cards.map((card) => card.imageUrl)),
     publishedNamesIn(folderId, shownBefore),
