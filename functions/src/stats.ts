@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { STATS_CRASHLYTICS, STATUS_DOC, type CrashDay } from "./crashlytics";
 import type { Request, Response } from "express";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import {
@@ -425,9 +426,10 @@ export async function readStatsAnswer(period: StatsPeriod, nowMs: number): Promi
   // Back far enough for a month of activity before either period's end, on far enough for day 30 of its cohorts.
   const readFrom = [period.from, addDays(period.to, -29), ...(previous ? [previous.from, addDays(previous.to, -29)] : [])].sort()[0]!;
   const readTo = addDays(period.to, 37) > today ? today : addDays(period.to, 37);
-  const [sums, accounts, ...tops] = await Promise.all([
+  const [sums, accounts, crashlytics, ...tops] = await Promise.all([
     readSums(readFrom, readTo),
     getFirestore().collection(STATS_ACCOUNTS).where("asOf", "<=", `${period.to}T23:59:59.999Z`).orderBy("asOf", "desc").limit(1).get(),
+    readCrashlytics(period.from, period.to),
     // The top blocks read a query per day and kind, so they cover the period's last TOP_DAYS days at most.
     ...(["lists", "topics", "sections", "pictureSearch", "listSearch", "crashes", "referrers"] as TopKind[]).map((kind) =>
       readTop(kind, days.slice(-TOP_DAYS).filter((day) => !SEARCH_KINDS.includes(kind) || day >= addDays(today, -SEARCH_KEEP_DAYS + 1))),
@@ -484,7 +486,48 @@ export async function readStatsAnswer(period: StatsPeriod, nowMs: number): Promi
       crashes: ranked(crashes!.values(), "n").map((row) => ({ type: row.type, place: row.place, version: row.version, n: row.n ?? 0, first: row.first, last: row.last })),
       referrers: ranked(referrers!.values(), "n").map((row) => ({ domain: row.domain, utm: row.utm, n: row.n ?? 0 })),
     },
+    crashlytics,
     links: { crashlytics: CRASHLYTICS_URL, playConsole: PLAY_CONSOLE_URL, searchConsole: SEARCH_CONSOLE_URL },
+  };
+}
+
+/**
+ * Google's crash numbers for the period, from `statsCrashlytics` (`crashlytics.ts`). `state` says why
+ * there are none yet: the screen shows "crashes appear after the first export" for any state but ready.
+ */
+async function readCrashlytics(from: Day, to: Day): Promise<Record<string, unknown>> {
+  const db = getFirestore();
+  const [status, days] = await Promise.all([
+    db.collection(STATS_CRASHLYTICS).doc(STATUS_DOC).get(),
+    db.collection(STATS_CRASHLYTICS).where("day", ">=", from).where("day", "<=", to).get(),
+  ]);
+  const totals: Record<string, { events: number; installDays: number }> = {};
+  const issues = new Map<string, Record<string, unknown> & { events: number; installDays: number; first: string; last: string }>();
+  const daily = days.docs
+    .map((doc) => doc.data() as CrashDay)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map((day) => {
+      for (const [kind, counts] of Object.entries(day.totals ?? {})) {
+        totals[kind] = { events: (totals[kind]?.events ?? 0) + counts.events, installDays: (totals[kind]?.installDays ?? 0) + counts.installs };
+      }
+      for (const issue of day.issues ?? []) {
+        const row = issues.get(issue.id) ?? { id: issue.id, title: issue.title, subtitle: issue.subtitle, kind: issue.kind, version: issue.version, events: 0, installDays: 0, first: day.day, last: day.day };
+        row.events += issue.events;
+        row.installDays += issue.installs;
+        row.last = day.day;
+        if (issue.version > String(row.version)) row.version = issue.version;
+        issues.set(issue.id, row);
+      }
+      const of = (kind: string) => day.totals?.[kind] ?? { events: 0, installs: 0 };
+      return { day: day.day, crashes: of("FATAL").events, crashInstalls: of("FATAL").installs, anrs: of("ANR").events, anrInstalls: of("ANR").installs, nonFatal: of("NON_FATAL").events };
+    });
+  return {
+    state: (status.get("state") as string | undefined) ?? "waiting_for_dataset",
+    checkedAt: status.get("checkedAt") ?? null,
+    lastDay: status.get("lastDay") ?? null,
+    totals,
+    daily,
+    issues: [...issues.values()].sort((a, b) => b.events - a.events).slice(0, 50),
   };
 }
 
