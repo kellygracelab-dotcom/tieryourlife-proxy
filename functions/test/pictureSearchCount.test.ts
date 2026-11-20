@@ -51,8 +51,10 @@ describe("one new 'all' search", () => {
     assert.ok(whole && "items" in whole && whole.items.some((hit) => hit.source === "openlibrary"));
     const wholeRequests = sent().length - quickRequests;
     console.log(`Outgoing requests for one new "all" search: quick ${quickRequests}, whole ${wholeRequests}, together ${quickRequests + wholeRequests}`);
-    // tmdb 1, anilist 1, igdb 2 (its search and its most rated, since 15.11.2026), steam 2, wikidata 3, iNaturalist: autocomplete, the taxa, and observations for the four still without.
-    assert.equal(quickRequests, 15);
+    // tmdb 1, anilist 1, igdb 2 (its search and its most rated, since 15.11.2026), steam 2, wikidata 3 and
+    // English Wikipedia's search (the item the name means, asked without a section too since 20.11.2026),
+    // iNaturalist: autocomplete, the taxa, and observations for the four still without.
+    assert.equal(quickRequests, 16);
     // Only Open Library is new to the whole search.
     assert.deepEqual(sent().slice(quickRequests).map((url) => url.host), ["openlibrary.org"]);
     assert.equal(wholeRequests, 1);

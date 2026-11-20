@@ -161,6 +161,22 @@ export function sameName(left: string | null | undefined, right: string): boolea
   return key.length > 0 && key === nameKey(right);
 }
 
+/**
+ * Whether [name] is [typed], or one is the other's English plural on the last word: "Pancakes" names
+ * Wikidata's "pancake", "Tacos" its "taco", "Cherries" its "cherry". Latin letters only, words of 3 letters
+ * and more, so "As" is no "A".
+ */
+export function sameOrPlural(name: string | null | undefined, typed: string): boolean {
+  if (!name) return false;
+  if (sameName(name, typed)) return true;
+  const one = nameKey(name);
+  const other = nameKey(typed);
+  if (!/^[a-z0-9 ]+$/.test(one) || !/^[a-z0-9 ]+$/.test(other)) return false;
+  const [shorter, longer] = one.length <= other.length ? [one, other] : [other, one];
+  if (shorter.length < 3) return false;
+  return longer === shorter + "s" || longer === shorter + "es" || (shorter.endsWith("y") && longer === shorter.slice(0, -1) + "ies");
+}
+
 /** The writing systems a text's letters are in. */
 function scriptsOf(text: string): Set<string> {
   const scripts = new Set<string>();

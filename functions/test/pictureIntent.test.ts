@@ -10,6 +10,7 @@ import {
   otherLayout,
   otherScript,
   sameName,
+  sameOrPlural,
   trimmedTail,
   typeOfNames,
   wantKey,
@@ -102,6 +103,15 @@ describe("names", () => {
     assert.equal(sameName("The Matrix", "matrix"), true);
     assert.equal(sameName("Final Fantasy VII", "Final Fantasy 7"), true);
     assert.equal(sameName("Pokémon", "Pokemon"), true);
+    // The item's name may be the singular of what was typed (20.11.2026).
+    assert.equal(sameOrPlural("pancake", "Pancakes"), true);
+    assert.equal(sameOrPlural("taco", "Tacos"), true);
+    assert.equal(sameOrPlural("cherry", "Cherries"), true);
+    assert.equal(sameOrPlural("Pancakes", "pancake"), true);
+    assert.equal(sameOrPlural("French toast", "French toasts"), true);
+    assert.equal(sameOrPlural("A", "As"), false);
+    assert.equal(sameOrPlural("cat", "cats and dogs"), false);
+    assert.equal(sameOrPlural("блин", "блины"), false);
     assert.equal(sameName("Crème brûlée", "Creme Brulee"), true);
     assert.equal(sameName("Fast & Furious", "fast and furious"), true);
     assert.equal(sameName("The", "the"), true);

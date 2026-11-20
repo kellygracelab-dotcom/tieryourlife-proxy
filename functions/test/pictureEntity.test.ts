@@ -123,6 +123,19 @@ describe("choosing the item a name means", () => {
     assert.equal(chooseEntity([{ facts: album, found: at(undefined, 0) }], "Taylor Swfit", null, "music"), null);
   });
 
+  it("takes a dish its plural names over a band of the plural, and on a list that says nothing, says it holds food", () => {
+    const dish = item("Q44541", { supers: [DISH], names: ["pancake"], sitelinks: 67 });
+    const band = item("Q838886", { classes: [BAND], names: ["Pancakes"], sitelinks: 5 });
+    const found = [{ facts: band, found: at(0) }, { facts: dish, found: at(4, 0) }];
+    const chosen = chooseEntity(found, "Pancakes", null, "all");
+    assert.equal(chosen?.item, "Q44541");
+    assert.equal(chosen?.implied, "food");
+    // A list that says what it holds needs no guess; a film says nothing of food.
+    assert.equal(chooseEntity(found, "Pancakes", { kind: "type", type: "food" }, "all")?.implied, undefined);
+    const film = item("Q47703", { classes: [FILM], names: ["The Godfather"], sitelinks: 90 });
+    assert.equal(chooseEntity([{ facts: film, found: at(0, 0) }], "The Godfather", null, "all")?.implied, undefined);
+  });
+
   it("chooses nothing when two items are too close", () => {
     const one = item("Q1", { classes: [FILM], names: ["Avatar"], sitelinks: 80 });
     const two = item("Q2", { classes: [TV_SERIES], names: ["Avatar"], sitelinks: 80 });

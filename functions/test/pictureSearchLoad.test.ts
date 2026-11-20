@@ -589,11 +589,83 @@ describe("stage 2: the item the name means, first", () => {
     assert.equal(items(reply)[0]?.id, "wikidata:Q36153");
   });
 
-  it("leaves an old client's search in all without a section as it was: no Wikipedia, nothing chosen", async () => {
+  it("chooses the item in all without a section too (since 20.11.2026)", async () => {
     lionKing();
-    await get({ q: "Lion King", scope: "all" });
-    assert.equal(asked.some((url) => url.host === "en.wikipedia.org"), false);
-    assert.equal(asked.some((url) => url.pathname === "/3/movie/8587"), false);
+    const reply = await get({ q: "Lion King", scope: "all" });
+    assert.ok(asked.some((url) => url.host === "en.wikipedia.org"));
+    assert.ok(asked.some((url) => url.pathname === "/3/movie/8587"));
+    assert.equal(items(reply)[0]?.id, "tmdb:8587");
+  });
+
+  /**
+   * A fresh board with no section, as Android's "Breakfast" (20.11.2026): TMDB lists films called
+   * "Pancakes", Wikidata a band of the name before the dish it calls "pancake".
+   */
+  function pancakes(): void {
+    const plain = globalThis.fetch;
+    const files: Record<string, string> = { Q838886: "Band on stage.jpg", Q44541: "Pancakes stack.jpg", Q3: "Dutch baby.jpg" };
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      const action = url.searchParams.get("action");
+      if (url.host === "api.themoviedb.org") {
+        asked.push(url);
+        return Response.json({ results: [
+          { media_type: "movie", id: 901, title: "Pancakes", poster_path: "/p1.jpg", release_date: "2023-01-01" },
+          { media_type: "movie", id: 902, title: "Pancakes", poster_path: "/p2.jpg", release_date: "2019-01-01" },
+        ], total_pages: 1 });
+      }
+      if (url.host === "www.wikidata.org" && action === "wbsearchentities") {
+        asked.push(url);
+        return Response.json({ search: [{ id: "Q838886" }, { id: "Q44541" }, { id: "Q3" }] });
+      }
+      if (url.host === "www.wikidata.org" && action === "wbgetentities") {
+        asked.push(url);
+        const one = (label: string, about: string, links: number, claims: Record<string, unknown>, id: string) => ({
+          labels: { en: { value: label } },
+          descriptions: { en: { value: about } },
+          sitelinks: Object.fromEntries(Array.from({ length: links }, (_, at) => [`wiki${at}`, {}])),
+          claims: { ...claims, P18: [text(files[id]!)] },
+        });
+        return Response.json({ entities: {
+          Q838886: one("Pancakes", "Hong Kong band", 5, { P31: [value("Q215380")] }, "Q838886"),
+          Q44541: one("pancake", "thin, round cake made of eggs, milk and flour", 67, { P279: [value("Q746549")] }, "Q44541"),
+          Q3: one("Dutch baby pancake", "sweet popover dish", 9, { P279: [value("Q746549")] }, "Q3"),
+        } });
+      }
+      if (url.host === "en.wikipedia.org" && url.searchParams.get("generator") === "search") {
+        asked.push(url);
+        return Response.json({ query: { pages: { "1": { index: 1, pageprops: { wikibase_item: "Q44541" } } } } });
+      }
+      if (url.host === "commons.wikimedia.org") {
+        asked.push(url);
+        const titles = (url.searchParams.get("titles") ?? "").split("|").filter((one) => one.length > 0);
+        return Response.json({ query: { pages: Object.fromEntries(titles.map((title, at) => [String(at + 1), {
+          title,
+          imageinfo: [{ width: 1200, height: 900, extmetadata: { Artist: { value: "Someone" }, LicenseShortName: { value: "CC BY-SA 4.0" } } }],
+        }])) } });
+      }
+      return plain(input);
+    });
+  }
+
+  it("shows the dish a plural names first on a board without a section, food before the films of the name", async () => {
+    pancakes();
+    const reply = await get({ q: "Pancakes", scope: "all" });
+    assert.equal(reply.status, 200);
+    const ids = items(reply).map((hit) => hit.id);
+    assert.equal(ids[0], "wikidata:Q44541");
+    const films = ids.filter((id) => id.startsWith("tmdb:"));
+    assert.equal(films.length, 2);
+    // The other dish comes before any film; the band, Wikidata's other thing, too.
+    assert.ok(ids.indexOf("wikidata:Q3") < ids.indexOf(films[0]!));
+    assert.ok(ids.indexOf("wikidata:Q838886") < ids.indexOf(films[0]!));
+    assert.equal(items(reply)[0]?.confidence, "medium");
+  });
+
+  it("keeps a film list's films first for the same name", async () => {
+    pancakes();
+    const reply = await get({ q: "Pancakes", scope: "all", section: "film_tv" });
+    assert.ok(items(reply)[0]?.id.startsWith("tmdb:"));
   });
 });
 
