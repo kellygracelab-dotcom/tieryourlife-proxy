@@ -540,9 +540,22 @@ CSV blocks: `daily`, `totals`, `funnel`, `retention`, `lists`, `topics`, `sectio
 | Crash-free sessions | 1 − `crashedSessions` / `sessions` | As reported by the apps. |
 | Accounts (guests, Google) | nightly from Firebase Auth | Exact at the time of the count; "used" = token refreshed, about hourly while the app is open. |
 
+The site sends batches only from a browser that already has a Firebase account (guest or Google): it creates no guest for statistics. Web `active`, DAU and the funnel leave out readers without an account; their requests still count in the server's `list.view` and searches. Counts held in such a browser go with its first batch after it gets an account.
+
 Before the apps send batches (stage 2), the client-side numbers are 0: show them as "—" with "needs the new app".
 
-**Crashes.** Crashlytics stays the place for stack traces (`links.crashlytics`); the top crashes above come from the apps' own batches. A BigQuery import of Crashlytics is not built: see the report of 20.11.2026.
+**Crashes.** Crashlytics stays the place for stack traces (`links.crashlytics`); `top.crashes` come from the apps' own batches. Since 20.11.2026 the `crashlytics` block holds Google's own numbers for Android, crashes and ANRs included, from Crashlytics' daily BigQuery export (`firebase_crashlytics`, US, batch only). `sweepGuests` reads the last three full UTC days every night into `statsCrashlytics/{day}`: counts, issue title and subtitle (a class and method) and app version only; no installation id leaves BigQuery. `installDays` sums each day's distinct installs, so one device crashing on two days counts twice.
+
+`crashlytics.state`:
+
+| State | Meaning | The screen shows |
+|---|---|---|
+| `waiting_for_dataset` | the export has not written its first day yet (up to 24 hours after linking) | "Crashes appear after the first export" |
+| `waiting_for_access` | the functions' account (`709407647012-compute@developer.gserviceaccount.com`) lacks BigQuery Data Viewer or Job User | the same text |
+| `failed` | the last night's read failed for another reason; it is tried again the next night | the numbers it holds, if any, with the date of `lastDay` |
+| `ready` | imported up to `lastDay` (yesterday at the latest) | the numbers |
+
+The waiting states are not errors: no error line in the logs, no alert. `crashlytics.state` defaults to `waiting_for_dataset` until the first night's run.
 
 ## `boards`
 
@@ -651,7 +664,7 @@ What stays: a ban in force when the account is erased. It is kept as **`bannedId
 ## Background functions
 
 Not callable:
-- `sweepGuests`: daily, deletes guest identities unused for 30 days, and `bannedIdentities` records whose `until` has passed. Since 20.11.2026 it also counts Auth accounts for the usage statistics, removes earlier days' `statsGate` and searches older than 90 days (see **Usage statistics**).
+- `sweepGuests`: daily, deletes guest identities unused for 30 days, and `bannedIdentities` records whose `until` has passed. Since 20.11.2026 it also counts Auth accounts for the usage statistics, removes earlier days' `statsGate` and searches older than 90 days, and imports the last three days of the Crashlytics BigQuery export, waiting quietly until it exists (see **Usage statistics**).
 - `sweepPictures`: daily. An own picture no kept board names (trash included) is marked `retiredAt` after its first day and deleted 30 days after the mark if still nothing names it; a board naming it again drops the mark. An account keeping the most boards it may (200) has nothing deleted, since its further boards live only on its devices (since 20.11.2026; before, such pictures went after their first day).
 - `sweepSearch`: every 15 minutes, adds every language to the search keys of new lists and topics.
 - `refreshPictures`: daily, keeps the catalogue pictures of published lists, ranking snapshots and the cards readers added to their rankings alive and within the catalogues' terms. IGDB covers with an `id` are asked again every day (Twitch's 24-hour rule), TMDB pictures with an `id` every 90 days (TMDB's six months), at most 150 a run; every other catalogue address is fetched once a week (HEAD, or one byte), at most 300 a run. An address that answers 404 or 410 is looked up by its card's `id` (AniList, Steam, Open Library, TMDB), and where the catalogue shows something else now, every list and ranking snapshot that shows it is moved to the new address, cover and collage too, with the old one kept in `attribution.formerUrls`; `updatedAt` stays. A catalogue that answers 429 or 5xx is left for the run and rests as for searches. **A catalogue that answers 401 or 403** from its API (our key switched off, access closed), to a search, a refresh by id, Twitch's IGDB token, Commons' file details or the `tmdb` proxy, is counted per catalogue on each instance, and the instance logs at most one ERROR line a minute per catalogue with the running count: `{severity: "ERROR", message: "PICTURE_SOURCE_DENIED", source, status, count}` (`source` one of `tmdb`, `igdb` (Twitch too), `web` (the paid web search, with `reason`: `key` or `credits`), `anilist`, `steam`, `openlibrary`, `wikimedia`, `inaturalist`, `wikidata`; the hosts that serve their pictures are not counted, as a 403 there is usually one gone picture's). IGDB's firewall answers 403 to a search text that looks like an attack (`<script>`, `javascript:`, `../`, `${jndi:`) before it reads our key; such a 403 is checked with a request without text under the same token: answered, the refusal was the text's, the search goes on without IGDB and a warning is logged, no alarm; refused as well, the alarm is raised (since 18.11.2026). Cloud Logging files both lines as errors with the fields under `jsonPayload`; this repository defines no alert policy on them. Since 14.11.2026 the project has two in Cloud Monitoring (made by the Backend chat with Danylo's leave, not deployed from here): a log-match policy on `jsonPayload.message="PICTURE_SOURCE_DENIED"` and one on `"PICTURE_ALARM"` (both `resource.type="cloud_run_revision"`, `severity>=ERROR`), each emailing Danylo at most once an hour, closed after a day without a new line. Nothing is deleted: an address with no id, or whose catalogue no longer has the picture, stays and is noted in `pictureChecks/{key}` (`{url, checkedAt, refreshedAt?, status: ok|moved|dead|gone, movedTo?}`). A ranking or a republication that sends a card's former address is matched as that card at its address now. Private boards are not moved yet.

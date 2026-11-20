@@ -4,6 +4,7 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { decideSweep, lastSeen } from "./guests";
 import { sweepExpiredBans } from "./banIdentities";
 import { countAccount, emptyAccounts, saveAccountCounts, sweepStats } from "./stats";
+import { importCrashlytics } from "./crashlytics";
 
 /** Firebase's own ceiling for one page of users, and for one batch delete. */
 const PAGE_SIZE = 1000;
@@ -40,6 +41,8 @@ export const sweepGuests = onSchedule(
     await sweepStats(nowMs)
       .then((swept) => console.log(`Statistics sweep: ${swept.gates} days of gates, ${swept.searchDays} days of searches removed`))
       .catch((error) => console.error("Statistics sweep failed", error));
+    // Google's crash numbers from the Crashlytics export (`crashlytics.ts`); waits quietly until it exists.
+    console.log(`Crashlytics import: ${await importCrashlytics(nowMs)}`);
     const auth = getAuth();
     const doomed: string[] = [];
     // Accounts by kind for the usage statistics, counted as the pages go by: numbers only, no uid kept.
