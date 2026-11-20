@@ -37,6 +37,7 @@ import {
 } from "./pictureAttribution";
 import { COPY_LIMITS, copySwitches, wantsCopy, type CopySwitches } from "./pictureCopies";
 import { storageMediaUrl } from "./publicMedia";
+import { namedPaths, retiredAtOf, retiredToRemove } from "./publishedPictures";
 
 /** What a copy's file says of itself; absent fields for a file copied before files said so. */
 export interface CopyMeta {
@@ -374,7 +375,7 @@ export async function keepPictureCopies(nowMs: number, untilMs: number, rescue: 
   const bucket = getStorage().bucket();
   const switches = await copySwitches();
   const tools = catalogueCopyTools(realOutsideTools("catalogue-upkeep"));
-  const summary = { copied: 0, docsCopied: 0, boardsCopied: 0, refreshed: 0, refreshFailed: 0, foundAgain: 0, docsFoundAgain: 0, keptPastLimit: 0, dropped: 0, sharedRemoved: 0 };
+  const summary = { copied: 0, docsCopied: 0, boardsCopied: 0, refreshed: 0, refreshFailed: 0, foundAgain: 0, docsFoundAgain: 0, keptPastLimit: 0, dropped: 0, sharedRemoved: 0, retiredRemoved: 0, retiredKept: 0 };
 
   const docs = await picturedDocs();
   for (const doc of docs) {
@@ -454,6 +455,24 @@ export async function keepPictureCopies(nowMs: number, untilMs: number, rescue: 
   for (const file of sharedUnshown) {
     if (gone.has(file.name)) continue;
     await file.delete().then(() => summary.sharedRemoved++, () => undefined);
+  }
+  if (Date.now() > untilMs) return summary;
+  // Copies a republished list or ranking stopped naming: removed after a month, and only once no list,
+  // ranking, board or Continue entry names them, read afresh just before (20.11.2026).
+  const retired = files.flatMap((file) => {
+    const at = retiredAtOf(file.metadata.metadata as Record<string, unknown> | undefined);
+    return at === null ? [] : [{ name: file.name, retiredAt: at }];
+  });
+  if (retired.length > 0) {
+    const [fresh, started] = await Promise.all([picturedDocs(), getFirestore().collectionGroup("started").get()]);
+    const named = new Set<string>();
+    for (const doc of [...fresh, ...started.docs]) namedPaths(doc.data(), named);
+    const remove = retiredToRemove(retired, named, nowMs);
+    summary.retiredKept = retired.length - remove.length;
+    for (const path of remove) {
+      if (Date.now() > untilMs) break;
+      await bucket.file(path).delete().then(() => summary.retiredRemoved++, () => undefined);
+    }
   }
   return summary;
 }

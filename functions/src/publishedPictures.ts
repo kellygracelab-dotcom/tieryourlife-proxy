@@ -429,24 +429,72 @@ export function publishedNamesIn(listId: string, urls: readonly (string | null |
 }
 
 /**
- * The copies this list no longer names, after a republish.
- *
- * A board somebody edited for a month can leave a great many behind, and they
- * are nobody's: the snapshot that pointed at them has been replaced.
+ * How long a copy its list or ranking no longer names stays at least (20.11.2026). Other people's
+ * boards, rankings and Continue entries keep a published list's picture addresses, and a guest's
+ * board on a device the server never sees: a copy the author replaced used to go at once and
+ * leave their cards empty. It goes after this long, and only when nothing the server keeps names
+ * it any more (`retiredToRemove`, run by the daily upkeep).
  */
-export async function discardUnusedPublished(listId: string, keeping: string[], candidates?: readonly string[]): Promise<void> {
+export const RETIRED_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
+/** The custom metadata key that says when a copy stopped being named by its own list, epoch ms. */
+export const RETIRED_AT = "retiredAt";
+
+/** When a file was retired, from its custom metadata; null when it is not. */
+export function retiredAtOf(custom: Record<string, unknown> | undefined | null): number | null {
+  const at = Number(custom?.[RETIRED_AT]);
+  return Number.isFinite(at) && at > 0 ? at : null;
+}
+
+/** The retired files to remove now: retired at least [RETIRED_KEEP_MS] ago, and named by nothing in [named]. */
+export function retiredToRemove(files: readonly { name: string; retiredAt: number | null }[], named: ReadonlySet<string>, nowMs: number): string[] {
+  return files.filter((file) => file.retiredAt !== null && nowMs - file.retiredAt >= RETIRED_KEEP_MS && !named.has(file.name)).map((file) => file.name);
+}
+
+/** Every path in our bucket that any string in [data] names, however deep: the most careful reading of what a document shows. */
+export function namedPaths(data: unknown, into: Set<string> = new Set()): Set<string> {
+  if (typeof data === "string") {
+    if (!data.includes("/o/") && !data.includes("/img/original/")) return into;
+    const match = /^https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/[^/]+\/o\/([^?#]+)/.exec(storageMediaUrl(data));
+    if (match) {
+      try {
+        into.add(decodeURIComponent(match[1]!));
+      } catch {
+        // An address that does not decode names nothing of ours.
+      }
+    }
+  } else if (Array.isArray(data)) {
+    for (const one of data) namedPaths(one, into);
+  } else if (data !== null && typeof data === "object") {
+    if (typeof (data as { toDate?: unknown }).toDate === "function") return into;
+    for (const one of Object.values(data as Record<string, unknown>)) namedPaths(one, into);
+  }
+  return into;
+}
+
+/**
+ * The copies this list (or ranking) no longer names, after a republish: marked retired, not removed.
+ * A copy it names again loses the mark. The daily upkeep removes them once nothing names them
+ * (`RETIRED_KEEP_MS`).
+ */
+export async function retireUnusedPublished(listId: string, keeping: string[], candidates?: readonly string[], nowMs: number = Date.now()): Promise<void> {
   const kept = new Set(keeping);
   const eligible = candidates === undefined ? null : new Set(candidates);
   const [files] = await getStorage()
     .bucket()
     .getFiles({ prefix: `published/${listId}/` });
+  // A mark that fails to land leaves the copy unmarked: kept, the safe side.
+  const mark = (file: (typeof files)[number], value: string | null) =>
+    Promise.resolve()
+      .then(() => file.setMetadata({ metadata: { [RETIRED_AT]: value } }))
+      .catch(() => undefined);
   await Promise.all(
-    files
-      .filter((file) => {
-        const name = file.name.slice(`published/${listId}/`.length);
-        return !kept.has(name) && (eligible === null || eligible.has(name));
-      })
-      .map((file) => file.delete().catch(() => undefined)),
+    files.map((file) => {
+      const name = file.name.slice(`published/${listId}/`.length);
+      const retired = retiredAtOf((file.metadata?.metadata ?? null) as Record<string, unknown> | null);
+      if (kept.has(name)) return retired === null ? undefined : mark(file, null);
+      if (retired !== null || (eligible !== null && !eligible.has(name))) return undefined;
+      return mark(file, String(nowMs));
+    }),
   );
 }
 
