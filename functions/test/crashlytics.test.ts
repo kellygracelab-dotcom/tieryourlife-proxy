@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
 import * as firestoreModule from "firebase-admin/firestore";
-import { androidTables, crashDaysOf, crashSql, importCrashlytics, waitingStateOf } from "../src/crashlytics";
+import { androidTables, crashDaysOf, crashSql, importCrashlytics, issueName, newerVersion, waitingStateOf } from "../src/crashlytics";
 
 const NOW = Date.parse("2026-11-21T03:00:00Z");
 
@@ -58,6 +58,20 @@ describe("Crashlytics import (20.11.2026)", () => {
     assert.equal(days.length, 1);
     assert.deepEqual(days[0]!.totals, { FATAL: { events: 5, installs: 3 }, ANR: { events: 2, installs: 2 } });
     assert.deepEqual(days[0]!.issues.map((issue) => issue.id), ["b2", "a1"]);
+  });
+
+  it("names an issue by its exception while the build has no mapping (22.11.2026)", () => {
+    assert.deepEqual(issueName("r8-map-id-0ebe09", "android.system.GaiException - android_getaddrinfo failed"), { title: "android.system.GaiException", subtitle: "android_getaddrinfo failed" });
+    assert.deepEqual(issueName("r8-map-id-9134d0", "me2"), { title: "me2", subtitle: "" });
+    assert.deepEqual(issueName("BoardScreen.kt", "render"), { title: "BoardScreen.kt", subtitle: "render" });
+    assert.deepEqual(issueName("r8-map-id-1", ""), { title: "r8-map-id-1", subtitle: "" });
+  });
+
+  it("reads the build number, not the version name every build shares", () => {
+    assert.match(crashSql("t_ANDROID", true), /COALESCE\(application\.build_version, application\.display_version\)/);
+    assert.equal(newerVersion("1000", "999"), true);
+    assert.equal(newerVersion("550", "598"), false);
+    assert.equal(newerVersion("1.10", "1.9"), false);
   });
 
   it("notes the wait and stops when the dataset is not there yet", async () => {

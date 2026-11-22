@@ -64,7 +64,7 @@ export function crashSql(table: string, hasErrorType: boolean): string {
   return `
 WITH events AS (
   SELECT DATE(event_timestamp) AS day, ${kind} AS kind, issue_id, issue_title, issue_subtitle,
-         application.display_version AS version, installation_uuid
+         COALESCE(application.build_version, application.display_version) AS version, installation_uuid
   FROM \`${PROJECT}.${DATASET}.${table}\`
   WHERE DATE(event_timestamp) BETWEEN @from AND @to
 )
@@ -72,10 +72,26 @@ SELECT day, kind, '' AS issue_id, '' AS title, '' AS subtitle, '' AS version,
        COUNT(*) AS events, COUNT(DISTINCT installation_uuid) AS installs
 FROM events GROUP BY day, kind
 UNION ALL
-SELECT day, kind, issue_id, ANY_VALUE(issue_title), ANY_VALUE(issue_subtitle), MAX(version),
+SELECT day, kind, issue_id, ANY_VALUE(issue_title), ANY_VALUE(issue_subtitle),
+       IFNULL(CAST(MAX(SAFE_CAST(version AS INT64)) AS STRING), MAX(version)),
        COUNT(*), COUNT(DISTINCT installation_uuid)
 FROM events
 GROUP BY day, kind, issue_id`;
+}
+
+/**
+ * An issue's name for the screen. Without the R8 mapping Crashlytics titles an issue by the build's
+ * `r8-map-id-…` source tag; the subtitle (`Exception - message`) then names it better.
+ */
+export function issueName(title: string, subtitle: string): { title: string; subtitle: string } {
+  if (!/^r8-map-id-/.test(title) || subtitle === "") return { title, subtitle };
+  const cut = subtitle.indexOf(" - ");
+  return cut < 0 ? { title: subtitle, subtitle: "" } : { title: subtitle.slice(0, cut), subtitle: subtitle.slice(cut + 3) };
+}
+
+/** Whether version [a] is later than [b]: build numbers by value ("1000" after "999"), anything else as text. */
+export function newerVersion(a: string, b: string): boolean {
+  return /^\d+$/.test(a) && /^\d+$/.test(b) ? Number(a) > Number(b) : a > b;
 }
 
 /** BigQuery's rows (`{f: [{v}]}`) as days: totals per kind and the most frequent issues. */
@@ -87,7 +103,7 @@ export function crashDaysOf(rows: { f: { v: unknown }[] }[]): CrashDay[] {
     const into = days.get(key) ?? { day: key, totals: {}, issues: [] };
     const counts = { events: Number(events ?? 0), installs: Number(installs ?? 0) };
     if (!issueId) into.totals[String(kind)] = counts;
-    else into.issues.push({ id: String(issueId), title: String(title ?? ""), subtitle: String(subtitle ?? ""), kind: String(kind), version: String(version ?? ""), ...counts });
+    else into.issues.push({ id: String(issueId), ...issueName(String(title ?? ""), String(subtitle ?? "")), kind: String(kind), version: String(version ?? ""), ...counts });
     days.set(key, into);
   }
   for (const day of days.values()) day.issues = day.issues.sort((a, b) => b.events - a.events || a.id.localeCompare(b.id)).slice(0, ISSUES_PER_DAY);
