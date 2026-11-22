@@ -546,7 +546,7 @@ The site sends batches only from a browser that already has a Firebase account (
 
 Before the apps send batches (stage 2), the client-side numbers are 0: show them as "—" with "needs the new app".
 
-**Crashes.** Crashlytics stays the place for stack traces (`links.crashlytics`); `top.crashes` come from the apps' own batches. Since 20.11.2026 the `crashlytics` block holds Google's own numbers for Android, crashes and ANRs included, from Crashlytics' daily BigQuery export (`firebase_crashlytics`, US, batch only). `sweepGuests` reads the last three full UTC days every night into `statsCrashlytics/{day}`: counts, issue title and subtitle (a class and method) and app version only; no installation id leaves BigQuery. `installDays` sums each day's distinct installs, so one device crashing on two days counts twice.
+**Crashes.** Crashlytics stays the place for stack traces (`links.crashlytics`); `top.crashes` come from the apps' own batches. Since 20.11.2026 the `crashlytics` block holds Google's own numbers for Android, crashes and ANRs included, from Crashlytics' daily BigQuery export (`firebase_crashlytics`, US, batch only). `sweepGuests` reads the last three full UTC days every night into `statsCrashlytics/{day}`: counts, issue title and subtitle (a class and method) and app version only; no installation id leaves BigQuery. `version` is the build number (Android versionCode), since every build is named "1.0". An issue Crashlytics titles `r8-map-id-…` (a build whose R8 mapping it does not have) is named by its exception instead: `title` the exception's class, `subtitle` its message. `installDays` sums each day's distinct installs, so one device crashing on two days counts twice.
 
 `crashlytics.state`:
 

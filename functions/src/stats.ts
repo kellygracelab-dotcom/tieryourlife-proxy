@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { STATS_CRASHLYTICS, STATUS_DOC, type CrashDay } from "./crashlytics";
+import { newerVersion, STATS_CRASHLYTICS, STATUS_DOC, type CrashDay } from "./crashlytics";
 import type { Request, Response } from "express";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import {
@@ -515,7 +515,7 @@ async function readCrashlytics(from: Day, to: Day): Promise<Record<string, unkno
         row.events += issue.events;
         row.installDays += issue.installs;
         row.last = day.day;
-        if (issue.version > String(row.version)) row.version = issue.version;
+        if (newerVersion(issue.version, String(row.version))) row.version = issue.version;
         issues.set(issue.id, row);
       }
       const of = (kind: string) => day.totals?.[kind] ?? { events: 0, installs: 0 };
