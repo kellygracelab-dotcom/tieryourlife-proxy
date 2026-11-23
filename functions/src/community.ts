@@ -54,7 +54,7 @@ import {
   type StaffRole,
   type Translations,
 } from "./editorial";
-import { FRESH_DAYS, FRESH_READ, freshEligible, freshRow } from "./freshRow";
+import { FRESH_DAYS, FRESH_PAGES, FRESH_READ, freshEligible, freshRow } from "./freshRow";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
   chunked,
@@ -1120,8 +1120,16 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
 async function readFreshRow(response: Response, identity: Identity): Promise<void> {
   const db = getFirestore();
   const since = Timestamp.fromMillis(Date.now() - FRESH_DAYS * 24 * 60 * 60 * 1000);
-  const newest = await db.collection(PUBLISHED).where("publishedAt", ">=", since).orderBy("publishedAt", "desc").limit(FRESH_READ).get();
-  const eligible = newest.docs.filter((doc) => freshEligible(doc.data() as StoredList));
+  // Page by page through the window: a batch of house lists published at once must not hide people's.
+  const ordered = db.collection(PUBLISHED).where("publishedAt", ">=", since).orderBy("publishedAt", "desc");
+  const eligible: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  let last: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+  for (let page = 0; page < FRESH_PAGES; page++) {
+    const docs: FirebaseFirestore.QueryDocumentSnapshot[] = (await (last ? ordered.startAfter(last) : ordered).limit(FRESH_READ).get()).docs;
+    eligible.push(...docs.filter((doc) => freshEligible(doc.data() as StoredList)));
+    if (docs.length < FRESH_READ) break;
+    last = docs[docs.length - 1]!;
+  }
   const authors = [...new Set(eligible.map((doc) => doc.get("authorUid") as string))];
   const bans = authors.length === 0 ? [] : await db.getAll(...authors.map((uid) => db.collection(BANS).doc(uid)));
   const nowMs = Date.now();
