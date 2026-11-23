@@ -9,6 +9,7 @@ import {
   decideStore,
   decideWrite,
   displayModeOf,
+  settleFavourite,
 } from "../src/sync";
 
 const TIER_UID = "tier-1";
@@ -52,7 +53,7 @@ function body(overrides: Record<string, unknown> = {}) {
 
 function store(
   overrides: Record<string, unknown> = {},
-  extras: Partial<{ isAnonymous: boolean; boardsAlreadyKept: number; storedCoverPictureId: string | null }> = {},
+  extras: Partial<{ isAnonymous: boolean; boardsAlreadyKept: number; storedCoverPictureId: string | null; storedFavourite: { favouritedAt: number | null; favouriteChangedAt: number } | null }> = {},
 ) {
   return decideStore({
     body: body(overrides),
@@ -480,5 +481,43 @@ describe("decideWrite", () => {
   // Two boards nobody has ever fingerprinted are not thereby the same board.
   it("will not call two unfingerprinted boards the same board", () => {
     assert.equal(decideWrite(held(5, null), 4, null), "conflict");
+  });
+});
+
+describe("the board's star follows the account (23.11.2026)", () => {
+  const STAR = { favouritedAt: 1_795_000_000_000, favouriteChangedAt: 1_795_000_000_000 };
+
+  it("keeps a star and an unstar as sent", () => {
+    const starred = store(STAR);
+    assert.ok(starred.ok);
+    assert.equal(starred.board.favouritedAt, STAR.favouritedAt);
+    assert.equal(starred.board.favouriteChangedAt, STAR.favouriteChangedAt);
+    const unstarred = store({ favouritedAt: null, favouriteChangedAt: 1_795_000_100_000 }, { storedFavourite: STAR });
+    assert.ok(unstarred.ok);
+    assert.equal(unstarred.board.favouritedAt, null);
+    assert.equal(unstarred.board.favouriteChangedAt, 1_795_000_100_000);
+  });
+
+  it("keeps the stored star for a writer that does not know it, and adds nothing to a board without one", () => {
+    const old = store({}, { storedFavourite: STAR });
+    assert.ok(old.ok);
+    assert.deepEqual([old.board.favouritedAt, old.board.favouriteChangedAt], [STAR.favouritedAt, STAR.favouriteChangedAt]);
+    const never = store();
+    assert.ok(never.ok);
+    assert.equal("favouritedAt" in never.board, false);
+    assert.equal("favouriteChangedAt" in never.board, false);
+  });
+
+  it("lets the later change win, the sent one on a tie", () => {
+    assert.deepEqual(settleFavourite({ favouritedAt: null, favouriteChangedAt: STAR.favouriteChangedAt - 1 }, STAR), STAR);
+    assert.deepEqual(settleFavourite({ favouritedAt: null, favouriteChangedAt: STAR.favouriteChangedAt }, STAR), { favouritedAt: null, favouriteChangedAt: STAR.favouriteChangedAt });
+  });
+
+  it("refuses a star that is not a time", () => {
+    for (const wrong of [{ favouritedAt: "yesterday", favouriteChangedAt: 1 }, { favouritedAt: 1 }, { favouritedAt: null, favouriteChangedAt: -1 }, { favouriteChangedAt: 1 }, { favouritedAt: 1, favouriteChangedAt: null }]) {
+      const refused = store(wrong);
+      assert.equal(refused.ok, false, JSON.stringify(wrong));
+      assert.equal(!refused.ok && refused.reason, "invalid");
+    }
   });
 });

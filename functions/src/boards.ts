@@ -26,6 +26,7 @@ import {
   playToDocument,
   playAfterWrite,
   preservedPlayFingerprint,
+  type Favourite,
   type StoreRejection,
   type StoredBoard,
   type StoredPlay,
@@ -113,6 +114,12 @@ function boardsOf(uid: string): FirebaseFirestore.CollectionReference {
   return getFirestore().collection(ACCOUNTS).doc(uid).collection(BOARDS);
 }
 
+/** The star a board keeps, or null when no device has sent one. */
+function favouriteOf(data: Partial<Pick<StoredBoard, "favouritedAt" | "favouriteChangedAt">> | null | undefined): Favourite | null {
+  if (typeof data?.favouriteChangedAt !== "number") return null;
+  return { favouritedAt: typeof data.favouritedAt === "number" ? data.favouritedAt : null, favouriteChangedAt: data.favouriteChangedAt };
+}
+
 /** The board as a device receives it. A game a month old or more is left out, as if there were none. */
 export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Date.now()) {
   const play = livePlay(playFromDocument(data.play), nowMs);
@@ -141,6 +148,7 @@ export function toFullBoard(id: string, data: BoardDocument, nowMs: number = Dat
     ...(data.takenFrom ? { takenFrom: data.takenFrom } : {}),
     ...(data.origin ? { origin: data.origin } : {}),
     ...(data.rankingChoice ? { rankingChoice: data.rankingChoice } : {}),
+    ...(favouriteOf(data) ?? {}),
   };
 }
 
@@ -161,6 +169,7 @@ function toIndexEntry(id: string, data: BoardDocument) {
     fingerprint: data.fingerprint ?? null,
     title: data.title ?? "",
     itemCount: data.items?.filter((item) => item.deletedAt === null).length ?? 0,
+    ...(favouriteOf(data) ?? {}),
   };
 }
 
@@ -392,6 +401,7 @@ async function write(
       storedPictureFocus: new Map((stored?.items ?? []).filter((item) => item.pictureFocus !== undefined).map((item) => [item.uid, item.pictureFocus!])),
       storedOrigin: { ...(stored?.origin ? { origin: stored.origin } : {}), ...(stored?.takenFrom ? { takenFrom: stored.takenFrom } : {}), ...(stored?.rankingChoice ? { rankingChoice: stored.rankingChoice } : {}) },
       storedSourceIndexes: new Map((stored?.items ?? []).filter((item) => item.sourceIndex !== undefined).map((item) => [item.uid, item.sourceIndex!])),
+      storedFavourite: favouriteOf(stored),
       isAnonymous: identity.isAnonymous, boardsAlreadyKept: existing.exists ? kept - 1 : kept });
     if (!decision.ok) return { rejection: decision };
     // Catalogue pictures shown from our shared copies, when the board still fits; revision and fingerprint stay the device's.
@@ -409,8 +419,10 @@ async function write(
     const changedGame = JSON.stringify(before) !== JSON.stringify(play);
     const fingerprint = preservedPlayFingerprint(source, sent, play);
     const changedMetadata = originState(stored) !== originState(decision.board);
+    // The star is outside the fingerprint, so a new star from a device behind is a conflict to merge, never "already".
+    const changedFavourite = JSON.stringify(favouriteOf(stored)) !== JSON.stringify(favouriteOf(decision.board));
     const verdict = decideWrite(stored ? { revision: stored.revision, fingerprint: stored.fingerprint ?? null } : null,
-      source.basedOn, changedGame || changedMetadata ? null : fingerprint);
+      source.basedOn, changedGame || changedMetadata || changedFavourite ? null : fingerprint);
     if (verdict === "already") return { status: 200, body: { uid: id, revision: stored!.revision } };
     if (verdict === "conflict") return { status: 409, body: {
       error: "That board moved on somewhere else", code: "CONFLICT",

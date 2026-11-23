@@ -109,6 +109,20 @@ export interface StoredBoard extends OriginMetadata {
   play?: Play;
   /** The author publishes this board without their name; absent, rather than false, when they do not. */
   anonymous?: true;
+  /**
+   * The star (23.11.2026): when the owner added the board to their favourites, or null after they took it
+   * out; absent on a board no device has starred since the field existed. Not an edit: outside the
+   * fingerprint, it never makes a board look changed to publish.
+   */
+  favouritedAt?: number | null;
+  /** When the star last changed, on the device that changed it: the later change wins. Present with `favouritedAt`. */
+  favouriteChangedAt?: number;
+}
+
+/** A board's star as stored. */
+export interface Favourite {
+  favouritedAt: number | null;
+  favouriteChangedAt: number;
 }
 
 /**
@@ -317,7 +331,8 @@ export function preservedPlayFingerprint(source: Record<string, unknown>, board:
     board.items.some((item) => item.sourceIndex !== undefined && sentItems.get(item.uid) !== item.sourceIndex) ||
     board.items.some((item) => item.pictureFocus !== undefined && sentFocus.get(item.uid) !== JSON.stringify(item.pictureFocus));
   if (!preservedGame && !retainedMetadata) return board.fingerprint;
-  const { fingerprint: _opaque, play: _sent, ...content } = board;
+  // The star is no part of what the board shows: never in a fingerprint (23.11.2026).
+  const { fingerprint: _opaque, play: _sent, favouritedAt: _star, favouriteChangedAt: _starChanged, ...content } = board;
   return `${preservedGame ? "game-v1" : "state-v1"}:${createHash("sha256").update(JSON.stringify({ ...content, play })).digest("hex")}`;
 }
 
@@ -401,6 +416,25 @@ export interface StoreInput {
   storedPictureFocus?: ReadonlyMap<string, CoverFocus>;
   storedOrigin?: OriginMetadata;
   storedSourceIndexes?: ReadonlyMap<string, number>;
+  /** The star already kept for this board, if any. */
+  storedFavourite?: Favourite | null;
+}
+
+const isTime = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/**
+ * The star a write keeps (23.11.2026). A writer that leaves `favouriteChangedAt` out (every client from
+ * before it) keeps the stored star; one that sends it sends `favouritedAt` too, a time or null. Of the
+ * stored star and the sent one, the later `favouriteChangedAt` wins, the sent one on a tie: a device
+ * that was offline cannot undo a newer star from another.
+ */
+export function settleFavourite(source: Record<string, unknown>, stored: Favourite | null): Favourite | null | "invalid" {
+  if (source.favouriteChangedAt === undefined) return source.favouritedAt === undefined ? stored : "invalid";
+  const changedAt = source.favouriteChangedAt;
+  const at = source.favouritedAt;
+  if (!isTime(changedAt) || !(at === null || isTime(at))) return "invalid";
+  if (stored !== null && stored.favouriteChangedAt > changedAt) return stored;
+  return { favouritedAt: at === null ? null : Math.floor(at), favouriteChangedAt: Math.floor(changedAt) };
 }
 
 /**
@@ -463,6 +497,7 @@ export function decideStore({
   storedPictureFocus = new Map(),
   storedOrigin = {},
   storedSourceIndexes = new Map(),
+  storedFavourite = null,
 }: StoreInput): StoreDecision {
   // An anonymous identity lives in the install, so keeping its boards would be
   // a backup whose key is destroyed by the very thing it protects against.
@@ -607,6 +642,9 @@ export function decideStore({
   const coverFocus = settleCoverFocus(source, board, storedCoverFocus);
   if (coverFocus === "invalid") return { ok: false, reason: "invalid", detail: `coverFocus: ${FOCUS_RANGE}` };
   if (coverFocus !== null) board.coverFocus = coverFocus;
+  const favourite = settleFavourite(source, storedFavourite);
+  if (favourite === "invalid") return { ok: false, reason: "invalid", detail: "favouritedAt: a time in ms or null, with favouriteChangedAt: a time in ms" };
+  if (favourite !== null) Object.assign(board, favourite);
   if (Buffer.byteLength(JSON.stringify(board), "utf8") > MAX_BOARD_BYTES) {
     return { ok: false, reason: "too_large", detail: "The board is too heavy to keep" };
   }
