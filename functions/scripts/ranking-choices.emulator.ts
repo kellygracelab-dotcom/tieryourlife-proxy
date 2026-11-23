@@ -453,7 +453,8 @@ describe("rankings sheet: the author first, likes, added cards, withdrawal and e
       const withSection = await call(guest, "GET", `/lists?category=film_tv&topic=${topic.id}&sort=${sort}`);
       const alone = await call(guest, "GET", `/lists?topic=${topic.id}&sort=${sort}`);
       assert.equal(withSection.status, 200, JSON.stringify(withSection));
-      const named = (answer: typeof alone) => (answer.body.lists as { id: string }[]).map((one_) => one_.id);
+      // Only this author's lists: smoke-e2e, run beside this file, moves a list of its own into and out of the same topic.
+      const named = (answer: typeof alone) => (answer.body.lists as { id: string; authorUid: string }[]).filter((one_) => one_.authorUid === author.uid).map((one_) => one_.id);
       assert.ok(named(withSection).includes(String(published.body.id)), sort);
       assert.deepEqual(named(withSection), named(alone));
     }
