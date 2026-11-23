@@ -12,8 +12,10 @@ import { EDITORIAL_UID } from "./editorial";
 
 /** How far back a publication counts as new. */
 export const FRESH_DAYS = 14;
-/** The newest publications read; the rules below are applied to these in memory. */
+/** Publications read a page at a time, newest first; the rules below are applied to them in memory. */
 export const FRESH_READ = 60;
+/** The most pages read: the house publishes in batches, which must not push people's lists out of reach. */
+export const FRESH_PAGES = 5;
 /** The most the row holds: a shop window, not a feed, so no pages. */
 export const FRESH_MAX = 12;
 /** The most one author has in the row; authors take turns. */
