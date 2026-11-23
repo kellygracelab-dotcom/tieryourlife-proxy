@@ -341,6 +341,32 @@ describe("the proxy under the demo emulators", () => {
     assert.deepEqual([bare.status, bare.body.pictureUrl, bare.body.pictureAttribution], [200, null, undefined]);
   });
 
+  it("keeps a board's star for every device, an old writer and a device behind included (23.11.2026)", async () => {
+    const author = await newAuthor("star");
+    const board = { title: "Starred board", fingerprint: "star-1", tiers: [{ ...TIER, uid: "tier-1", position: 0 }], items: [] };
+    assert.equal((await call(author, "PUT", "/boards/starred", board)).status, 200);
+    assert.equal("favouritedAt" in (await call(author, "GET", "/boards/starred")).body, false);
+    const star = { favouritedAt: 1795500000000, favouriteChangedAt: 1795500000000 };
+    const starred = await call(author, "PUT", "/boards/starred", { ...board, ...star, basedOn: 1 });
+    assert.deepEqual(starred.body, { uid: "starred", revision: 2 });
+    const full = (await call(author, "GET", "/boards/starred")).body;
+    assert.deepEqual([full.favouritedAt, full.favouriteChangedAt, full.fingerprint], [star.favouritedAt, star.favouriteChangedAt, "star-1"]);
+    const listed = ((await call(author, "GET", "/boards")).body.boards as Record<string, unknown>[]).find((one) => one.uid === "starred");
+    assert.equal(listed?.favouritedAt, star.favouritedAt);
+    // A client from before the star leaves it out and keeps it.
+    assert.equal((await call(author, "PUT", "/boards/starred", { ...board, title: "Renamed by an old phone", fingerprint: "star-2", basedOn: 2 })).status, 200);
+    assert.equal((await call(author, "GET", "/boards/starred")).body.favouritedAt, star.favouritedAt);
+    // A device behind that unstars with the same content is told what is stored, not "already".
+    const behind = await call(author, "PUT", "/boards/starred", { ...board, title: "Renamed by an old phone", fingerprint: "star-2", basedOn: 2, favouritedAt: null, favouriteChangedAt: 1795500100000 });
+    assert.equal(behind.status, 409);
+    assert.equal((behind.body.board as Record<string, unknown>).favouritedAt, star.favouritedAt);
+    const unstarred = await call(author, "PUT", "/boards/starred", { ...board, title: "Renamed by an old phone", fingerprint: "star-2", basedOn: 3, favouritedAt: null, favouriteChangedAt: 1795500100000 });
+    assert.equal(unstarred.status, 200);
+    assert.equal((await call(author, "GET", "/boards/starred")).body.favouritedAt, null);
+    const wrong = await call(author, "PUT", "/boards/starred", { ...board, basedOn: 4, favouritedAt: "today", favouriteChangedAt: 1 });
+    assert.deepEqual([wrong.status, wrong.body.code], [400, "INVALID"]);
+  });
+
   it("keeps which part of a cover shows on boards, lists, topics and sections, the centre when none", async () => {
     const focus = { x: 0.5, y: 0.2, zoom: 1.5 };
     const RANGE = "A focus is {x, y, zoom}: x and y from 0 to 1, zoom from 1 to 4";
