@@ -47,6 +47,12 @@ describe("usage statistics: what a request counts (20.11.2026)", () => {
     assert.deepEqual(tallyOf(facts({ query: { topic: LIST, category: "games" }, body: { lists: [1] } })).events, ["topic.open", "section.open"]);
   });
 
+  it("counts the row of new lists when it was shown, from two lists (23.11.2026)", () => {
+    assert.deepEqual(tallyOf(facts({ query: { fresh: "1" }, body: { lists: [1, 2] } })).events, ["home.fresh"]);
+    assert.deepEqual(tallyOf(facts({ query: { fresh: "1" }, body: { lists: [1] } })).events, []);
+    assert.deepEqual(tallyOf(facts({ query: { fresh: "1", category: "games" }, body: { lists: [] } })).events, []);
+  });
+
   it("counts a picture search once across its quick and rest parts, and the miss at its end", () => {
     const quick = tallyOf(facts({ segments: ["pictures"], query: { q: "Pancakes", part: "quick", section: "food" }, body: { items: [] } }));
     assert.deepEqual(quick.events, ["search.pictures"]);

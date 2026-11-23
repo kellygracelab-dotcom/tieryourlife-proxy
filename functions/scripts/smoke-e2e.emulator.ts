@@ -51,6 +51,27 @@ describe("the proxy under the demo emulators", () => {
     }
   });
 
+  it("shows a person's new list in the row above Popular, and leaves a thin one out (23.11.2026)", async () => {
+    const author = await newAuthor("fresh");
+    const poster = (n: number) => `https://image.tmdb.org/t/p/w500/fresh${n}.jpg`;
+    const items = Array.from({ length: 8 }, (_, n) => ({ title: `Film ${n}`, imageUrl: poster(n), tierIndex: 0 }));
+    const full = await call(author, "POST", "/lists", { title: "Fresh full list", category: "film_tv", tiers: [TIER], items, coverImageUrl: poster(0) });
+    assert.equal(full.status, 201, JSON.stringify(full.body));
+    const thin = await call(author, "POST", "/lists", { title: "Fresh thin list", category: "film_tv", tiers: [TIER], items: items.slice(0, 3), coverImageUrl: poster(0) });
+    assert.equal(thin.status, 201, JSON.stringify(thin.body));
+    const reply = await fetch(`${FUNCTIONS}/lists?fresh=1`, { headers: { Authorization: `Bearer ${guest}` } });
+    const body = (await reply.json()) as { lists: { id: string }[]; nextCursor?: unknown };
+    assert.equal(reply.status, 200);
+    assert.equal(reply.headers.get("cache-control"), "no-store");
+    const ids = body.lists.map((list) => list.id);
+    assert.ok(ids.includes(full.body.id as string), JSON.stringify(ids));
+    assert.ok(!ids.includes(thin.body.id as string));
+    assert.equal("nextCursor" in body, false);
+    // Popular still pages, now with ties newest first.
+    const popular = await call(guest, "GET", "/lists?sort=popular");
+    assert.equal(popular.status, 200);
+  });
+
   it("answers a guest without App Check, and refuses it a publication", async () => {
     assert.deepEqual((await call(guest, "GET", "/boards")).body, { boards: [], next: null });
     const refused = await call(guest, "POST", "/lists", { title: "x" });

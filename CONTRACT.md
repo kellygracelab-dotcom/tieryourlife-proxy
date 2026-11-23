@@ -131,11 +131,13 @@ All routes: App Check and user. `lists` keeps one instance warm.
 - `author`: a uid. An anonymous list never appears on its author's page.
 - `topic`: a topic id. With a topic, `category` is ignored (since 14.11.2026): a topic decides its lists' section itself, so the website (which sends both) and the app (which sends the topic alone) are shown the same lists, in the same order.
 - `q`: search words (lower-cased, cut to 80). A list matches when its search keys hold every word; keys cover the title in every language once the search sweep has run. A `q` with no usable word answers `{lists: [], nextCursor: null}`.
-- `sort`: `recent` (default) or `popular` (by `takeCount`).
+- `sort`: `recent` (default, by `updatedAt`) or `popular` (by `takeCount`; since 23.11.2026 lists taken as often go by `updatedAt`, newest first, instead of by document id).
 - `following=1`: only lists by followed authors, followed topics and followed sections (an anonymous list arrives by topic or section, never by author).
 - `after`: the `nextCursor` of the page before.
 
 Answer `200 {lists: ListSummary[], nextCursor: string | null}`, plus `followingNobody: true` when `following=1` and the caller follows nothing. Lists under review are left out. **Cursor:** without `following=1` it is the last list's id; with it, `"<updatedAt or takeCount>:<id>"`. A short page is the last; a full page may be followed by an empty one. `409 CURSOR_GONE` when the list an id cursor names was taken down meanwhile: start again from the top.
+
+**`GET /lists?fresh=1`** (since 23.11.2026): the row "New from the community" above Popular, on the website's home and in the app's Popular chip. Every other parameter is ignored. Answer `200 {lists: ListSummary[]}`, at most 12, no cursor and no pages, `Cache-Control: no-store`. The server applies the rule once for both clients: lists by people (not the house's `tyl-editorial`, not anonymous, not under review, the author not banned) published (`publishedAt`, the first publication: republishing or editing does not move it) in the last 14 days, newest first; at least 8 cards, at least 80% of them with a picture, and a cover or at least 4 collage pictures; at most 3 lists of one author, authors taking turns (every author's newest, then every author's second, and so on, the author who published last first). **Clients show the row from 2 lists**; with fewer, no row and no empty-state text. Counted as `home.fresh` when the answer had 2 or more lists. Old clients never send `fresh` and see the feed as before. The numbers are a start, to be looked at again after two or three weeks.
 
 **`GET /lists/{id}`**: `200 ListSummary + {tiers: PublishedTier[], items: PublishedItem[], translations, picturesFrom, underReview, revision, coverAttribution?}`. `revision` (since 14.11.2026): the list's revision, **List revision** below. `coverAttribution`: the house editor's credit for the cover (**Editor's credit** below), only on a house list that has one. `picturesFrom`: the ids of the lists whose pictures this one holds copies of, as `published/{id}/{original}-{name}`; a client editing its own list sends those addresses back as they are, and copies everything else in its folder as its own photos. `404 NOT_FOUND` when there is none, or it is under review and the caller is neither staff nor its author. `underReview` says whether it is out of the feed.
 
@@ -461,6 +463,7 @@ Since 20.11.2026 (stage 1: server counters, the admin answer, the client endpoin
 | `list.publish`, `list.republish` | `POST /lists` 2xx; `POST /lists/{id}` 2xx |
 | `author.follow`, `topic.follow` | `POST /lists/follow/{uid}`; `POST /lists/topics/{id}/follow` (per topic too) |
 | `topic.open`, `section.open` | first page of `GET /lists?topic=` / `?category=` (per topic / section too) |
+| `home.fresh` | `GET /lists?fresh=1` answered with 2 or more lists, the row shown (since 23.11.2026) |
 | `search.lists`, `search.lists.miss` | first page of `GET /lists?q=`; miss when `lists` came back empty (per query too) |
 | `search.pictures`, `search.pictures.miss` | `GET /lists/pictures?q=` page 1: counted on the quick part or a whole answer, missed on the rest part or a whole answer with no `items` (per query and section too) |
 | `account.erased` | `DELETE /boards/account` 204 |

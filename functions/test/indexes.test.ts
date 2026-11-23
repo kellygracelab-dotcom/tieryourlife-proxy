@@ -50,3 +50,12 @@ describe("indexes the owner's list of anonymous lists needs", () => {
     assert.ok(declared("publishedLists", [["anonymous", "ASCENDING"], ["updatedAt", "DESCENDING"]]));
   });
 });
+
+describe("indexes Popular reads with its ties newest first (23.11.2026)", () => {
+  // Without one the feed answers 503 for that filter: the emulator needs none, so only this test sees it.
+  for (const equal of [[], [["category", "ASCENDING"]], [["authorUid", "ASCENDING"]], [["topicId", "ASCENDING"]], [["authorUid", "ASCENDING"], ["category", "ASCENDING"]]] as [string, string][][]) {
+    it(`orders by takes, then by the last save${equal.length ? `, within ${equal.map(([field]) => field).join(" and ")}` : ""}`, () => {
+      assert.ok(declared("publishedLists", [...equal, ["takeCount", "DESCENDING"], ["updatedAt", "DESCENDING"]]));
+    });
+  }
+});
