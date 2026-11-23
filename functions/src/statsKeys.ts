@@ -205,9 +205,9 @@ export function tallyOf(facts: RequestFacts): Tally {
   if (!ok) return tally;
   const [first, second, third] = segments;
   if (method === "GET" && segments.length === 0) {
-    // The row of new lists is shown from two (23.11.2026): an answer with fewer showed nothing.
+    // New lists go on top of Popular from one (revised 23.11.2026): an empty answer showed nothing.
     if (query.fresh === "1") {
-      if ((resultCount(body, "lists") ?? 0) >= 2) tally.events.push("home.fresh");
+      if ((resultCount(body, "lists") ?? 0) >= 1) tally.events.push("home.fresh");
       return tally;
     }
     const page = single(query.after) === null;
