@@ -35,6 +35,8 @@ The one description of what the proxy answers, read by the website and by the An
 
 **Errors.** A refusal is JSON `{error, code, detail?}`: `error` is English for logs, `code` is what a client branches on. A few old refusals carry no `code`: `405 {error: "Use GET…"}` for a wrong method, `400 {error: "Which list?"}` / `"Which board?"`, `404 {error: "No such address"}` on `boards`, `400 Empty prompt` / `Prompt too long` on `generate`, and `tmdb`'s `404 Unknown path` / `502`. Any error the code did not expect is `503 UNAVAILABLE` on `lists` and `boards`.
 
+**Caching.** Every answer of every function here, a refusal or a missing board included, carries `Cache-Control: no-store` (since 22.11.2026). Before, only the successful answers of most routes did, and Hosting's CDN kept a `404` of `GET /boards/{uid}` for ten minutes, also for the request after the board was written. A route's own `no-store` below is the same rule.
+
 **Times** are epoch milliseconds. **Colours** are `#RRGGBB`. **Text** is collapsed (runs of whitespace become one space), trimmed, and cut to its limit rather than refused, unless a limit says it refuses.
 
 **Ids.** A list id or topic id is `[A-Za-z0-9_-]{1,64}`. A section id is `[a-z0-9][a-z0-9_-]{1,39}`. An author uid for follows is `[A-Za-z0-9]{8,128}`. A picture id (a file in the caller's `users/{uid}/pictures/` in Storage) is `[A-Za-z0-9_-]{1,64}`.

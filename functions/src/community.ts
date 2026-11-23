@@ -762,6 +762,8 @@ export const lists = onRequest(
     minInstances: 1,
   },
   async (request, response) => {
+    // Every answer, an error too, is about one account or costs a call: no cache may keep it (22.11.2026).
+    response.setHeader("Cache-Control", "no-store");
     // Usage statistics, counted once the answer is out and without who asked (`stats.ts`, 20.11.2026).
     watchRequest("lists", request, response, segmentsOf(request.path));
     if (!(await requireAppCheck(request, response))) {
