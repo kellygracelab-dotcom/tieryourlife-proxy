@@ -70,6 +70,8 @@ export const generate = onRequest(
     concurrency: 1,
   },
   async (request, response) => {
+    // Every answer, an error too, is about one account or costs a call: no cache may keep it (22.11.2026).
+    response.setHeader("Cache-Control", "no-store");
     if (request.method !== "POST") {
       response.status(405).json({ error: "Use POST" });
       return;

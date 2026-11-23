@@ -12,7 +12,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getStorage } from "firebase-admin/storage";
 import { E2E_NOT_COPIED_PHOTO, STUB_PICTURE } from "../src/emulator";
 import { decideStore, MAX_BOARD_BYTES, MAX_PLAY_HISTORY } from "../src/sync";
-import { PROJECT, assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, seed } from "./seed-e2e";
+import { FUNCTIONS, PROJECT, assertEmulatorsOnly, call, identity, passwordAccount, ownerToken, seed } from "./seed-e2e";
 
 const TIER = { label: "S", colorLight: "#FF7F7F", colorDark: "#7F3F3F" };
 
@@ -33,6 +33,22 @@ describe("the proxy under the demo emulators", () => {
     const accountGuest = (await identity("signUp", {})).idToken;
     const suffix = Date.now().toString(36);
     token = (await passwordAccount(accountGuest, `e2e-${suffix}@e2e.test`)).idToken;
+  });
+
+  it("lets no cache keep an answer, a missing board and a refusal included (22.11.2026)", async () => {
+    const guest = (await identity("signUp", {})).idToken;
+    const asks: [string, string, string | null][] = [
+      ["GET", `/boards/never-${Date.now().toString(36)}`, guest],
+      ["GET", "/boards", guest],
+      ["GET", "/boards", null],
+      ["POST", "/lists", guest],
+      ["GET", "/lists/sections", guest],
+    ];
+    for (const [method, path, token] of asks) {
+      const reply = await fetch(`${FUNCTIONS}${path}`, { method, headers: token === null ? {} : { Authorization: `Bearer ${token}` } });
+      await reply.arrayBuffer();
+      assert.equal(reply.headers.get("cache-control"), "no-store", `${method} ${path} answered ${reply.status}`);
+    }
   });
 
   it("answers a guest without App Check, and refuses it a publication", async () => {

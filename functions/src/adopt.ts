@@ -30,6 +30,8 @@ export const adoptGuestCredits = onRequest(
     maxInstances: 10,
   },
   async (request, response) => {
+    // Every answer, an error too, is about one account or costs a call: no cache may keep it (22.11.2026).
+    response.setHeader("Cache-Control", "no-store");
     if (request.method !== "POST") {
       return void response.status(405).json({ error: "Use POST" });
     }

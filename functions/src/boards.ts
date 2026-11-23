@@ -172,6 +172,8 @@ export const boards = onRequest(
     maxInstances: 10,
   },
   async (request, response) => {
+    // Every answer, an error too, is about one account or costs a call: no cache may keep it (22.11.2026).
+    response.setHeader("Cache-Control", "no-store");
     // Usage statistics: server errors and erased accounts, counted without who (`stats.ts`, 20.11.2026).
     watchRequest("boards", request, response, request.path.replace(/^\/+|\/+$/g, "").split("/").filter((part) => part !== "boards" && part.length > 0));
     if (!(await requireAppCheck(request, response))) {
