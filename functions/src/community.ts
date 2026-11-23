@@ -54,6 +54,7 @@ import {
   type StaffRole,
   type Translations,
 } from "./editorial";
+import { FRESH_DAYS, FRESH_READ, freshEligible, freshRow } from "./freshRow";
 import { matchPeople, MIN_QUERY_LENGTH, personOf, type Person } from "./people";
 import {
   chunked,
@@ -860,6 +861,9 @@ export const lists = onRequest(
               ? await readFollowState(response, identity, authorUid)
               : await readSuggestedAuthors(response, identity);
           }
+          if (!hasId && request.query.fresh === "1") {
+            return await readFreshRow(response, identity);
+          }
           return hasId
             ? await readOne(response, identity, id)
             : await readFeed(response, identity, {
@@ -1063,9 +1067,13 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
     response.status(200).json({ lists: [], nextCursor: null });
     return;
   }
+  // Popular lists that are taken as often go newest first (23.11.2026): nearly every list is at
+  // zero takes, and the document id put them in an order nobody chose.
   let ordered = search
     ? query.where("searchKeys", "array-contains", search.key)
-    : query.orderBy(filters.sort === "popular" ? "takeCount" : "updatedAt", "desc");
+    : filters.sort === "popular"
+      ? query.orderBy("takeCount", "desc").orderBy("updatedAt", "desc")
+      : query.orderBy("updatedAt", "desc");
 
   // The cursor is the last id of the page before. Reading that document
   // back costs one read and lets Firestore resume from it under either
@@ -1102,6 +1110,26 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
     lists: page.rows.map((doc) => toSummary(doc.id, doc.data() as StoredList, identity, followed)),
     nextCursor: page.next?.id ?? null,
   });
+}
+
+/**
+ * `GET /lists?fresh=1`: the row of people's new lists above Popular (src/freshRow.ts). The newest
+ * publications of the last FRESH_DAYS days, by `publishedAt`, which republishing never moves; then
+ * the rules, then a turn for each author. No pages; the clients show the row from two lists.
+ */
+async function readFreshRow(response: Response, identity: Identity): Promise<void> {
+  const db = getFirestore();
+  const since = Timestamp.fromMillis(Date.now() - FRESH_DAYS * 24 * 60 * 60 * 1000);
+  const newest = await db.collection(PUBLISHED).where("publishedAt", ">=", since).orderBy("publishedAt", "desc").limit(FRESH_READ).get();
+  const eligible = newest.docs.filter((doc) => freshEligible(doc.data() as StoredList));
+  const authors = [...new Set(eligible.map((doc) => doc.get("authorUid") as string))];
+  const bans = authors.length === 0 ? [] : await db.getAll(...authors.map((uid) => db.collection(BANS).doc(uid)));
+  const nowMs = Date.now();
+  const banned = new Set(bans.filter((doc) => doc.exists && isBanned(doc.data() as Ban, nowMs)).map((doc) => doc.id));
+  const row = freshRow(eligible.filter((doc) => !banned.has(doc.get("authorUid") as string)).map((doc) => ({ authorUid: doc.get("authorUid") as string, doc })));
+  const followed = await followsAmong(identity, row.map((one) => one.doc.data() as StoredList));
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({ lists: row.map((one) => toSummary(one.doc.id, one.doc.data() as StoredList, identity, followed)) });
 }
 
 /**
