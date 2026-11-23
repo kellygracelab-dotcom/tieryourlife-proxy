@@ -85,6 +85,7 @@ const FILES = [
   "sections/games-2/x1",
   "topics/t1/t1",
   "share/l/l1/1.png",
+  "share/c/l1/0123abcd.webp",
   "share/r/abc234/1.png",
   "mystery/file.bin",
 ];
