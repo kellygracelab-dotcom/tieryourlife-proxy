@@ -1134,7 +1134,7 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
 /**
  * `GET /lists?fresh=1`: the row of people's new lists above Popular (src/freshRow.ts). The newest
  * publications of the last FRESH_DAYS days, by `publishedAt`, which republishing never moves; then
- * the rules, then a turn for each author. No pages; the clients show the row from two lists.
+ * the rules, then a turn for each author. No pages; the clients put up to four on top of Popular, from one.
  */
 async function readFreshRow(response: Response, identity: Identity): Promise<void> {
   const db = getFirestore();
