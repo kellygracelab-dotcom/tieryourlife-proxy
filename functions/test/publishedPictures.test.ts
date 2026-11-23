@@ -4,8 +4,8 @@ import { addressOf, decideOwnPicture, discardCopiesIn, isPhotoCopiedFrom, withou
 import type { SafeSearchVerdict } from "../src/safety";
 
 describe("taking a list down", () => {
-  it("clears the feed's copies and the site's share cards for it", () => {
-    assert.deepEqual(publicFoldersOf("abc"), ["published/abc/", "share/l/abc/"]);
+  it("clears the feed's copies and the site's share cards and collages for it", () => {
+    assert.deepEqual(publicFoldersOf("abc"), ["published/abc/", "share/l/abc/", "share/c/abc/"]);
   });
 
   it("leaves a ranking's share cards to the site", () => {
@@ -21,7 +21,7 @@ describe("taking a list down", () => {
     });
     assert.deepEqual(
       asked.map((one) => one.prefix).sort(),
-      ["published/abc/", "share/l/abc/"],
+      ["published/abc/", "share/c/abc/", "share/l/abc/"],
     );
     assert.ok(asked.every((one) => one.force));
   });

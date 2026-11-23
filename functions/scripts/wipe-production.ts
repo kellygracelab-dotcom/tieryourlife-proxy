@@ -121,7 +121,7 @@ const STORAGE_FOLDERS: Readonly<Record<string, string>> = {
   avatars: "faces",
   proposals: "section proposals' private pictures",
   topics: "topic pictures",
-  share: "the website's share cards for lists and rankings",
+  share: "the website's share cards for lists and rankings, and its cover collages",
 };
 
 export function storageRule(path: string): StorageRule {

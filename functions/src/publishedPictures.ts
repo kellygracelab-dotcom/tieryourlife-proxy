@@ -232,11 +232,12 @@ export function decideOwnPicture(bytes: Uint8Array, verdict: SafeSearchVerdict |
 
 /**
  * The folders that show a list to the world: the feed's copies of its
- * pictures, and the share cards the site draws for it. A ranking's cards,
+ * pictures, and the share cards and cover collages the site draws for it
+ * (`share/c/` since Web #278, 23.11.2026). A ranking's cards,
  * under `share/r/`, are the site's own to clear.
  */
 export function publicFoldersOf(listId: string): string[] {
-  return [`published/${listId}/`, `share/l/${listId}/`];
+  return [`published/${listId}/`, `share/l/${listId}/`, `share/c/${listId}/`];
 }
 
 /** Only what `discardPublished` asks of a bucket, so a test can hand it another. */

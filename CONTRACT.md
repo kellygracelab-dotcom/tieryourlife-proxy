@@ -789,7 +789,7 @@ These are not the proxy. They live in the website's repository (`functions/src/w
 
 Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/**`, `/img/**`. They read the proxy's `publishedLists/{id}` documents and write only their own:
 - `rankings/{code}`;
-- share cards under `share/r/{code}/` and `share/l/{id}/` in Storage.
+- share cards under `share/r/{code}/` and `share/l/{id}/` in Storage, and cover collages under `share/c/{id}/` (a cache: redrawn when missing). When a list is withdrawn or taken down the proxy deletes its `share/l/{id}/` and `share/c/{id}/` with its `published/{id}/`.
 
 Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`;
