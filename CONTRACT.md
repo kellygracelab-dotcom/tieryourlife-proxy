@@ -681,7 +681,9 @@ Not callable:
 
 ## Shapes
 
-**ListSummary**: `{id, title, names, authorUid, authorName, authorPhotoUrl, anonymous, mine?, viewerFollowsAuthor?, tierCounts, category, itemCount, coverImageUrl, coverFocus?, listSource?, previewImages, previewFocus?, tierColors, topicId, topicName, updatedAt, takeCount, rankingCount, basedOn}`.
+**ListSummary**: `{id, title, names, authorUid, authorName, authorPhotoUrl, anonymous, mine?, viewerFollowsAuthor?, tierCounts, category, itemCount, coverImageUrl, coverFocus?, listSource?, previewImages, previewFocus?, collageUrl?, tierColors, topicId, topicName, updatedAt, takeCount, rankingCount, basedOn}`.
+
+`collageUrl` (since 23.11.2026, `_coordination/cover-collage-2026-11-23/BRIEF.md`): the card's collage as one picture, `https://tieryourlife.com/img/collage/{id}.webp?v={updatedAt}`, drawn by the website's function (codebase web) from `previewImages` cut by `previewFocus`, 480 x 300, laid out as the mosaic, transparent 2px gaps. Present only when the card shows a collage: no https `coverImageUrl` and 2 or more `previewImages`; absent otherwise. `v` moves with every publication and Update, so a browser may keep a version for good. A client shows this one picture and, on any error (a `404` for a list taken down, hidden or with fewer than two readable pictures), falls back to the mosaic of `previewImages`. The Web path is taken as is (Web uses the path, Android the absolute address). Private and device-only boards have no `collageUrl` and are never drawn by a server.
 - An anonymous list goes out with `authorUid: ""`, `authorName: ""`, `authorPhotoUrl: null`, `anonymous: true`, to everybody but its author on `GET /lists/mine`.
 - `mine: true` only on the reader's own list.
 - `viewerFollowsAuthor` only for a signed-in reader and a named list.

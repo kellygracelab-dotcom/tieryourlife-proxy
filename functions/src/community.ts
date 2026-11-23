@@ -576,6 +576,18 @@ function refuse(response: Response, decision: Exclude<PublishDecision, { ok: tru
   }
 }
 
+/** Where the website draws a list's collage as one picture (Web's `/img/collage`, 23.11.2026). */
+const COLLAGE_BASE = "https://tieryourlife.com/img/collage/";
+
+/**
+ * The address of a list's cover collage as one picture, when its card shows a collage: no cover of its
+ * own and two pictures or more. `v` is the list's `updatedAt`, which every publication and Update move,
+ * so a browser keeps a version for good and a new one is a new address (cover-collage BRIEF, Decision).
+ */
+export function collageUrlOf(id: string, cover: string | null, previews: readonly string[], updatedAtMs: number): string | null {
+  return cover === null && previews.length >= 2 ? `${COLLAGE_BASE}${encodeURIComponent(id)}.webp?v=${updatedAtMs}` : null;
+}
+
 /** Old lists keep the word "null" as their cover; only a web address goes out as a picture. */
 export function webPicture(value: unknown): string | null {
   return typeof value === "string" && value.startsWith("https://") ? value : null;
@@ -602,6 +614,12 @@ export function previewFocusOf(previews: readonly string[], items: readonly unkn
  * copy's credit to one; `mine` when the reader is the one who published it,
  * and whether they follow its author when `followed` says whom they follow.
  */
+/** `collageUrl` when the card shows a collage; nothing otherwise, so other cards read as they did. */
+function collageOf(id: string, data: StoredList): { collageUrl?: string } {
+  const url = collageUrlOf(id, webPicture(data.coverImageUrl), (data.previewImages ?? []).filter((one) => webPicture(one) !== null), data.updatedAt?.toMillis() ?? 0);
+  return url === null ? {} : { collageUrl: url };
+}
+
 export function toSummary(
   id: string,
   data: StoredList,
@@ -625,6 +643,7 @@ export function toSummary(
     ...(data.listSource ? { listSource: data.listSource } : {}),
     previewImages: (data.previewImages ?? []).filter((url) => webPicture(url) !== null),
     ...previewFocusOf((data.previewImages ?? []).filter((url) => webPicture(url) !== null), data.items),
+    ...collageOf(id, data),
     tierColors: data.tierColors ?? [],
     topicId: data.topicId ?? null,
     topicName: data.topicName ?? null,
