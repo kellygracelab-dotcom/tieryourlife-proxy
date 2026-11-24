@@ -70,6 +70,7 @@ import { commonsPictureOf } from "./pictureAttribution";
 import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
+import { newTrace, noteCache, noteResting, timed, timedSource, traced, traceFields } from "./searchTiming";
 import { fold } from "./search";
 import {
   builtInWant,
@@ -191,7 +192,9 @@ export async function routePictures(
       return;
     }
     const page = Math.min(MAX_PAGE, Math.max(1, Number.parseInt(String(query.page ?? "1"), 10) || 1));
-    const answer = await searchPicturesCounted({
+    // Where the time goes, one line per search once it is answered (searchTiming.ts).
+    const trace = newTrace(query.part === "quick" ? "quick" : "full");
+    const answer = await traced(trace, async () => searchPicturesCounted({
       typed,
       scope: pictureScopeOf(query.scope),
       want: await wantOf(cleanId(query.section), cleanId(query.topic)),
@@ -200,7 +203,9 @@ export async function routePictures(
       forcedWeb: query.web === "1" || query.web === "true",
       quick: query.part === "quick",
       uid: identity.uid,
-    });
+    }));
+    const status = answer === null ? 502 : "limited" in answer ? 429 : busyAnswer(answer) ? 503 : 200;
+    console.log(JSON.stringify(traceFields(trace, { scope: pictureScopeOf(query.scope), page, letters: [...typed].length, status })));
     if (answer === null) {
       response.status(502).json({ error: "No catalogue answered", code: "SOURCES_DOWN" });
       return;
@@ -380,7 +385,7 @@ async function secondAttempt(input: SearchInput, first: PicturesAnswer, spelling
   const chosen = await chosenRef.get().catch(() => null);
   const at = chosen?.get("at")?.toMillis?.() ?? 0;
   const known = chosen?.exists && Date.now() - at < CACHE_FRESH_MS ? (chosen.get("tries") as { text: string; how: Retry }[] | undefined) : undefined;
-  const tries = known ?? (await retryTexts(input.typed, input.language, first.items.length === 0, spellingOnly));
+  const tries = known ?? (await timed("spelling", () => retryTexts(input.typed, input.language, first.items.length === 0, spellingOnly)));
   if (!known) await chosenRef.set({ tries, at: Timestamp.now() }).catch(() => undefined);
   // Kept before 19.11.2026, a spelling may still change a number.
   const worth = tries.filter((attempt) => (attempt.how !== "spelling" || keepsNumbers(input.typed, attempt.text)) && (!spellingOnly || attempt.how === "spelling"));
@@ -411,7 +416,7 @@ async function webWhenEmpty(input: SearchInput, answer: PicturesAnswer): Promise
   const at = kept?.get("at")?.toMillis?.() ?? 0;
   let hits = kept?.exists && Date.now() - at < CACHE_FRESH_MS ? (kept.get("items") as PictureHit[] | undefined) : undefined;
   if (!hits) {
-    const web = await maybeAskWeb(input, 0, true);
+    const web = await timed("web", () => maybeAskWeb(input, 0, true));
     if (web.notice) return { ...answer, notices: [...answer.notices, web.notice] };
     if (!web.hits) return answer;
     hits = web.hits.slice(0, WEB_WHEN_EMPTY);
@@ -493,7 +498,7 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
   // "parts": each catalogue's answer to a quick search. The merged quick answers once kept under "quick" are read no more.
   const key = (web: boolean, part: "" | "parts" = "") => cacheKey(input, web, part);
   const fresh = async (id: string): Promise<PicturesAnswer | null> => {
-    const doc = await db.collection(CACHE).doc(id).get();
+    const doc = await timed("store", () => db.collection(CACHE).doc(id).get());
     const at = doc.get("at")?.toMillis?.() ?? 0;
     const chosen = doc.get("chosen") as Chosen | undefined;
     return doc.exists && Date.now() - at < CACHE_FRESH_MS ? { items: doc.get("items") ?? [], hasMore: doc.get("hasMore") === true, notices: [], ...(chosen ? { chosen } : {}) } : null;
@@ -501,12 +506,19 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
 
   // Somebody already paid for the web on this search: it costs nothing to show again.
   const cachedWithWeb = await fresh(key(true));
-  if (cachedWithWeb) return input.quick ? { ...cachedWithWeb, rest: false } : cachedWithWeb;
+  if (cachedWithWeb) {
+    noteCache("web");
+    return input.quick ? { ...cachedWithWeb, rest: false } : cachedWithWeb;
+  }
   let catalogues = await fresh(key(false));
   const webLater = input.page === 1 && (input.scope === "all" || input.forcedWeb);
-  if (input.quick && catalogues) return { ...catalogues, rest: webLater };
+  if (input.quick && catalogues) {
+    noteCache("answer");
+    return { ...catalogues, rest: webLater };
+  }
   const quickParts = key(false, "parts");
-  const known = await knownParts(quickParts);
+  const known = await timed("store", () => knownParts(quickParts));
+  noteCache(catalogues ? "answer" : known.size > 0 ? `parts ${known.size}` : "miss");
   if (input.quick) {
     const quick = await askCatalogues(input, quickSourcesFor(input.scope), known, metered, { parts: quickParts });
     if (quick && "limited" in quick) return quick;
@@ -521,7 +533,7 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
   }
   if (!catalogues) return null;
   if (input.page > 1) return catalogues;
-  const web = await maybeAskWeb(input, goodMatches(input.typed, catalogues.items));
+  const web = await timed("web", () => maybeAskWeb(input, goodMatches(input.typed, catalogues.items)));
   if (web.notice) return { ...catalogues, notices: [web.notice] };
   if (!web.hits) return catalogues;
   // Below the catalogues, as a person first sees them after the quick answer: asked again, the same order.
@@ -555,15 +567,16 @@ async function askCatalogues(
   metered: boolean,
   keep: { parts?: string; answer?: string },
 ): Promise<PicturesAnswer | SearchLimited | null> {
-  const resting = await restingUntil();
+  const resting = await timed("store", () => restingUntil());
   const now = Date.now();
   const asking = sources.filter((source) => !known.has(source) && (resting.get(source) ?? 0) <= now);
+  noteResting(sources.filter((source) => !known.has(source) && (resting.get(source) ?? 0) > now));
   if (metered && asking.length > 0 && known.size === 0) {
-    const charge = await chargeFor(input.uid);
+    const charge = await timed("charge", () => chargeFor(input.uid));
     if (!charge.allowed) return { limited: true, retryAtMs: charge.retryAtMs };
   }
   const answers = new Map<PictureSource, KnownAnswer>(known);
-  const asked = await Promise.all(asking.map(async (source) => [source, await askSource(source, input)] as const));
+  const asked = await Promise.all(asking.map(async (source) => [source, await timedSource(source, () => askSource(source, input))] as const));
   for (const [source, answer] of asked) if (answer) answers.set(source, { ...answer, atMs: Date.now() });
   const found = sources.map((source) => answers.get(source) ?? null);
   // A catalogue that refused now, or rests after an earlier refusal, is busy: its gap is said, not hidden.
