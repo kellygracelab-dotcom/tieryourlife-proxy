@@ -66,6 +66,7 @@ import {
   wikidataCandidates,
 } from "./pictureSources";
 import { noteDenied, noteSourceDenied } from "./pictureAlarms";
+import { commonsPictureOf } from "./pictureAttribution";
 import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { dayKey } from "./quota";
@@ -1254,7 +1255,8 @@ async function safeToFetch(url: URL): Promise<boolean> {
 async function keepPicture(raw: string, uid: string): Promise<Kept> {
   let url: URL;
   try {
-    url = new URL(raw);
+    // A Commons original from an older answer is copied at 600 px, as the search now offers it.
+    url = new URL(commonsPictureOf(raw));
   } catch {
     return { error: "BAD_URL" };
   }
