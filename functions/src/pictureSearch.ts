@@ -31,7 +31,6 @@ import {
   deezerAlbumHits,
   deezerArtistHits,
   goodMatches,
-  hitScore,
   hasSlowSources,
   IGDB_QUERY_FIELDS,
   igdbHits,
@@ -69,12 +68,14 @@ import { noteDenied, noteSourceDenied } from "./pictureAlarms";
 import { commonsPictureOf } from "./pictureAttribution";
 import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
+import { rankFor, scoreFor, sectionWant } from "./pictureOrder";
 import { dayKey } from "./quota";
 import { newTrace, noteCache, noteResting, timed, timedSource, traced, traceFields } from "./searchTiming";
 import { fold } from "./search";
 import {
   builtInWant,
   cleanId,
+  hintOf,
   judgeHits,
   keepsNumbers,
   otherLayout,
@@ -82,8 +83,6 @@ import {
   trimmedTail,
   typeOfNames,
   wantKey,
-  wantRank,
-  wantScore,
   wikipediaOf,
   wikipediaSuggestion,
   type JudgedHit,
@@ -104,7 +103,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 22;
+const CACHE_SHAPE = 23;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -391,7 +390,9 @@ async function secondAttempt(input: SearchInput, first: PicturesAnswer, spelling
   const worth = tries.filter((attempt) => (attempt.how !== "spelling" || keepsNumbers(input.typed, attempt.text)) && (!spellingOnly || attempt.how === "spelling"));
   for (const attempt of worth.slice(0, 2)) {
     // The same search, so it is not counted again; the web, if any, was asked for the text as typed.
-    const again = await searchAsTyped({ ...input, typed: attempt.text, noWeb: true }, false);
+    // "борщ блюдо": the word cut off says what the list wants this time (25.11.2026).
+    const want = attempt.how === "trimmed" ? hintOf(input.typed) ?? input.want : input.want;
+    const again = await searchAsTyped({ ...input, typed: attempt.text, want, noWeb: true }, false);
     if (again === null || "limited" in again || busyAnswer(again)) continue;
     if (goodMatches(attempt.text, again.items) === 0) continue;
     if (spellingOnly && !again.items.some((hit) => hit.source !== "web" && namedAs(hit, attempt.text))) continue;
@@ -589,8 +590,10 @@ async function askCatalogues(
   // person saw first is what they see when the same search comes from the cache (18.11.2026).
   const quick = new Set(quickSourcesFor(input.scope));
   const fast = hits.filter((_, at) => quick.has(sources[at]!));
-  const all = mergeHits(input.typed, hits, input.scope, rankFor(input, chosen), scoreFor(input, chosen));
-  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(input, chosen), scoreFor(input, chosen)), all) : all;
+  // With the All filter, a games board's section says nothing about a borscht (25.11.2026).
+  const ordered = { ...input, want: sectionWant(input, hits.flat()) };
+  const all = mergeHits(input.typed, hits, input.scope, rankFor(ordered, chosen), scoreFor(ordered, chosen));
+  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(ordered, chosen), scoreFor(ordered, chosen)), all) : all;
   const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap, ...(chosen ? { chosen } : {}) };
   const cache = getFirestore().collection(CACHE);
   if (keep.parts && asked.some(([, answer]) => answer !== null)) {
@@ -604,30 +607,6 @@ async function askCatalogues(
     await cache.doc(keep.answer).set({ ...merged, at: Timestamp.now() }).catch(() => undefined);
   }
   return merged;
-}
-
-/**
- * How a search ranks hits for what its list wants (src/pictureIntent.ts). The [chosen] item's pictures
- * come before all: its catalogue's first, then its own from Commons (stage 2).
- */
-function rankFor(input: SearchInput, chosen: Chosen | null = null): (hit: PictureHit) => number {
-  const want = rankingWant(input, chosen);
-  const keys = new Set(chosen?.keys ?? []);
-  // The item's own Wikidata picture comes first where it shows a kind, or where nothing else does ("all"):
-  // an animals list keeps iNaturalist's "Octopus" above Wikidata's "Octopoda".
-  const lifted = (hit: PictureHit) => hit.source !== "wikidata" || hit.kind !== "thing" || input.scope === "all";
-  return (hit) => (keys.has(entityKey(hit)) && lifted(hit) ? (hit.source === "wikidata" ? -1 : -2) : wantRank(hit, input.scope, want));
-}
-
-function scoreFor(input: SearchInput, chosen: Chosen | null = null): (hit: PictureHit) => number {
-  const want = rankingWant(input, chosen);
-  return (hit) => wantScore(hit, want, hitScore(hit, input.typed));
-}
-
-/** What the hits are ranked for: the list's want, or, where it says nothing, what its chosen item implies. */
-function rankingWant(input: SearchInput, chosen: Chosen | null): Want | null {
-  const want = input.want ?? null;
-  return want === null && chosen?.implied ? { kind: "type", type: chosen.implied } : want;
 }
 
 /** What a quick search already heard from each catalogue, each while it is fresh. */
