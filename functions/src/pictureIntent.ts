@@ -270,13 +270,36 @@ export function judgeHits(hits: readonly Described[], typed: string, scope: Pict
 
 export type Retry = "trimmed" | "layout" | "spelling";
 
-/** Words people add to a title that no catalogue holds: "смотреть онлайн", "8 сезон", "full movie". */
+/**
+ * A word after a name that says what kind of thing is meant, and what a list then wants: "борщ блюдо",
+ * "Dune film", "лиса животное" (25.11.2026). Cut off and used only by the second attempt, when the text as
+ * typed found nothing by that name: "Squid Game" is a title and is found as one.
+ */
+const HINTS: readonly [Want, string][] = [
+  [{ kind: "type", type: "food" }, "блюдо|блюда|еда|рецепт|страва|їжа|dish|food|recipe"],
+  [{ kind: "scope", scope: "film_tv" }, "фильм|кино|сериал|фільм|серіал|film|movie|tv\\s+series|tv\\s+show"],
+  [{ kind: "scope", scope: "games" }, "игра|видеоигра|гра|відеогра|video\\s*game|game"],
+  [{ kind: "scope", scope: "anime" }, "аниме|аніме|anime"],
+  [{ kind: "scope", scope: "music" }, "песня|пісня|альбом|группа|гурт|певец|певица|співак|співачка|song|album|band|singer"],
+  [{ kind: "scope", scope: "books" }, "книга|роман|book|novel"],
+  [{ kind: "scope", scope: "animals" }, "животное|зверь|птица|тварина|звір|птах|animal|bird"],
+  [{ kind: "scope", scope: "people" }, "актер|актёр|актриса|актор|акторка|actor|actress"],
+];
+
+/** What the kind word at the end of [typed] says a list wants, or null when it ends in none. */
+export function hintOf(typed: string): Want | null {
+  for (const [want, words] of HINTS) if (new RegExp(`[\\s,.:;!|-]+(?:${words})\\s*$`, "iu").test(typed.trim())) return want;
+  return null;
+}
+
+/** Words people add to a title that no catalogue holds: "смотреть онлайн", "8 сезон", "full movie"; and a kind word ("блюдо"). */
 const TAIL = new RegExp(
   "(?:[\\s,.:;!|-]+|^)(?:" + [
     "watch(?:\\s+online)?(?:\\s+free)?", "online", "free", "full\\s+movie", "full\\s+hd", "hd", "\\d{3,4}p", "4k", "trailer", "download", "torrent",
     "all\\s+seasons", "season\\s*\\d+", "s\\d+e\\d+", "episode\\s*\\d+", "ep\\s*\\d+",
     "смотреть(?:\\s+онлайн)?", "онлайн", "бесплатно", "скачать", "торрент", "в\\s+хорошем\\s+качестве", "все\\s+серии", "все\\s+сезоны",
     "\\d+\\s+сезон", "сезон\\s*\\d+", "\\d+\\s+серия", "серия\\s*\\d+", "дивитис[ья](?:\\s+онлайн)?", "безкоштовно", "завантажити", "\\d+\\s+серія", "серія\\s*\\d+",
+    ...HINTS.map(([, words]) => words),
   ].join("|") + ")\\s*$",
   "iu",
 );
