@@ -14,7 +14,8 @@ interface Case {
   parts: { source: string; hits: PictureHit[]; twins?: Record<string, string[]>; chosen?: Chosen }[];
 }
 const cases = JSON.parse(readFileSync(join(__dirname, "..", "..", "test", "picture-order-cases.json"), "utf-8")) as Case[];
-const caseOf = (q: string, section: string | null) => cases.find((one) => one.q === q && one.section === section);
+/** The catalogues are asked the same with the All filter whatever the board: `sourcesFor` and `askSource` look only at the filter and the text. */
+const caseOf = (q: string, section: string | null) => cases.find((one) => one.q === q && one.section === section) ?? cases.find((one) => one.q === q);
 
 /** The quick search's order, as `askCatalogues` merges the catalogues' answers. */
 function ordered(q: string, want: Want | null, found: Case): PictureHit[] {
@@ -42,6 +43,9 @@ describe("the order of a search made with the All filter (25.11.2026)", () => {
   it("gives the thing meant first, on a board of another kind too: real answers", () => {
     const expected: [string, string | null, string][] = [
       ["борщ блюдо", "games", "borscht"],
+      ["борщ блюдо", null, "borscht"],
+      ["борщ блюдо", "food", "borscht"],
+      ["борщ", null, "borscht"],
       ["борщ", "games", "borscht"],
       ["борщ", "food", "borscht"],
       ["Пельмени", "food", "pelmeni"],
