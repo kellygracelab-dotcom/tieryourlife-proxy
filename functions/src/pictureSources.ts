@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { COMMONS_CARD_WIDTH, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
+import { COMMONS_CARD_WIDTH, commonsPictureOf, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -716,9 +716,12 @@ export function tmdbKeyOf(hit: PictureHit): string | null {
 
 export function webHits(body: unknown): PictureHit[] {
   return rows((body as Json | null)?.images).flatMap((row): PictureHit[] => {
-    const imageUrl = text(row.imageUrl);
+    const found = text(row.imageUrl);
     const title = text(row.title);
-    if (!imageUrl || !imageUrl.startsWith("https://") || !title) return [];
+    if (!found || !found.startsWith("https://") || !title) return [];
+    // A Commons original is often many megabytes (7.2 MB, a risotto, 24.11.2026), more than a kept picture
+    // may be: it is asked for at 600 px, as a hit from Wikidata is.
+    const imageUrl = commonsPictureOf(found);
     // The search engine's own thumbnail is a couple of hundred pixels: the grid takes the picture itself.
     if (typeof row.imageWidth !== "number" || typeof row.imageHeight !== "number" || !fitsTile(row.imageWidth, row.imageHeight, false)) return [];
     // The page the picture stands on: whose it is and under what terms is said there, not by the search.

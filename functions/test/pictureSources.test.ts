@@ -436,6 +436,20 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(hits[1]?.attribution, { source: "web" });
     assert.equal(hits[0]?.thumbUrl, null);
   });
+
+  it("the web: a Commons original is offered at 600 px, as Wikidata's hits are (24.11.2026)", () => {
+    const original = "https://upload.wikimedia.org/wikipedia/commons/a/ae/Risotto_de_gambas%2C_restaurant_Danieli_%28Vienne%2C_Autriche%29.jpg?utm_source=ru.wikipedia.org&utm_campaign=index";
+    const hits = webHits({ images: [
+      { title: "Risotto", imageUrl: original, imageWidth: 4000, imageHeight: 3000 },
+      { title: "page", imageUrl: "https://commons.wikimedia.org/wiki/File:Risotto_Weihnachten_2020_13.jpg", imageWidth: 800, imageHeight: 600 },
+      { title: "thumb", imageUrl: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ae/X.jpg/960px-X.jpg", imageWidth: 960, imageHeight: 720 },
+    ] });
+    assert.deepEqual(hits.map((one) => one.imageUrl), [
+      "https://commons.wikimedia.org/wiki/Special:FilePath/Risotto_de_gambas%2C_restaurant_Danieli_(Vienne%2C_Autriche).jpg?width=600",
+      "https://commons.wikimedia.org/wiki/Special:FilePath/Risotto_Weihnachten_2020_13.jpg?width=600",
+      "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ae/X.jpg/960px-X.jpg",
+    ]);
+  });
 });
 
 describe("isPrivateAddress", () => {
