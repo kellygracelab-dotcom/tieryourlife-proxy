@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { COMMONS_CARD_WIDTH, commonsPictureOf, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
+import { COMMONS_CARD_WIDTH, commonsFileOf, commonsPictureOf, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -340,10 +340,12 @@ export function anilistHits(body: unknown): PictureHit[] {
     const alias = [text(titles.romaji), text(titles.native)].find((name) => name !== null && name !== title) ?? null;
     const cover = (row.coverImage ?? {}) as Json;
     const imageUrl = text(cover.extraLarge) ?? text(cover.large);
+    // The tile shows the large cover (230 px), the card keeps the extra large one.
+    const thumbUrl = text(cover.large) ?? imageUrl;
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number" || row.isAdult === true) return [];
     const kind: PictureKind = row.type === "MANGA" ? "manga" : "anime";
     const year = typeof row.seasonYear === "number" ? String(row.seasonYear) : typeof (row.startDate as Json | undefined)?.year === "number" ? String((row.startDate as Json).year) : null;
-    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl: null, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}`, id: `anilist:${row.id}` }, ...(alias ? { alias } : {}) }];
+    return [{ id: `anilist:${row.id}`, title, subtitle: year, imageUrl, thumbUrl, source: "anilist", kind, attribution: { source: "anilist", link: `https://anilist.co/${kind}/${row.id}`, id: `anilist:${row.id}` }, ...(alias ? { alias } : {}) }];
   });
   const characters = rows((data.characters as Json | undefined)?.characters).flatMap((row): PictureHit[] => {
     const title = text((row.name as Json | undefined)?.full);
@@ -352,7 +354,7 @@ export function anilistHits(body: unknown): PictureHit[] {
     if (!title || !imageUrl || imageUrl.includes("/default.jpg") || typeof row.id !== "number") return [];
     const from = rows((row.media as Json | undefined)?.nodes)[0];
     const subtitle = from ? text((from.title as Json | undefined)?.english) ?? text((from.title as Json | undefined)?.romaji) : null;
-    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: null, source: "anilist", kind: "character", attribution: { source: "anilist", link: `https://anilist.co/character/${row.id}`, id: `anilist:c${row.id}` } }];
+    return [{ id: `anilist:c${row.id}`, title, subtitle, imageUrl, thumbUrl: imageUrl, source: "anilist", kind: "character", attribution: { source: "anilist", link: `https://anilist.co/character/${row.id}`, id: `anilist:c${row.id}` } }];
   });
   return [...media, ...characters];
 }
@@ -365,6 +367,8 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
 }`;
 
 export const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
+/** The same cover at half the size (264 px), for a tile. */
+const IGDB_TILES = "https://images.igdb.com/igdb/image/upload/t_cover_big/";
 
 /** IGDB's games: its cover is always upright, and a game without one is not asked for. */
 export const IGDB_QUERY_FIELDS = "name,url,first_release_date,total_rating_count,cover.image_id,cover.width,cover.height";
@@ -381,7 +385,7 @@ export function igdbHits(body: unknown): PictureHit[] {
     const link = page !== null && /^https:\/\/www\.igdb\.com\/games\/[a-z0-9-]{1,200}$/.test(page) ? page : null;
     const rated = typeof row.total_rating_count === "number" && Number.isFinite(row.total_rating_count) && row.total_rating_count > 0 ? Math.round(row.total_rating_count) : null;
     return [{
-      id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: null, source: "igdb", kind: "game",
+      id: `igdb:${row.id}`, title, subtitle: year, imageUrl: `${IGDB_COVERS}${image}.jpg`, thumbUrl: `${IGDB_TILES}${image}.jpg`, source: "igdb", kind: "game",
       attribution: { source: "igdb", ...(link ? { link } : {}), id: `igdb:${row.id}` },
       ...(rated === null ? {} : { popularity: rated }),
     }];
@@ -407,13 +411,15 @@ export function steamHits(ids: readonly number[], body: unknown): PictureHit[] {
     const assets = (row?.assets ?? {}) as Json;
     const format = text(assets.asset_url_format);
     const cover = text(assets.library_capsule_2x) ?? text(assets.library_capsule);
+    // The tile shows the 300 px cover, the card keeps the 600 px one.
+    const tile = text(assets.library_capsule) ?? cover;
     if (!title || !format || !cover) return [];
     return [{
       id: `steam:${id}`,
       title,
       subtitle: null,
       imageUrl: STEAM_ASSETS + format.replace("${FILENAME}", cover),
-      thumbUrl: null,
+      thumbUrl: tile === null ? null : STEAM_ASSETS + format.replace("${FILENAME}", tile),
       source: "steam",
       kind: "game",
       attribution: { source: "steam", link: `https://store.steampowered.com/app/${id}`, id: `steam:${id}` },
@@ -472,7 +478,8 @@ export function openLibraryHits(body: unknown): PictureHit[] {
       title,
       subtitle: [author, year].filter(Boolean).join(" · ") || null,
       imageUrl: `${covers}-L.jpg`,
-      thumbUrl: null,
+      // The medium cover (180 px) for a tile: the large one is often hundreds of kilobytes.
+      thumbUrl: `${covers}-M.jpg`,
       source: "openlibrary",
       kind: "book",
       ...(/^\/works\/OL\d{1,12}W$/.test(key) ? { attribution: { source: "openlibrary" as const, link: `https://openlibrary.org${key}`, id: `openlibrary:${key.slice("/works/".length)}` } } : {}),
@@ -722,16 +729,20 @@ export function webHits(body: unknown): PictureHit[] {
     // A Commons original is often many megabytes (7.2 MB, a risotto, 24.11.2026), more than a kept picture
     // may be: it is asked for at 600 px, as a hit from Wikidata is.
     const imageUrl = commonsPictureOf(found);
-    // The search engine's own thumbnail is a couple of hundred pixels: the grid takes the picture itself.
     if (typeof row.imageWidth !== "number" || typeof row.imageHeight !== "number" || !fitsTile(row.imageWidth, row.imageHeight, false)) return [];
     // The page the picture stands on: whose it is and under what terms is said there, not by the search.
     const link = pageLink(row.link);
+    // The tile shows a small copy, never the picture itself, which may be megabytes on a slow site (25.11.2026):
+    // a Commons file at 400 px, as Wikidata's hits are, or else the search engine's own thumbnail.
+    const file = commonsFileOf(found);
+    const thumbnail = text(row.thumbnailUrl);
+    const thumbUrl = file !== null ? commonsThumb(file, 400) : thumbnail !== null && thumbnail.startsWith("https://") ? thumbnail : null;
     return [{
       id: `web:${hashOf(imageUrl)}`,
       title: title.length > 80 ? `${title.slice(0, 79)}…` : title,
       subtitle: text(row.source) ?? text(row.domain),
       imageUrl,
-      thumbUrl: null,
+      thumbUrl,
       source: "web",
       kind: "web",
       attribution: link ? { source: "web", link } : { source: "web" },
