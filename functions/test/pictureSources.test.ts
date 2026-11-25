@@ -142,7 +142,7 @@ describe("the catalogues' answers", () => {
       },
     });
     assert.deepEqual(hits.map((one) => [one.id, one.kind, one.subtitle]), [["anilist:20", "anime", "2002"], ["anilist:c17", "character", "Naruto"]]);
-    assert.deepEqual(hits.map((one) => [one.imageUrl, one.thumbUrl]), [["https://a/20xl.jpg", null], ["https://a/c17.jpg", null]]);
+    assert.deepEqual(hits.map((one) => [one.imageUrl, one.thumbUrl]), [["https://a/20xl.jpg", "https://a/20.jpg"], ["https://a/c17.jpg", "https://a/c17.jpg"]]);
   });
 
   it("Steam: apps only, each by its tall cover where Steam keeps it, and none without one", () => {
@@ -159,8 +159,8 @@ describe("the catalogues' answers", () => {
       { appid: 7, name: "Only a banner", assets: { asset_url_format: "steam/apps/7/${FILENAME}", header: "header.jpg" } },
     ] } });
     assert.deepEqual(hits.map((one) => [one.title, one.imageUrl, one.thumbUrl]), [
-      ["PEAK", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3527290/480b/library_600x900_2x.jpg?t=2", null],
-      ["Counter-Strike", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg?t=1", null],
+      ["PEAK", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3527290/480b/library_600x900_2x.jpg?t=2", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3527290/480b/library_600x900.jpg?t=2"],
+      ["Counter-Strike", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg?t=1", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg?t=1"],
     ]);
   });
 
@@ -205,6 +205,8 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.kind]), [
       ["The Legend of Zelda: Breath of the Wild", "2017", "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co3p2d.jpg", "game"],
     ]);
+    // The tile shows the cover at half the size.
+    assert.equal(hits[0]?.thumbUrl, "https://images.igdb.com/igdb/image/upload/t_cover_big/co3p2d.jpg");
   });
 
   it("in a scope with a catalogue of its own, its kind of picture first and Wikidata's last; all as before", () => {
@@ -370,7 +372,7 @@ describe("the catalogues' answers", () => {
   it("Open Library: covers by id, author and year under the title", () => {
     const hits = openLibraryHits({ docs: [{ key: "/works/OL1W", title: "Dune", author_name: ["Frank Herbert"], first_publish_year: 1965, cover_i: 99 }, { key: "/works/OL2W", title: "No cover" }] });
     assert.deepEqual(hits.map((one) => [one.id, one.subtitle, one.imageUrl]), [["openlibrary:OL1W", "Frank Herbert · 1965", "https://covers.openlibrary.org/b/id/99-L.jpg"]]);
-    assert.equal(hits[0]?.thumbUrl, null);
+    assert.equal(hits[0]?.thumbUrl, "https://covers.openlibrary.org/b/id/99-M.jpg");
   });
 
   it("Wikidata for music: an item with a genre or of a music class, not a church or a title", () => {
@@ -420,7 +422,7 @@ describe("the catalogues' answers", () => {
     assert.deepEqual(wikidataCandidates(["Q41421"], { entities }, "pt-BR").map(({ hit }) => hit.title), ["Michael Jordan"]);
   });
 
-  it("the web: https pictures big enough for a tile, the picture itself in the grid, long page titles cut", () => {
+  it("the web: https pictures big enough for a tile, the search engine's thumbnail in the grid, long page titles cut", () => {
     const hits = webHits({ images: [
       { title: "x".repeat(100), imageUrl: "https://site/a.jpg", imageWidth: 800, imageHeight: 1000, thumbnailUrl: "https://t/a", source: "site", link: "https://site.example/page" },
       { title: "no page", imageUrl: "https://site/f.jpg", imageWidth: 800, imageHeight: 1000, link: "javascript:alert(1)" },
@@ -434,13 +436,14 @@ describe("the catalogues' answers", () => {
     // The page the picture stands on is kept, an https page only.
     assert.deepEqual(hits[0]?.attribution, { source: "web", link: "https://site.example/page" });
     assert.deepEqual(hits[1]?.attribution, { source: "web" });
-    assert.equal(hits[0]?.thumbUrl, null);
+    // The tile shows the search engine's https thumbnail; without one, the picture itself (25.11.2026).
+    assert.deepEqual(hits.map((one) => one.thumbUrl), ["https://t/a", null]);
   });
 
   it("the web: a Commons original is offered at 600 px, as Wikidata's hits are (24.11.2026)", () => {
     const original = "https://upload.wikimedia.org/wikipedia/commons/a/ae/Risotto_de_gambas%2C_restaurant_Danieli_%28Vienne%2C_Autriche%29.jpg?utm_source=ru.wikipedia.org&utm_campaign=index";
     const hits = webHits({ images: [
-      { title: "Risotto", imageUrl: original, imageWidth: 4000, imageHeight: 3000 },
+      { title: "Risotto", imageUrl: original, imageWidth: 4000, imageHeight: 3000, thumbnailUrl: "https://encrypted-tbn0.gstatic.com/images?q=tbn:r" },
       { title: "page", imageUrl: "https://commons.wikimedia.org/wiki/File:Risotto_Weihnachten_2020_13.jpg", imageWidth: 800, imageHeight: 600 },
       { title: "thumb", imageUrl: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ae/X.jpg/960px-X.jpg", imageWidth: 960, imageHeight: 720 },
     ] });
@@ -448,6 +451,12 @@ describe("the catalogues' answers", () => {
       "https://commons.wikimedia.org/wiki/Special:FilePath/Risotto_de_gambas%2C_restaurant_Danieli_(Vienne%2C_Autriche).jpg?width=600",
       "https://commons.wikimedia.org/wiki/Special:FilePath/Risotto_Weihnachten_2020_13.jpg?width=600",
       "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ae/X.jpg/960px-X.jpg",
+    ]);
+    // Its tile is the file at 400 px, as a Wikidata hit's is, before the search engine's thumbnail (25.11.2026).
+    assert.deepEqual(hits.map((one) => one.thumbUrl), [
+      "https://commons.wikimedia.org/wiki/Special:FilePath/Risotto_de_gambas%2C_restaurant_Danieli_(Vienne%2C_Autriche).jpg?width=400",
+      "https://commons.wikimedia.org/wiki/Special:FilePath/Risotto_Weihnachten_2020_13.jpg?width=400",
+      "https://commons.wikimedia.org/wiki/Special:FilePath/X.jpg?width=400",
     ]);
   });
 });
