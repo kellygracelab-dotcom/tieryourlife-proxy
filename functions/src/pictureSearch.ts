@@ -56,6 +56,7 @@ import {
   sourcesFor,
   steamAppIds,
   steamHits,
+  withLoadingCovers,
   tmdbHits,
   tmdbKeyOf,
   USER_AGENT,
@@ -103,7 +104,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 24;
+const CACHE_SHAPE = 25;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -904,7 +905,13 @@ async function askSteam(input: SearchInput): Promise<SourceAnswer> {
     data_request: { include_assets: true },
   };
   const items = await getJson(`https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?${new URLSearchParams({ input_json: JSON.stringify(request) })}`);
-  return { hits: steamHits(ids, items), hasMore: false };
+  return { hits: await withLoadingCovers(steamHits(ids, items), coverLoads), hasMore: false };
+}
+
+/** Whether a catalogue's picture is there: a HEAD answered 200 with a picture within 2 s. */
+async function coverLoads(url: string): Promise<boolean> {
+  const reply = await fetch(url, { method: "HEAD", headers: { "User-Agent": USER_AGENT, Accept: "image/*" }, signal: AbortSignal.timeout(2000) });
+  return reply.ok && (reply.headers.get("content-type") ?? "").startsWith("image/");
 }
 
 async function askDeezer(input: SearchInput): Promise<SourceAnswer> {

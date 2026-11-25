@@ -23,6 +23,7 @@ import {
   worthSearching,
   WIDEST_PHOTO,
   openLibraryHits,
+  withLoadingCovers,
   PictureHit,
   pictureScopeOf,
   quickSourcesFor,
@@ -162,6 +163,15 @@ describe("the catalogues' answers", () => {
       ["PEAK", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3527290/480b/library_600x900_2x.jpg?t=2", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3527290/480b/library_600x900.jpg?t=2"],
       ["Counter-Strike", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg?t=1", "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/10/library_600x900.jpg?t=1"],
     ]);
+  });
+
+  it("Steam: a hit whose portrait.png does not load is left out, other covers are not asked for (25.11.2026)", async () => {
+    const steam = (id: number, file: string): PictureHit => ({ ...hit(`steam:${id}`, `Game ${id}`), source: "steam", kind: "game", imageUrl: `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${id}/${file}?t=1` });
+    const asked: string[] = [];
+    const loads = async (url: string) => { asked.push(url); if (url.includes("/3/")) throw new Error("timeout"); return url.includes("/1/"); };
+    const kept = await withLoadingCovers([steam(1, "portrait.png"), steam(2, "portrait.png"), steam(3, "portrait.png"), steam(4, "library_600x900_2x.jpg"), { ...hit("tmdb:5", "Film"), imageUrl: "https://x/portrait.png" }], loads);
+    assert.deepEqual(kept.map((one) => one.id), ["steam:1", "steam:4", "tmdb:5"]);
+    assert.equal(asked.length, 3);
   });
 
   it("Commons sizes: covers must stand upright, photos may be cropped, nothing small or unlicensed, names as Commons writes them", () => {

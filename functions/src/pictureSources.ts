@@ -394,6 +394,18 @@ export function igdbHits(body: unknown): PictureHit[] {
 
 const STEAM_ASSETS = "https://shared.akamai.steamstatic.com/store_item_assets/";
 
+/**
+ * Steam names `portrait.png` as the tall cover of many apps it has none for: 22 of 68 such covers in the answers
+ * of 21-25.11.2026 answered 404 (soundtracks, demos, DLC, a few games), and nothing in Steam's answer tells them
+ * from the 46 that load. These covers are asked for, all at once, and the hits whose cover does not load are left
+ * out; every other Steam cover loaded. `loads` answers whether one address gives a picture.
+ */
+export async function withLoadingCovers(hits: readonly PictureHit[], loads: (url: string) => Promise<boolean>): Promise<PictureHit[]> {
+  const doubtful = (hit: PictureHit) => hit.source === "steam" && /\/portrait\.png(?:\?|$)/.test(hit.imageUrl);
+  const kept = await Promise.all(hits.map(async (hit) => !doubtful(hit) || (await loads(hit.imageUrl).catch(() => false))));
+  return hits.filter((_, index) => kept[index]);
+}
+
 /** The ids of the apps a Steam store search found, in its order. */
 export function steamAppIds(body: unknown): number[] {
   return rows((body as Json | null)?.items).flatMap((row) => (row.type === "app" && typeof row.id === "number" ? [row.id] : []));
