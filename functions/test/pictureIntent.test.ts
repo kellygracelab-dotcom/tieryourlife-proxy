@@ -6,6 +6,8 @@ import {
   fitsType,
   judgeHits,
   keepsNumbers,
+  latinOf,
+  nearSpelling,
   nameKey,
   otherLayout,
   otherScript,
@@ -215,5 +217,27 @@ describe("Wikidata's own order", () => {
       mergeHits("Juventus", [[club, player]], "all", (one) => wantRank(one, "all", want), (one) => wantScore(one, want, hitScore(one, "Juventus"))).map((one) => one.id);
     assert.deepEqual(order(sport), ["wikidata:Q2", "wikidata:Q1"]);
     assert.deepEqual(order(null), ["wikidata:Q1", "wikidata:Q2"]);
+  });
+});
+
+describe("a name typed in Cyrillic, and Wikipedia's other words (26.11.2026)", () => {
+  it("writes Cyrillic as English writes names, \"з\" between vowels as \"s\"", () => {
+    assert.equal(latinOf("лализа"), "lalisa");
+    assert.equal(latinOf("Лиза"), "lisa");
+    assert.equal(latinOf("Изабелла"), "isabella");
+    assert.equal(latinOf("Зара"), "zara", "not first: no vowel before");
+    assert.equal(latinOf("Мазда"), "mazda");
+    assert.equal(latinOf("Щелкунчик"), "shchelkunchik");
+    assert.equal(latinOf("Matrix"), null);
+    assert.equal(latinOf("Ведьмак 3"), "vedmak 3");
+    assert.equal(latinOf("Ведьмак Geralt"), null);
+  });
+
+  it("takes Wikipedia's spelling as a typo put right, not as another word", () => {
+    assert.equal(nearSpelling("Intersteller", "interstellar"), true);
+    assert.equal(nearSpelling("Гари Потер", "Гарри Поттер"), true);
+    assert.equal(nearSpelling("наполен", "наполеон"), true);
+    assert.equal(nearSpelling("лализа", "лариса"), false);
+    assert.equal(nearSpelling("raiden", "rhydon"), false);
   });
 });

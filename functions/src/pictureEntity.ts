@@ -60,6 +60,8 @@ export interface EntityFacts {
   supers: number[];
   /** Occupations (P106). */
   jobs: number[];
+  /** Who performs it (P175), a song's or an album's singer or band: Q-ids. */
+  performers: string[];
   /** In how many Wikipedias and sister sites it has a page: how well known it is. */
   sitelinks: number;
   /** Its labels and aliases in the search's languages and `mul`. */
@@ -115,6 +117,7 @@ export function entityFacts(ids: readonly string[], body: unknown, languages: re
       classes: itemNumbers(claims, "P31"),
       supers: itemNumbers(claims, "P279"),
       jobs: itemNumbers(claims, "P106"),
+      performers: itemNumbers(claims, "P175").map((number) => `Q${number}`),
       sitelinks: entity.sitelinks && typeof entity.sitelinks === "object" ? Object.keys(entity.sitelinks).length : 0,
       names: [...new Set(names)],
       about: typeof descriptions.en?.value === "string" ? descriptions.en.value : null,
@@ -210,7 +213,7 @@ export function entityScore(facts: EntityFacts, found: Found, typed: string, wan
   const first = wantedKinds(want, scope)?.first;
   if (first && anyIn(first, [...facts.classes, ...facts.supers])) total += 3;
   total += 0.8 * Math.log10(1 + facts.sitelinks);
-  if (facts.names.some((name) => sameOrPlural(name, typed))) total += 2.5;
+  if (namedBy(facts, typed)) total += 2.5;
   if (found.disambiguation || notAThing(facts)) total -= 6;
   if (facts.pictured || Object.keys(facts.ids).length > 0) total += 0.5;
   return total;
@@ -246,7 +249,7 @@ export function chooseEntity(candidates: readonly { facts: EntityFacts; found: F
   const best = scored[0];
   if (!best) return null;
   const lead = best.score - (scored[1]?.score ?? 0);
-  const named = best.facts.names.some((name) => sameOrPlural(name, typed));
+  const named = namedBy(best.facts, typed);
   const fits = factsFit(best.facts, want, scope);
   if (fits === false || notAThing(best.facts) || best.found.disambiguation) return null;
   let confidence: Confidence | null = null;
@@ -256,6 +259,50 @@ export function chooseEntity(candidates: readonly { facts: EntityFacts; found: F
   if (confidence === null) return null;
   const implied = want === null && scope === "all" && anyIn("food", [...best.facts.classes, ...best.facts.supers]) ? "food" : undefined;
   return { item: best.facts.id, confidence, kind: kindOfFacts(best.facts, want, scope), ids: best.facts.ids, keys: [`wikidata:${best.facts.id}`], ...(implied ? { implied } : {}) };
+}
+
+/** A Roman number of a monarch or a pope: "I" to "XXXIX". */
+const REGNAL = /^(.+?)\s+(X{0,3}(?:IX|IV|V?I{0,3}))$/u;
+
+/**
+ * Whether one of an item's names is [typed], or its plural. A person's name counts without the Roman
+ * number of a monarch or a pope: "Наполеон" names Napoleon I, "Elizabeth" Elizabeth II (26.11.2026:
+ * Danylo's "Наполеон" in All was a town in Ohio, an exact namesake, with Napoleon I third).
+ */
+export function namedBy(facts: Pick<EntityFacts, "names" | "classes">, typed: string): boolean {
+  if (facts.names.some((name) => sameOrPlural(name, typed))) return true;
+  if (!facts.classes.includes(HUMAN)) return false;
+  return facts.names.some((name) => {
+    const match = REGNAL.exec(name.trim());
+    return match !== null && match[2]!.length > 0 && sameOrPlural(match[1], typed);
+  });
+}
+
+/**
+ * The singer instead of the song (26.11.2026, Danylo's "LALISA"). When the best item is a song or an
+ * album by name, and so is every other item by name within a point of it, all by one performer, and none
+ * of them has a picture to show ([shown]: the items whose picture fits a tile; a single's picture on
+ * Commons is a wordmark at best, its cover not free to show), their performer is chosen, if it was found
+ * among the items and has a picture. "Gangnam Style", whose own picture shows, stays the song.
+ */
+export function singerInstead(
+  candidates: readonly { facts: EntityFacts; found: Found }[],
+  typed: string,
+  want: Want | null,
+  scope: PictureScope,
+  shown: ReadonlySet<string>,
+): Chosen | null {
+  const scored = candidates
+    .map((one) => ({ ...one, score: entityScore(one.facts, one.found, typed, want, scope) }))
+    .sort((left, right) => right.score - left.score);
+  const best = scored[0];
+  if (!best || best.facts.performers.length !== 1 || !namedBy(best.facts, typed)) return null;
+  const performer = best.facts.performers[0]!;
+  const close = scored.filter((one) => best.score - one.score <= 1 && namedBy(one.facts, typed));
+  if (!close.every((one) => one.facts.performers.length === 1 && one.facts.performers[0] === performer && !shown.has(one.facts.id))) return null;
+  const singer = scored.find((one) => one.facts.id === performer);
+  if (!singer || !shown.has(performer) || notAThing(singer.facts) || singer.found.disambiguation || factsFit(singer.facts, want, scope) === false) return null;
+  return { item: performer, confidence: "medium", kind: kindOfFacts(singer.facts, want, scope), ids: singer.facts.ids, keys: [`wikidata:${performer}`] };
 }
 
 /** The key by which a hit is one item's: a TMDB id is a movie's, a series' or a person's. */

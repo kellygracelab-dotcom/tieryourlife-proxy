@@ -268,7 +268,7 @@ export function judgeHits(hits: readonly Described[], typed: string, scope: Pict
 
 // The second attempt.
 
-export type Retry = "trimmed" | "layout" | "spelling";
+export type Retry = "trimmed" | "layout" | "spelling" | "latin";
 
 /**
  * A word after a name that says what kind of thing is meant, and what a list then wants: "борщ блюдо",
@@ -353,6 +353,53 @@ export function otherLayout(typed: string, language: string): string | null {
   const result = out.replace(/[[\];',.`]/g, "").replace(/\s+/g, " ").trim();
   const vowels = cyrillic ? /[aeiouy]/i : /[аеёиоуыэюяіїє]/i;
   return result !== typed.trim() && vowels.test(result) && /\p{L}{2}/u.test(result) ? result : null;
+}
+
+/** Cyrillic letters in Latin, as names are written in English: "Лиза" is "Lisa", "Брюс" is "Brus". */
+const CYRILLIC_LATIN: Record<string, string> = {
+  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m",
+  н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh", щ: "shch",
+  ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya", і: "i", ї: "yi", є: "ye", ґ: "g",
+};
+const CYRILLIC_VOWELS = "аеёиоуыэюяіїє";
+
+/**
+ * A name typed in Cyrillic as its Latin original would be written, for a second attempt (26.11.2026,
+ * Danylo's "лализа" for Lisa's "LALISA"): letter by letter, and "з" between vowels as "s", as English
+ * writes that sound ("Лиза" Lisa, "Роза" Rosa, "Изабелла" Isabella). Null for a text with Latin letters
+ * or none in Cyrillic, or one that comes out the same.
+ */
+export function latinOf(typed: string): string | null {
+  const text = typed.trim();
+  if (!/\p{Script=Cyrillic}/u.test(text) || /\p{Script=Latin}/u.test(text)) return null;
+  const chars = [...text.toLowerCase()];
+  let out = "";
+  chars.forEach((char, at) => {
+    const vowel = (one: string | undefined) => one !== undefined && CYRILLIC_VOWELS.includes(one);
+    const vowelAround = vowel(chars[at - 1]) && vowel(chars[at + 1]);
+    out += char === "з" && vowelAround ? "s" : CYRILLIC_LATIN[char] ?? char;
+  });
+  const result = out.replace(/\s+/g, " ").trim();
+  return /[a-z]{2}/.test(result) ? result : null;
+}
+
+/**
+ * Whether Wikipedia's spelling is a typo put right, not another word: at most one letter changed in a
+ * short name, one in four in a longer one. "Intersteller" is "interstellar"; "лализа" is no "лариса"
+ * (26.11.2026).
+ */
+export function nearSpelling(typed: string, text: string): boolean {
+  const left = [...nameKey(typed)];
+  const right = [...nameKey(text)];
+  let row = Array.from({ length: right.length + 1 }, (_, at) => at);
+  for (let i = 1; i <= left.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= right.length; j++) {
+      next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (left[i - 1] === right[j - 1] ? 0 : 1));
+    }
+    row = next;
+  }
+  return row[right.length]! <= Math.max(1, Math.floor(left.length / 4));
 }
 
 /** The Wikipedia whose spelling suggestions fit a search language. */
