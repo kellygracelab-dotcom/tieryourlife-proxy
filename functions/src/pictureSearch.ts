@@ -670,10 +670,20 @@ function askShared(share: string, source: PictureSource, input: SearchInput): Pr
   return asked;
 }
 
-/** [source]'s answer, or null and [source] named late when it takes longer than [deadlineMs]. */
+/**
+ * [source]'s answer, or null and [source] named late when it takes longer than [deadlineMs]. Without a
+ * deadline, a shared request begun by the quick search that failed is followed by one of its own.
+ */
 async function askInTime(source: PictureSource, input: SearchInput, options: { deadlineMs?: number; late?: PictureSource[]; share?: string }): Promise<SourceAnswer | null> {
+  const earlier = options.share !== undefined && answering.has(`${options.share}|${source}`);
   const asked = options.share ? askShared(options.share, source, input) : askSource(source, input);
-  if (options.deadlineMs === undefined) return asked;
+  if (options.deadlineMs === undefined) {
+    // The quick search's request failed, mostly by its timeout, which ran from the quick search's start:
+    // the whole search asks once more with a timeout of its own, unless the catalogue now rests (26.11.2026).
+    const answer = await asked;
+    if (answer !== null || !earlier || ((await restingUntil()).get(source) ?? 0) > Date.now()) return answer;
+    return askSource(source, input);
+  }
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<"late">((resolve) => {
     timer = setTimeout(() => resolve("late"), options.deadlineMs);

@@ -883,4 +883,28 @@ describe("a quick search's deadline (26.11.2026)", () => {
     assert.ok(items(again).some((hit) => hit.source === "tmdb"));
     assert.equal(asked.filter((url) => url.host === "api.themoviedb.org").length, tmdbAsked, "from the cache");
   });
+
+  it("asks a catalogue once more in the whole search when the quick search's request to it failed after the quick answer", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "openlibrary.org" && ++calls === 1) {
+        await held;
+        throw new TypeError("fetch failed");
+      }
+      return plain(input);
+    });
+    const quick = await get({ q: "Lion", scope: "books", part: "quick" });
+    assert.equal(quick.body.rest, true);
+    const whole = get({ q: "Lion", scope: "books" });
+    release();
+    const reply = await whole;
+    assert.equal(calls, 2, "asked once more, once");
+    assert.ok(items(reply).some((hit) => hit.source === "openlibrary"));
+  });
 });
