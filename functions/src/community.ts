@@ -7,6 +7,7 @@ import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/f
 import { getAuth } from "firebase-admin/auth";
 import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { doPublishAfter, queuePublishAfter, type PublishAfterJob } from "./publishAfter";
 import { requireAppCheck } from "./appCheck";
 import { publicMediaResponses, storageMediaUrl } from "./publicMedia";
 import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
@@ -3233,7 +3234,12 @@ async function publish(
     response.status(400).json({ error: "Which revision was this list read at?", code: "INVALID", detail: "baseRevision" });
     return;
   }
-  if (previous !== null && staleBase(baseRevision, previous)) return listChanged(response, revisionOf(previous));
+  // What was sent, so the same Update sent again after a lost answer is known (26.11.2026).
+  const sentKey = createHash("sha256").update(JSON.stringify(body ?? null)).digest("hex");
+  if (previous !== null && staleBase(baseRevision, previous)) {
+    if (existingId !== null && sameUpdateAgain(previous, baseRevision, sentKey)) return updatedAlready(response, existingId, previous);
+    return listChanged(response, revisionOf(previous));
+  }
 
   const decision = decidePublish({
     body,
@@ -3592,6 +3598,8 @@ async function publish(
     // somebody else's topic already holds stays theirs; this one waits beside
     // it, as waiting twins always have, for a moderator to merge.
     let revision = 0;
+    // The same Update, written by its first sending: its answer is given again.
+    const writtenBefore: { stored: StoredList | null } = { stored: null };
     const earlier = await db.runTransaction(async (transaction) => {
       // The same board's first request got here first: its list stands, and this one writes nothing.
       if (fromBoard !== null) {
@@ -3600,7 +3608,13 @@ async function publish(
       }
       // The house's translations stay with a replaced list, as far as it still shows what they translate.
       const current = existingId ? (await transaction.get(collection.doc(existingId))).data() : null;
-      if (existingId && staleBase(baseRevision, current)) return { changed: revisionOf(current) };
+      if (existingId && staleBase(baseRevision, current)) {
+        if (current && sameUpdateAgain(current, baseRevision, sentKey)) {
+          writtenBefore.stored = current as StoredList;
+          return UPDATED_ALREADY;
+        }
+        return { changed: revisionOf(current) };
+      }
       if (existingId && JSON.stringify(current?.updatedAt ?? null) !== JSON.stringify(previous?.updatedAt ?? null)) return PUBLICATION_CHANGED;
       if (existingId && revisionOf(current) !== revisionOf(previous)) return PUBLICATION_CHANGED;
       if (resolved.boardUid) {
@@ -3618,7 +3632,7 @@ async function publish(
         ? pruneTranslations(current?.translations, translatableStrings(list)).translations
         : null;
       revision = revisionOf(current) + 1;
-      const fields = { ...(keptTranslations === null ? document : { ...document, translations: keptTranslations }), revision };
+      const fields = { ...(keptTranslations === null ? document : { ...document, translations: keptTranslations }), revision, sentKey };
       const write = existingId ? fields : { ...fields, publishedAt: FieldValue.serverTimestamp(), takeCount: 0, rankingCount: 0 };
       if (!snapshotFits({ ...current, ...write })) return PUBLISHED_TOO_HEAVY;
       const reserve = topicRef !== null && attachment.kind === "create"
@@ -3697,6 +3711,11 @@ async function publish(
       publicationRefused(response, { code: "LIST_CHANGED" });
       return null;
     }
+    if (earlier === UPDATED_ALREADY) {
+      if (writtenBefore.stored !== null && existingId !== null) updatedAlready(response, existingId, writtenBefore.stored);
+      else listChanged(response, revisionOf(writtenBefore.stored ?? undefined));
+      return null;
+    }
     if (earlier !== null && typeof earlier === "object" && "changed" in earlier) {
       listChanged(response, (earlier as { changed: number }).changed);
       return null;
@@ -3735,21 +3754,35 @@ async function publish(
     held ? noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined) : Promise.resolve(),
   ];
   if (existingId) {
-    after.push(syncCredits(existingId, document.anonymous, byline.uid, document.authorName));
     // The board was edited for a month; the copies it no longer names are retired, not removed:
     // other people's boards, rankings and Continue entries may still show them (20.11.2026).
-    after.push(retireUnusedPublished(existingId, [
-      ...addresses.keys(),
-      ...publishedNamesIn(existingId, [
-        ...document.items.map((item) => item.imageUrl),
-        document.coverImageUrl,
-        ...document.previewImages,
+    const job: PublishAfterJob = {
+      listId: existingId,
+      revision,
+      keep: [...new Set([
+        ...addresses.keys(),
+        ...publishedNamesIn(existingId, [
+          ...document.items.map((item) => item.imageUrl),
+          document.coverImageUrl,
+          ...document.previewImages,
+        ]),
+      ])],
+      previous: publishedNamesIn(existingId, [
+        ...previousImages,
+        previous?.coverImageUrl,
+        ...(previous?.previewImages ?? []),
       ]),
-    ], publishedNamesIn(existingId, [
-      ...previousImages,
-      previous?.coverImageUrl,
-      ...(previous?.previewImages ?? []),
-    ])));
+      credits: { anonymous: document.anonymous, authorUid: byline.uid, authorName: document.authorName },
+    };
+    // A new name or a change of anonymity reaches every copy before the answer, as before; the rest
+    // follows the answer (src/publishAfter.ts, 26.11.2026), or is done here when it cannot be queued.
+    const bylineChanged = previous === null || isAnonymous(previous) !== document.anonymous || previous.authorName !== document.authorName || previous.authorUid !== byline.uid;
+    if (bylineChanged) after.push(syncCredits(existingId, document.anonymous, byline.uid, document.authorName));
+    after.push(queuePublishAfter(job).then((queued) => (queued ? undefined : doPublishAfter(job, {
+      readList: async () => ({ revision, names: [] }),
+      syncCredits: (listId, anonymous, authorUid, authorName) => (bylineChanged ? Promise.resolve() : syncCredits(listId, anonymous, authorUid, authorName)),
+      retire: (listId, keeping, candidates) => retireUnusedPublished(listId, keeping, candidates),
+    }))));
   }
   const failed = (await Promise.allSettled(after)).find((one): one is PromiseRejectedResult => one.status === "rejected");
   if (failed) throw failed.reason;
@@ -3778,6 +3811,16 @@ function wikimediaNotReady(response: Response, code: "SOURCE_BUSY" | "PICTURES_N
 const HOUSE_PICTURE_RETRY_MS = 60_000;
 const LICENSED_SOURCES: ReadonlySet<string> = new Set(["wikimedia", "inaturalist"]);
 
+/** Whether [stored] is the revision that this very Update ([sentKey], read at [baseRevision]) wrote. */
+function sameUpdateAgain(stored: { revision?: unknown; sentKey?: unknown }, baseRevision: number | null, sentKey: string): boolean {
+  return baseRevision !== null && stored.sentKey === sentKey && revisionOf(stored) === baseRevision + 1;
+}
+
+/** The answer the Update already written gave: sent again after a lost answer, it is not refused as stale. */
+function updatedAlready(response: Response, id: string, stored: StoredList): void {
+  response.status(200).json({ id, topicId: stored.topicId ?? null, underReview: stored.underReview === true, revision: revisionOf(stored) });
+}
+
 /** A replacement read at an older revision than the list now has: nothing was written. */
 function listChanged(response: Response, revision: number): void {
   response.status(409).json({ error: "The list changed since it was opened. Load it again.", code: "LIST_CHANGED", revision });
@@ -3787,6 +3830,7 @@ const TOO_MANY_LISTS = "too_many_lists";
 const SOURCE_CHANGED = "source_changed";
 const PUBLISHED_TOO_HEAVY = "published_too_heavy";
 const PUBLICATION_CHANGED = "publication_changed";
+const UPDATED_ALREADY = "updated_already";
 
 function publicListEvents(value: unknown): number[] {
   return Array.isArray(value) ? value.filter((at): at is number => typeof at === "number") : [];
@@ -3806,7 +3850,7 @@ function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocume
  * anonymous, by its author while it is not. Asked of every copy on every
  * republish, so a rewrite cut short by a timeout is finished by the next one.
  */
-async function syncCredits(listId: string, anonymous: boolean, authorUid: string, authorName: string): Promise<void> {
+export async function syncCredits(listId: string, anonymous: boolean, authorUid: string, authorName: string): Promise<void> {
   const credit = anonymous
     ? { "basedOn.authorUid": "", "basedOn.authorName": "" }
     : { "basedOn.authorUid": authorUid, "basedOn.authorName": authorName };
@@ -3816,6 +3860,14 @@ async function syncCredits(listId: string, anonymous: boolean, authorUid: string
     batch.update(doc.ref, credit);
     return true;
   });
+}
+
+/** The copies (`published/{listId}/` names) a stored list names now: its cards', its cover and its collage's. */
+export function listNamesNow(listId: string, data: Record<string, unknown>): string[] {
+  const items = Array.isArray(data.items) ? (data.items as { imageUrl?: unknown }[]) : [];
+  const previews = Array.isArray(data.previewImages) ? (data.previewImages as unknown[]) : [];
+  const urls = [...items.map((item) => item?.imageUrl), data.coverImageUrl, ...previews].filter((url): url is string => typeof url === "string");
+  return publishedNamesIn(listId, urls);
 }
 
 /** What the deciding needs to know about the list a board was saved from. */
