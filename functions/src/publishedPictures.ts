@@ -124,7 +124,8 @@ export async function copyForPublication(
     nameSuffix = "",
     onSaved = () => undefined,
     charge = async () => undefined,
-  }: { nameSuffix?: string; onSaved?: (path: string) => void; charge?: (looks: number) => Promise<void> } = {},
+    committed = new Map<string, string>(),
+  }: { nameSuffix?: string; onSaved?: (path: string) => void; charge?: (looks: number) => Promise<void>; committed?: ReadonlyMap<string, string> } = {},
 ): Promise<PictureOutcome[]> {
   if (pictureIds.length === 0) return [];
 
@@ -141,7 +142,15 @@ export async function copyForPublication(
     .filter((id) => alreadyHere.has(id + nameSuffix))
     .map((id) => ({ id, ok: true as const, address: addressOf(bucket.name, publishedPath(listId, id + nameSuffix)) }));
 
-  const fresh = pictureIds.filter((id) => !alreadyHere.has(id + nameSuffix));
+  // The copy the list's last snapshot shows, made from the same version of the photograph, is that photograph
+  // looked at already: an Update takes it as it is, with no download, Vision or copy (26.11.2026: a list's own
+  // photographs were looked at and copied again on every Update, most of its 3-5 s).
+  const reused = await Promise.all(pictureIds.filter((id) => !alreadyHere.has(id + nameSuffix) && committed.has(id)).map(async (id) => {
+    const path = committed.get(id)!;
+    return await sameVersion(bucket, privatePath(authorUid, id), path) ? { id, ok: true as const, address: addressOf(bucket.name, path) } : null;
+  }));
+  for (const one of reused) if (one !== null) settled.push(one);
+  const fresh = pictureIds.filter((id) => !alreadyHere.has(id + nameSuffix) && !settled.some((one) => one.id === id));
   if (fresh.length === 0) return settled;
 
   // Looked at a few at a time, never all held at once: two hundred photographs of 4 MB are more than an
@@ -176,7 +185,8 @@ export async function copyForPublication(
       passed.slice(at, at + LOOKING_AT_ONCE).map(async (one) => {
         const path = publishedPath(listId, one.id + nameSuffix);
         const bytes = one.bytes ?? (await bucket.file(privatePath(authorUid, one.id), { generation: one.generation }).download())[0];
-        await bucket.file(path).save(bytes, { contentType: "image/jpeg", resumable: false });
+        // The version it was made from, so the next Update can take this copy as it is (`sameVersion`).
+        await bucket.file(path).save(bytes, { contentType: "image/jpeg", resumable: false, metadata: { metadata: { [SOURCE_GENERATION]: String(one.generation) } } });
         onSaved(path);
       }),
     );
@@ -193,6 +203,51 @@ export async function copyForPublication(
       address: addressOf(bucket.name, publishedPath(listId, one.id + nameSuffix)),
     })),
   ];
+}
+
+/** A copy's own metadata key: the generation of the photograph it was made from. */
+export const SOURCE_GENERATION = "sourceGeneration";
+
+/**
+ * Whether the copy at [copyPath] was made from the photograph at [privateFile] as it is now. A copy from
+ * before 26.11.2026 does not say, and is made again once. Unreadable either side: not the same.
+ */
+async function sameVersion(bucket: ReturnType<ReturnType<typeof getStorage>["bucket"]>, privateFile: string, copyPath: string): Promise<boolean> {
+  try {
+    const [[source], [copy]] = await Promise.all([bucket.file(privateFile).getMetadata(), bucket.file(copyPath).getMetadata()]);
+    const made = (copy.metadata as Record<string, unknown> | undefined)?.[SOURCE_GENERATION];
+    return source.generation !== undefined && typeof made === "string" && made === String(source.generation);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The copies of the author's own photographs the list's last snapshot shows, by picture id: `{id}` or
+ * `{id}_p_{uuid}` in the list's folder. Only these may be taken again; a copy no snapshot names is litter.
+ */
+export function committedOwnCopies(listId: string, pictureIds: readonly string[], addresses: readonly (string | null)[], bucketName: string): Map<string, string> {
+  const folder = `published/${listId}/`;
+  const held = new Set(addresses.flatMap((url) => {
+    if (url === null) return [];
+    // Kept as the site shows it or as Storage names it: either reads as Storage's address.
+    const media = storageMediaUrl(url);
+    const prefix = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/`;
+    if (!media.startsWith(prefix)) return [];
+    try {
+      const path = decodeURIComponent(media.slice(prefix.length).split(/[?#]/)[0] ?? "");
+      return path.startsWith(folder) ? [path] : [];
+    } catch {
+      return [];
+    }
+  }));
+  const copies = new Map<string, string>();
+  for (const id of pictureIds) {
+    const stem = folder + id;
+    const found = [...held].find((path) => path === stem || (path.startsWith(stem + "_p_") && /^_p_[a-f0-9-]{36}$/.test(path.slice(stem.length))));
+    if (found) copies.set(id, found);
+  }
+  return copies;
 }
 
 /** Own photographs downloaded and looked at together: one Vision call's worth, at most 64 MB held. */

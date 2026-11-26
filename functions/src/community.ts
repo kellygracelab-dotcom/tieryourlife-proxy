@@ -73,6 +73,7 @@ import {
 import {
   addressOf,
   copyAsFace,
+  committedOwnCopies,
   copyForPublication,
   discardPublished,
   retireUnusedPublished,
@@ -3405,12 +3406,16 @@ async function publish(
   // removed unless the list is written.
   const saved: string[] = [];
   const copies = { nameSuffix, onSaved: (path: string) => { saved.push(path); } };
+  const ownWanted = picturesWanted(decision.draft);
+  const ownCommitted = previousPictures === null ? new Map<string, string>() : committedOwnCopies(
+    target, ownWanted, [...previousPictures.items.map((item) => item.imageUrl), previousPictures.coverImageUrl, ...previousPictures.previewImages], pictureTools.bucket,
+  );
   const ownCopies = copyForPublication(
     identity.uid,
     target,
-    picturesWanted(decision.draft),
+    ownWanted,
     undefined,
-    { ...copies, charge: (looks) => chargeVision(identity.uid, "pictures", looks) },
+    { ...copies, committed: ownCommitted, charge: (looks) => chargeVision(identity.uid, "pictures", looks) },
   );
   const outsideCopies = copyOutside(`published/${target}/`, outsideUrls, pictureTools, { nameSuffix, committed });
   const faceCopy = checkedFace(byline.uid, byline.photoUrl, pictureTools);
