@@ -94,9 +94,13 @@ function everySourceFor(scope: PictureScope): PictureSource[] {
 /** Catalogues that can take many seconds: a quick search leaves them for the whole one. */
 const SLOW_SOURCES: readonly PictureSource[] = ["openlibrary"];
 
-/** What a quick search asks: the scope's catalogues that answer in a second or two. */
+/**
+ * What a quick search asks: the scope's catalogues that answer in a second or two, and in Books Open
+ * Library too, the catalogue of its own (26.11.2026): a books search without it showed authors and
+ * namesakes first. A quick search waits for none longer than its deadline (src/pictureSearch.ts).
+ */
 export function quickSourcesFor(scope: PictureScope): PictureSource[] {
-  return sourcesFor(scope).filter((source) => !SLOW_SOURCES.includes(source));
+  return sourcesFor(scope).filter((source) => scope === "books" || !SLOW_SOURCES.includes(source));
 }
 
 export function hasSlowSources(scope: PictureScope): boolean {
@@ -264,6 +268,35 @@ export function mergeHits(
     .map((hit, order) => ({ hit, order, rank: rank(hit), score: score(hit) }))
     .sort((left, right) => left.rank - right.rank || left.score - right.score || left.order - right.order)
     .map(({ hit }) => hit);
+}
+
+/**
+ * In Books, a book called exactly what was typed comes first, before people and things, the item
+ * Wikidata took the name to mean among them: "Circe" is the novel before the goddess (26.11.2026).
+ */
+export function exactBooksFirst(hits: readonly PictureHit[], typed: string, scope: PictureScope): PictureHit[] {
+  if (scope !== "books") return [...hits];
+  const exact = (hit: PictureHit) => hit.kind === "book" && hitScore(hit, typed) === 0;
+  return [...hits.filter(exact), ...hits.filter((hit) => !exact(hit))];
+}
+
+/** How popular TMDB counts each film, series and person of its answer, by the hit's attribution id. */
+export function tmdbPopularity(body: unknown): Map<string, number> {
+  return new Map(rows((body as Json | null)?.results).flatMap((row): [string, number][] =>
+    typeof row.id === "number" && typeof row.popularity === "number" && typeof row.media_type === "string" ? [[`tmdb:${row.media_type}:${row.id}`, row.popularity]] : []));
+}
+
+/**
+ * TMDB's films and series called what was typed, most popular first, in the places they held: "Dune"
+ * is the 2021 film, then the 1984 one, before the Russian "Бархан" (1989) that TMDB also calls Dune
+ * (26.11.2026). The rest keep TMDB's order.
+ */
+export function namesakesByPopularity(hits: readonly PictureHit[], typed: string, popularity: ReadonlyMap<string, number>): PictureHit[] {
+  const named = (hit: PictureHit) => (hit.kind === "movie" || hit.kind === "tv") && hitScore(hit, typed) === 0;
+  const of = (hit: PictureHit) => popularity.get(hit.attribution?.id ?? "") ?? 0;
+  const sorted = hits.filter(named).sort((left, right) => of(right) - of(left));
+  let next = 0;
+  return hits.map((hit) => (named(hit) ? sorted[next++]! : hit));
 }
 
 /**
