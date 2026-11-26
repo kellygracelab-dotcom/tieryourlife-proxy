@@ -7,6 +7,8 @@ import {
   entityKey,
   factsFit,
   kindOfFacts,
+  namedBy,
+  singerInstead,
   notAThing,
   wikipediaItems,
   withChosen,
@@ -17,7 +19,7 @@ import { CLASS_TABLE, CLASS_TABLE_DATE } from "../src/pictureClassTable";
 
 /** An item as the entity step reads it; classes by the numbers of their Q-ids. */
 function item(id: string, more: Partial<EntityFacts> = {}): EntityFacts {
-  return { id, classes: [], supers: [], jobs: [], sitelinks: 0, names: [], about: null, pictured: true, ids: {}, ...more };
+  return { id, classes: [], supers: [], jobs: [], performers: [], sitelinks: 0, names: [], about: null, pictured: true, ids: {}, ...more };
 }
 
 const FILM = 11424;
@@ -172,6 +174,7 @@ describe("Wikidata's and Wikipedia's answers", () => {
       classes: [11424],
       supers: [],
       jobs: [],
+      performers: [],
       sitelinks: 3,
       names: ["Крёстный отец", "The Godfather", "Godfather"],
       about: "1972 film by Francis Ford Coppola",
@@ -212,5 +215,54 @@ describe("the chosen item's pictures", () => {
     assert.deepEqual(withChosen(hits, chosen, true)[0], { id: "tmdb:238", source: "tmdb", kind: "movie", confidence: "medium", doubts: ["spelling", "namesakes"] });
     assert.deepEqual(withChosen(hits, { ...chosen, confidence: "medium" }, false)[0]?.doubts, ["namesakes"]);
     assert.deepEqual(withChosen(hits, null, false), hits);
+  });
+});
+
+describe("Danylo's searches in All (26.11.2026)", () => {
+  const found = (wikidata?: number, wikipedia?: number): Found => ({ ...(wikidata === undefined ? {} : { wikidata }), ...(wikipedia === undefined ? {} : { wikipedia }) });
+  const HUMAN = 5;
+
+  it("names a monarch by the name without the Roman number, a person only", () => {
+    assert.equal(namedBy(item("Q517", { classes: [HUMAN], names: ["Наполеон I", "Napoleon Bonaparte"] }), "Наполеон"), true);
+    assert.equal(namedBy(item("Q9682", { classes: [HUMAN], names: ["Elizabeth II"] }), "Elizabeth"), true);
+    assert.equal(namedBy(item("Q517", { classes: [HUMAN], names: ["Наполеон I"] }), "Наполеон II"), false);
+    assert.equal(namedBy(item("Q1", { classes: [FILM], names: ["Rocky II"] }), "Rocky"), false, "a sequel is no monarch");
+    assert.equal(namedBy(item("Q2", { classes: [HUMAN], names: ["Louis CK"] }), "Louis"), false);
+  });
+
+  it("takes Napoleon I for \"Наполеон\", not the town in Ohio of exactly that name", () => {
+    const town = item("Q986312", { names: ["Наполеон"], sitelinks: 41 });
+    const emperor = item("Q517", { classes: [HUMAN], names: ["Наполеон I", "Наполеон Бонапарт"], sitelinks: 289 });
+    const cake = item("Q105806948", { names: ["Наполеон"], sitelinks: 45 });
+    const chosen = chooseEntity([{ facts: town, found: found(0) }, { facts: cake, found: found(3) }, { facts: emperor, found: found(12, 0) }], "Наполеон", null, "all");
+    assert.equal(chosen?.item, "Q517");
+  });
+
+  it("takes the singer for a single and its song by one performer, neither with a picture to show, LALISA", () => {
+    const song = item("Q108276514", { names: ["Lalisa"], sitelinks: 17, performers: ["Q26707663"] });
+    const single = item("Q108429797", { classes: [ALBUM], names: ["Lalisa"], sitelinks: 15, performers: ["Q26707663"] });
+    const lisa = item("Q26707663", { classes: [HUMAN], names: ["Лиса Манобан", "Lalisa Manobal"], sitelinks: 84 });
+    const candidates = [{ facts: song, found: found(0, 1) }, { facts: single, found: found(1, 1) }, { facts: lisa, found: found(4, 0) }];
+    const chosen = singerInstead(candidates, "LALISA", null, "all", new Set(["Q26707663"]));
+    assert.equal(chosen?.item, "Q26707663");
+    assert.equal(chosen?.confidence, "medium");
+    assert.equal(chosen?.kind, "person");
+    assert.equal(singerInstead(candidates.slice(0, 2), "LALISA", null, "all", new Set(["Q26707663"])), null, "a singer not found is not fetched");
+    assert.equal(singerInstead(candidates, "LALISA", null, "all", new Set()), null, "nor one without a picture to show");
+    assert.equal(singerInstead(candidates, "LALISA", null, "all", new Set(["Q26707663", "Q108429797"])), null, "a single whose picture shows stays itself");
+    assert.equal(singerInstead(candidates, "Lisa", null, "all", new Set(["Q26707663"])), null, "only for the song's name");
+  });
+
+  it("keeps the song when a film of its name comes as close", () => {
+    const song = item("Q1", { names: ["Bohemian Rhapsody"], sitelinks: 60, performers: ["Q15862"] });
+    const film = item("Q2", { classes: [FILM], names: ["Bohemian Rhapsody"], sitelinks: 70 });
+    const band = item("Q15862", { classes: [BAND], names: ["Queen"], sitelinks: 120 });
+    const candidates = [{ facts: song, found: found(0, 0) }, { facts: film, found: found(1, 1) }, { facts: band, found: found(5) }];
+    assert.equal(singerInstead(candidates, "Bohemian Rhapsody", null, "all", new Set(["Q15862"])), null);
+  });
+
+  it("reads a song's performer from its claims", () => {
+    const body = { entities: { Q1: { claims: { P175: [{ rank: "normal", mainsnak: { snaktype: "value", datavalue: { value: { id: "Q26707663" } } } }] } } } };
+    assert.deepEqual(entityFacts(["Q1"], body, ["en"])[0]?.performers, ["Q26707663"]);
   });
 });

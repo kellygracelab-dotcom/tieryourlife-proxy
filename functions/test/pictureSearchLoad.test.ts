@@ -391,7 +391,7 @@ describe("stage 1: the list's section, how sure, a second attempt", () => {
       }
       return plain(input);
     });
-    const typo = await get({ q: "Lyon kng", scope: "all", section: "other" });
+    const typo = await get({ q: "Lionn", scope: "all", section: "other" });
     assert.equal(typo.status, 200);
     assert.deepEqual(typo.body.searchedAs, { text: "lion", how: "spelling" });
     assert.equal(items(typo)[0]?.id, "wikidata:Q140");
@@ -401,7 +401,7 @@ describe("stage 1: the list's section, how sure, a second attempt", () => {
     // Asked again, the attempt chosen is kept: Wikipedia is not asked twice.
     const wikipedia = () => asked.filter((url) => url.host === "en.wikipedia.org").length;
     const once = wikipedia();
-    await get({ q: "Lyon kng", scope: "all", section: "other" });
+    await get({ q: "Lionn", scope: "all", section: "other" });
     assert.equal(wikipedia(), once);
   });
 

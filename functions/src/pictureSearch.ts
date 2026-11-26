@@ -70,7 +70,7 @@ import {
 } from "./pictureSources";
 import { noteDenied, noteSourceDenied } from "./pictureAlarms";
 import { commonsPictureOf } from "./pictureAttribution";
-import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
+import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, singerInstead, wikipediaItems, withChosen, type Chosen, type Found } from "./pictureEntity";
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { rankFor, scoreFor, sectionWant } from "./pictureOrder";
 import { dayKey } from "./quota";
@@ -82,6 +82,8 @@ import {
   hintOf,
   judgeHits,
   keepsNumbers,
+  latinOf,
+  nearSpelling,
   otherLayout,
   sameName,
   trimmedTail,
@@ -114,7 +116,7 @@ const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 26;
+const CACHE_SHAPE = 27;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -404,7 +406,8 @@ async function secondAttempt(input: SearchInput, first: PicturesAnswer, spelling
   const tries = known ?? (await timed("spelling", () => retryTexts(input.typed, input.language, first.items.length === 0, spellingOnly)));
   if (!known) await chosenRef.set({ tries, at: Timestamp.now() }).catch(() => undefined);
   // Kept before 19.11.2026, a spelling may still change a number.
-  const worth = tries.filter((attempt) => (attempt.how !== "spelling" || keepsNumbers(input.typed, attempt.text)) && (!spellingOnly || attempt.how === "spelling"));
+  // Kept before 26.11.2026, a spelling may be another word altogether ("лализа" as "лариса").
+  const worth = tries.filter((attempt) => (attempt.how !== "spelling" || (keepsNumbers(input.typed, attempt.text) && nearSpelling(input.typed, attempt.text))) && (!spellingOnly || attempt.how === "spelling"));
   for (const attempt of worth.slice(0, 2)) {
     // The same search, so it is not counted again; the web, if any, was asked for the text as typed.
     // "борщ блюдо": the word cut off says what the list wants this time (25.11.2026).
@@ -460,8 +463,12 @@ async function retryTexts(typed: string, language: string, nothing: boolean, spe
   if (layout) tries.push({ text: layout, how: "layout" });
   if (tries.length < 2) {
     const spelled = await spelling(trimmed ?? typed, language);
-    if (spelled) tries.push({ text: spelled, how: "spelling" });
+    // A typo put right first; Wikipedia's other word for a name it does not know is never tried.
+    if (spelled && nearSpelling(trimmed ?? typed, spelled)) tries.push({ text: spelled, how: "spelling" });
   }
+  // A name from another language typed in Cyrillic: "лализа" is Lisa's "LALISA" (26.11.2026).
+  const latin = latinOf(trimmed ?? typed);
+  if (latin && tries.length < 2 && !tries.some((attempt) => attempt.text === latin)) tries.push({ text: latin, how: "latin" });
   return tries;
 }
 
@@ -1054,8 +1061,9 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
   const body = await entitiesInChunks(ids, details);
   const want = input.want ?? null;
   const facts = new Map(entityFacts(ids, body, [input.language, language]).map((one) => [one.id, one]));
-  const chosen = entityStep
-    ? chooseEntity([...facts.values()].map((one) => ({ facts: one, found: places.get(one.id) ?? {} })), input.typed, want, input.scope)
+  const entities = [...facts.values()].map((one) => ({ facts: one, found: places.get(one.id) ?? {} }));
+  let chosen = entityStep
+    ? chooseEntity(entities, input.typed, want, input.scope)
     : null;
   const pictured = wikidataCandidates(ids, body, input.language, input.scope === "music", matched);
   // Each item shows as the kind its classes make it: a novel is a book, a band an artist (stage 2).
@@ -1064,11 +1072,15 @@ async function askWikidata(input: SearchInput): Promise<SourceAnswer> {
     const kind = one ? kindOfFacts(one, want, input.scope) : null;
     if (kind) candidate.hit = { ...candidate.hit, kind };
   }
-  const [candidates, byId] = await Promise.all([
+  const [candidates, firstById] = await Promise.all([
     pictured.length === 0 ? pictured : fitting(pictured, wantsCovers(input.scope)),
     // TMDB only where the scope asks it: a music list's singer stays Wikidata's.
     chosen && sourcesFor(input.scope).includes("tmdb") ? tmdbById(chosen, input.language) : Promise.resolve(null),
   ]);
+  // A song or a single with no picture to show is its singer's ("LALISA", 26.11.2026): known only once the pictures are.
+  const singer = entityStep ? singerInstead(entities, input.typed, want, input.scope, new Set(candidates.map(({ hit }) => hit.id.slice("wikidata:".length)))) : null;
+  if (singer) chosen = singer;
+  const byId = singer ? (sourcesFor(input.scope).includes("tmdb") ? await tmdbById(singer, input.language) : null) : firstById;
   if (chosen) chosen.keys = [...new Set([...chosen.keys, ...catalogueKeys(chosen), ...(byId ? [entityKey(byId)] : [])])];
   return {
     hits: [...(byId ? [byId] : []), ...candidates.map(({ hit }) => hit)],
