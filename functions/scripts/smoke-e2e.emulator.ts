@@ -123,6 +123,30 @@ describe("the proxy under the demo emulators", () => {
     assert.notEqual(await shown(), before, "a replaced photograph is copied again");
   });
 
+  it("answers an Update before its credits and retiring, which the queue then does; the same Update sent again is answered as written (26.11.2026)", async () => {
+    const author = await newAuthor("after");
+    const uid = (JSON.parse(Buffer.from(author.split(".")[1], "base64url").toString("utf8")) as { user_id: string }).user_id;
+    const app = initializeApp({ projectId: PROJECT }, "smoke-publish-after");
+    const photo = getStorage(app).bucket(`${PROJECT}.appspot.com`).file(`users/${uid}/pictures/after-${Date.now().toString(36)}`);
+    await photo.save(blankPng(400, 400), { contentType: "image/png", resumable: false });
+    const pictureId = photo.name.split("/").pop()!;
+    const body = { title: "Updated in the background", category: "film_tv", tiers: [TIER], items: [{ title: "Mine", pictureId, tierIndex: 0 }] };
+    const first = await call(author, "POST", "/lists", body);
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    const update = { ...body, title: "Updated in the background, again", baseRevision: first.body.revision };
+    const updated = await call(author, "POST", `/lists/${first.body.id}`, update);
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    const job = getFirestore(app).collection("publishAfterJobs").doc(`${first.body.id}_${updated.body.revision}`);
+    const until = Date.now() + 20_000;
+    while ((await job.get()).exists && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal((await job.get()).exists, false, "the queue did the job and removed it");
+    const again = await call(author, "POST", `/lists/${first.body.id}`, update);
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.revision, updated.body.revision, "nothing written again");
+    const other = await call(author, "POST", `/lists/${first.body.id}`, { ...update, title: "Something else" });
+    assert.equal(other.status, 409, "a different Update read at the old revision is still refused");
+  });
+
   it("counts a publication and its removal in its section at once, not after the counts' ten minutes", async () => {
     // Books: no other e2e file publishes there, and they run beside this one.
     const author = await newAuthor("counted");
