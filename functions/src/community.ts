@@ -1,5 +1,5 @@
 import { defineString } from "firebase-functions/params";
-import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, keepCopiesForLater, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
+import { askCommonsFully, attributionsByPicture, attributionsOf, catalogueCopyTools, commonsFilesOf, commonsKnownBefore, copiesWanted, copyCataloguePictures, coverCopiesWanted, firstWithoutPage, keepCopiesForLater, withCatalogueCopies, type CardPicture } from "./cataloguePictures";
 import { copySwitches } from "./pictureCopies";
 import { removeUploadedPhoto, restoreUploadedPhoto, slotAfterFace, UNDO_WINDOW_MS } from "./facePhoto";
 import { onRequest } from "firebase-functions/v2/https";
@@ -265,7 +265,7 @@ import { igdbClientId, igdbClientSecret, pictureTmdbToken, routePictures, serper
 import { routeLinkPicture, routeLinkQuota } from "./pictureLinks";
 import { manualCredits } from "./manualAttribution";
 import { nextRevision, readBaseRevision, revisionOf, staleBase } from "./listRevision";
-import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit, type ManualAttribution } from "./pictureAttribution";
+import { catalogueSourceOf, catalogueTitleCredit, manualOf, type CatalogueCredit, type CommonsDetails, type ManualAttribution } from "./pictureAttribution";
 import { FOCUS_RANGE, readFocus, type CoverFocus } from "./coverFocus";
 import { LIST_SOURCE_RULE, readListSource, type ListSource } from "./listSource";
 import { chargeVision, VisionLimit } from "./visionBudget";
@@ -3428,8 +3428,11 @@ async function publish(
     await Promise.all([...saved, ...outsideSaved].map((path) => pictureTools.remove(path).catch(() => undefined)));
   };
 
-  const files = commonsFilesOf(cards);
-  const commons = files.length > 0 && !isDemoEmulator() ? await askCommonsFully(files) : { found: new Map(), unasked: 0, retryAfterMs: null };
+  // What the last snapshot already knew about a Commons file is not asked again.
+  const knownBefore = commonsKnownBefore(cards);
+  const files = commonsFilesOf(cards).filter((file) => !knownBefore.has(file));
+  const commonsAsked = files.length > 0 && !isDemoEmulator() ? await askCommonsFully(files) : { found: new Map<string, CommonsDetails>(), unasked: 0, retryAfterMs: null };
+  const commons = { ...commonsAsked, found: new Map([...knownBefore, ...commonsAsked.found]) };
   // The house waits for Commons' word: without its licence a picture is not copied and
   // stays a direct Wikimedia address, which Wikimedia refuses some apps.
   if (byline.speaker !== null && commons.unasked > 0) {

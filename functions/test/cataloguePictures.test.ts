@@ -6,6 +6,7 @@ import {
   attributionsOf,
   catalogueCopyTools,
   commonsFilesOf,
+  commonsKnownBefore,
   copiesWanted,
   copyCataloguePictures,
   coverCopiesWanted,
@@ -140,6 +141,27 @@ describe("a Commons file", () => {
       link: "https://commons.wikimedia.org/?curid=4466700",
     });
     assert.equal(commonsDetails(page, { extmetadata: { Artist: { value: "Somebody" } } }), undefined);
+  });
+});
+
+describe("an Update and Commons (26.11.2026)", () => {
+  it("takes what the last snapshot knew about a file, and leaves new files and unlicensed ones to be asked", () => {
+    const fox = "https://commons.wikimedia.org/wiki/Special:FilePath/Fox.jpg?width=600";
+    const owl = "https://commons.wikimedia.org/wiki/Special:FilePath/Owl.jpg?width=600";
+    const cat = "https://commons.wikimedia.org/wiki/Special:FilePath/Cat.jpg?width=600";
+    const cards: CardPicture[] = [
+      { imageUrl: fox, previous: { source: "wikimedia", author: "Jane", license: "CC BY-SA 4.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0", link: "https://commons.wikimedia.org/wiki/File:Fox.jpg" } },
+      { imageUrl: owl, previous: { source: "wikimedia", link: "https://commons.wikimedia.org/wiki/File:Owl.jpg" } },
+      { imageUrl: cat },
+      { imageUrl: "https://image.tmdb.org/t/p/w500/a.jpg", previous: { source: "tmdb", link: "https://www.themoviedb.org/movie/1" } },
+    ];
+    const known = commonsKnownBefore(cards);
+    assert.deepEqual([...known], [["Fox.jpg", { author: "Jane", license: "CC BY-SA 4.0", licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0", link: "https://commons.wikimedia.org/wiki/File:Fox.jpg" }]]);
+    // Asked: the file without a licence before and the new one.
+    assert.deepEqual(commonsFilesOf(cards).filter((file) => !known.has(file)), ["Owl.jpg", "Cat.jpg"]);
+    // The same attribution as asking Commons would give.
+    assert.deepEqual(attributionsOf([cards[0]!], known)[0], attributionsOf([cards[0]!], new Map([["Fox.jpg", known.get("Fox.jpg")!]]))[0]);
+    assert.equal(attributionsOf([cards[0]!], known)[0]?.license, "CC BY-SA 4.0");
   });
 });
 
