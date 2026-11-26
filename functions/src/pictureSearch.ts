@@ -41,6 +41,9 @@ import {
   inaturalistWithoutPhoto,
   mergeHits,
   appendNew,
+  exactBooksFirst,
+  namesakesByPopularity,
+  tmdbPopularity,
   WEB_WHEN_EMPTY,
   fittingPicture,
   searchLanguage,
@@ -71,7 +74,7 @@ import { catalogueKeys, chooseEntity, entityFacts, entityKey, kindOfFacts, wikip
 import { chargeSearch, retryAfterSeconds, type SearchCharge } from "./pictureSearchLimit";
 import { rankFor, scoreFor, sectionWant } from "./pictureOrder";
 import { dayKey } from "./quota";
-import { newTrace, noteCache, noteResting, timed, timedSource, traced, traceFields } from "./searchTiming";
+import { newTrace, noteCache, noteLate, noteResting, timed, timedSource, traced, traceFields } from "./searchTiming";
 import { fold } from "./search";
 import {
   builtInWant,
@@ -98,13 +101,20 @@ export const igdbClientSecret = defineSecret("IGDB_CLIENT_SECRET");
 export const serperApiKey = defineSecret("SERPER_API_KEY");
 
 const SOURCE_TIMEOUT_MS = 5_000;
+/**
+ * How long a quick search waits for each catalogue (26.11.2026). One that answers later is left for the
+ * whole search, which is then said to come (`rest`); its answer is kept with the whole one.
+ */
+const QUICK_DEADLINE_MS = 1_500;
+/** How long a catalogue's answer to a search stays shared on this instance: the whole search after a quick one takes it. */
+const SHARED_FOR_MS = 60_000;
 const CACHE = "pictureCache";
 const CACHE_FRESH_MS = 3 * 24 * 60 * 60 * 1000;
 /**
  * Raised whenever an answer holds something different, so answers kept from before are not served.
  * Raising it also drops three days of answers at once and sends every search back to the catalogues.
  */
-const CACHE_SHAPE = 25;
+const CACHE_SHAPE = 26;
 const WEB_USAGE = "pictureWeb";
 const WEB_SWITCH = "config/pictureWeb";
 /** Out of credits, or refused: the web is left alone this long before it is tried again. */
@@ -114,8 +124,11 @@ const RESTS = "config/pictureSources";
 /** How long an instance trusts what it last read of [RESTS]. */
 const RESTS_READ_MS = 30_000;
 const SEARCHES = "pictureSearches";
-/** Open Library's search often takes six or seven seconds, and a books search has nothing else to wait for. */
-const OPEN_LIBRARY_TIMEOUT_MS = 9_000;
+/**
+ * Open Library mostly answers within a second; past three seconds it is a slow moment, and a books
+ * search shows what Wikidata found meanwhile (9 s before 26.11.2026).
+ */
+const OPEN_LIBRARY_TIMEOUT_MS = 3_000;
 /** Taxa whose open photo is looked for among their best-liked observations, one request each. */
 const INATURALIST_OBSERVED = 6;
 const MAX_QUERY = 100;
@@ -140,6 +153,8 @@ interface PicturesAnswer {
   searchedAs?: { text: string; how: Retry };
   /** The item the name was taken to mean (stage 2): kept with the answer, never sent. */
   chosen?: Chosen;
+  /** A quick search's catalogues that had not answered by [QUICK_DEADLINE_MS]: never sent. */
+  late?: PictureSource[];
 }
 
 /**
@@ -352,7 +367,8 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   const first = await searchAsTyped(input, metered);
   if (first === null || "limited" in first) return first;
   let answer: PicturesAnswer = first;
-  if (input.page === 1 && !busyAnswer(first) && !isDemoEmulator()) {
+  // A quick search that left a catalogue for the whole one does not judge what it found: the whole one will.
+  if (input.page === 1 && !busyAnswer(first) && !isDemoEmulator() && !(input.quick && first.late)) {
     // The web's page titles hold every misspelling: only the catalogues say whether a name was found.
     const catalogued = first.items.filter((hit) => hit.source !== "web");
     if (goodMatches(input.typed, catalogued) === 0) {
@@ -366,7 +382,7 @@ async function search(input: SearchInput, metered: boolean): Promise<PicturesAns
   }
   const typed = answer.searchedAs?.text ?? input.typed;
   const retried = answer.searchedAs !== undefined;
-  const { chosen, ...sent } = answer;
+  const { chosen, late: _late, ...sent } = answer;
   return { ...sent, items: withChosen(judgeHits(answer.items, typed, input.scope, input.want ?? null, retried, input.page === 1), chosen, retried) };
 }
 
@@ -519,17 +535,19 @@ async function searchAsTyped(input: SearchInput, metered: boolean): Promise<Pict
     return { ...catalogues, rest: webLater };
   }
   const quickParts = key(false, "parts");
-  const known = await timed("store", () => knownParts(quickParts));
+  const { known, heard } = await timed("store", () => knownParts(quickParts));
   noteCache(catalogues ? "answer" : known.size > 0 ? `parts ${known.size}` : "miss");
   if (input.quick) {
-    const quick = await askCatalogues(input, quickSourcesFor(input.scope), known, metered, { parts: quickParts });
+    const late: PictureSource[] = [];
+    const quick = await askCatalogues(input, quickSourcesFor(input.scope), known, metered && !heard, { parts: quickParts }, { deadlineMs: QUICK_DEADLINE_MS, late, share: quickParts });
     if (quick && "limited" in quick) return quick;
-    const rest = hasSlowSources(input.scope) || webLater;
-    return quick ? { ...quick, rest } : rest ? { items: [], hasMore: false, notices: [], rest } : null;
+    const rest = hasSlowSources(input.scope) || webLater || late.length > 0;
+    const lateOnes = late.length > 0 ? { late } : {};
+    return quick ? { ...quick, rest, ...lateOnes } : rest ? { items: [], hasMore: false, notices: [], rest, ...lateOnes } : null;
   }
 
   if (!catalogues) {
-    const asked = await askCatalogues(input, sourcesFor(input.scope), known, metered, { answer: key(false) });
+    const asked = await askCatalogues(input, sourcesFor(input.scope), known, metered && !heard, { answer: key(false) }, { share: quickParts });
     if (asked && "limited" in asked) return asked;
     catalogues = asked;
   }
@@ -559,8 +577,12 @@ interface KnownAnswer extends SourceAnswer {
  * the merged one under `answer` only when none failed: a gap left by one
  * that did is not kept for days.
  *
- * A search is counted when it asks a catalogue and builds on nothing heard
- * before: the whole search after a quick one is the same search.
+ * A search is counted ([metered]) when it asks a catalogue and builds on
+ * nothing heard before: the whole search after a quick one is the same search.
+ *
+ * [options]: a quick search waits [deadlineMs] for each catalogue and names
+ * those that took longer in [late]; with [share], a catalogue still answering
+ * the same search is not asked twice on this instance.
  */
 async function askCatalogues(
   input: SearchInput,
@@ -568,17 +590,18 @@ async function askCatalogues(
   known: Map<PictureSource, KnownAnswer>,
   metered: boolean,
   keep: { parts?: string; answer?: string },
+  options: { deadlineMs?: number; late?: PictureSource[]; share?: string } = {},
 ): Promise<PicturesAnswer | SearchLimited | null> {
   const resting = await timed("store", () => restingUntil());
   const now = Date.now();
   const asking = sources.filter((source) => !known.has(source) && (resting.get(source) ?? 0) <= now);
   noteResting(sources.filter((source) => !known.has(source) && (resting.get(source) ?? 0) > now));
-  if (metered && asking.length > 0 && known.size === 0) {
+  if (metered && asking.length > 0) {
     const charge = await timed("charge", () => chargeFor(input.uid));
     if (!charge.allowed) return { limited: true, retryAtMs: charge.retryAtMs };
   }
   const answers = new Map<PictureSource, KnownAnswer>(known);
-  const asked = await Promise.all(asking.map(async (source) => [source, await timedSource(source, () => askSource(source, input))] as const));
+  const asked = await Promise.all(asking.map(async (source) => [source, await timedSource(source, () => askInTime(source, input, options))] as const));
   for (const [source, answer] of asked) if (answer) answers.set(source, { ...answer, atMs: Date.now() });
   const found = sources.map((source) => answers.get(source) ?? null);
   // A catalogue that refused now, or rests after an earlier refusal, is busy: its gap is said, not hidden.
@@ -594,10 +617,11 @@ async function askCatalogues(
   // With the All filter, a games board's section says nothing about a borscht (25.11.2026).
   const ordered = { ...input, want: sectionWant(input, hits.flat()) };
   const all = mergeHits(input.typed, hits, input.scope, rankFor(ordered, chosen), scoreFor(ordered, chosen));
-  const items = fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(ordered, chosen), scoreFor(ordered, chosen)), all) : all;
+  const items = exactBooksFirst(fast.length < hits.length ? appendNew(mergeHits(input.typed, fast, input.scope, rankFor(ordered, chosen), scoreFor(ordered, chosen)), all) : all, input.typed, input.scope);
   const merged: PicturesAnswer = { items, hasMore: found.some((answer) => answer?.hasMore === true), notices: [], ...gap, ...(chosen ? { chosen } : {}) };
   const cache = getFirestore().collection(CACHE);
-  if (keep.parts && asked.some(([, answer]) => answer !== null)) {
+  // Kept even when nothing answered: the whole search that follows is the same search, not counted again.
+  if (keep.parts && asking.length > 0) {
     const parts = sources.flatMap((source) => {
       const answer = answers.get(source);
       return answer ? [{ source, ...answer }] : [];
@@ -610,8 +634,11 @@ async function askCatalogues(
   return merged;
 }
 
-/** What a quick search already heard from each catalogue, each while it is fresh. */
-async function knownParts(id: string): Promise<Map<PictureSource, KnownAnswer>> {
+/**
+ * What a quick search already heard from each catalogue, each while it is fresh, and whether this
+ * search was [heard] of: answered in part, or asked within the last minute.
+ */
+async function knownParts(id: string): Promise<{ known: Map<PictureSource, KnownAnswer>; heard: boolean }> {
   const doc = await getFirestore().collection(CACHE).doc(id).get().catch(() => null);
   const parts: unknown = doc?.exists ? doc.get("parts") : null;
   const known = new Map<PictureSource, KnownAnswer>();
@@ -621,7 +648,52 @@ async function knownParts(id: string): Promise<Map<PictureSource, KnownAnswer>> 
     if (typeof source !== "string" || !Array.isArray(hits) || typeof atMs !== "number" || now - atMs >= CACHE_FRESH_MS) continue;
     known.set(source as PictureSource, { hits: hits as PictureHit[], hasMore: hasMore === true, atMs, ...(twins ? { twins } : {}), ...(chosen ? { chosen } : {}) });
   }
-  return known;
+  const askedAt = doc?.exists ? doc.get("at")?.toMillis?.() ?? 0 : 0;
+  return { known, heard: known.size > 0 || now - askedAt < SHARED_FOR_MS };
+}
+
+/** What each catalogue is still answering, by search: the whole search takes a quick one's late answer. */
+const answering = new Map<string, Promise<SourceAnswer | null>>();
+
+/** [source]'s answer to [input], shared on this instance under [share] while it is coming and [SHARED_FOR_MS] after. */
+function askShared(share: string, source: PictureSource, input: SearchInput): Promise<SourceAnswer | null> {
+  const id = `${share}|${source}`;
+  const held = answering.get(id);
+  if (held) return held;
+  const asked = askSource(source, input).catch(() => null);
+  answering.set(id, asked);
+  // A failure is not shared: asked again, the catalogue may answer.
+  const forget = () => {
+    if (answering.get(id) === asked) answering.delete(id);
+  };
+  void asked.then((answer) => (answer === null ? forget() : setTimeout(forget, SHARED_FOR_MS).unref()));
+  return asked;
+}
+
+/**
+ * [source]'s answer, or null and [source] named late when it takes longer than [deadlineMs]. Without a
+ * deadline, a shared request begun by the quick search that failed is followed by one of its own.
+ */
+async function askInTime(source: PictureSource, input: SearchInput, options: { deadlineMs?: number; late?: PictureSource[]; share?: string }): Promise<SourceAnswer | null> {
+  const earlier = options.share !== undefined && answering.has(`${options.share}|${source}`);
+  const asked = options.share ? askShared(options.share, source, input) : askSource(source, input);
+  if (options.deadlineMs === undefined) {
+    // The quick search's request failed, mostly by its timeout, which ran from the quick search's start:
+    // the whole search asks once more with a timeout of its own, unless the catalogue now rests (26.11.2026).
+    const answer = await asked;
+    if (answer !== null || !earlier || ((await restingUntil()).get(source) ?? 0) > Date.now()) return answer;
+    return askSource(source, input);
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), options.deadlineMs);
+  });
+  const first = await Promise.race([asked, late]);
+  clearTimeout(timer);
+  if (first !== "late") return first;
+  options.late?.push(source);
+  noteLate(source);
+  return null;
 }
 
 /** One more search for this person, if it fits; a counter that cannot be reached lets the search through. */
@@ -649,9 +721,10 @@ export class CatalogueRefusal extends Error {
 
 let rests: { readAtMs: number; until: Map<PictureSource, number> } | null = null;
 
-/** Forgets what this instance remembers of resting catalogues; for tests. */
+/** Forgets what this instance remembers of resting catalogues, and the answers it shares between searches; for tests. */
 export function forgetCatalogueRests(): void {
   rests = null;
+  answering.clear();
 }
 
 export async function restingUntil(): Promise<Map<PictureSource, number>> {
@@ -758,7 +831,7 @@ async function askTmdb(input: SearchInput): Promise<SourceAnswer> {
   })) as { results?: unknown[]; total_pages?: number };
   // /search/person leaves out media_type: every row there is a person.
   const shaped = input.scope === "people" ? { results: (body.results ?? []).map((row) => ({ ...(row as object), media_type: "person" })) } : body;
-  const hits = tmdbHits(shaped).filter((hit) => input.scope !== "film_tv" || hit.kind !== "person");
+  const hits = namesakesByPopularity(tmdbHits(shaped).filter((hit) => input.scope !== "film_tv" || hit.kind !== "person"), input.typed, tmdbPopularity(shaped));
   return { hits, hasMore: (body.total_pages ?? 0) > input.page };
 }
 
