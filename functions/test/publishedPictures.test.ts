@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addressOf, decideOwnPicture, discardCopiesIn, isPhotoCopiedFrom, withoutPhotosFrom, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
+import { addressOf, committedOwnCopies, decideOwnPicture, discardCopiesIn, isPhotoCopiedFrom, withoutPhotosFrom, sourcesInNames, discardPublished, foreignCopyOf, isCopiedFrom, publicFoldersOf, publishedNamesIn, realSafeSearch, safeSearchOrNothing, visionBatches } from "../src/publishedPictures";
 import type { SafeSearchVerdict } from "../src/safety";
 
 describe("taking a list down", () => {
@@ -24,6 +24,28 @@ describe("taking a list down", () => {
       ["published/abc/", "share/c/abc/", "share/l/abc/"],
     );
     assert.ok(asked.every((one) => one.force));
+  });
+});
+
+describe("an Update and the author's own photographs (26.11.2026)", () => {
+  it("takes again only the copies the last snapshot shows, in this list's folder, by picture id", () => {
+    const bucket = "tieryourlife.firebasestorage.app";
+    const uuid = "0123abcd-0123-4abc-8def-0123456789ab";
+    const shown = [
+      addressOf(bucket, `published/l1/p1_p_${uuid}`),
+      "https://tieryourlife.com/img/original/published/l1/p2",
+      addressOf(bucket, `published/other/p3_p_${uuid}`),
+      addressOf(bucket, `published/l1/p4_x`),
+      null,
+      "https://image.tmdb.org/t/p/w500/a.jpg",
+    ];
+    const copies = committedOwnCopies("l1", ["p1", "p2", "p3", "p4", "p5"], shown, bucket);
+    // Storage's address and the site's for the same file both count.
+    assert.deepEqual([...copies], [["p1", `published/l1/p1_p_${uuid}`], ["p2", "published/l1/p2"]]);
+    // Another list's copy, a name that is not this id's, and a photograph no snapshot showed are made anew.
+    assert.equal(copies.has("p3"), false);
+    assert.equal(copies.has("p4"), false);
+    assert.equal(copies.has("p5"), false);
   });
 });
 

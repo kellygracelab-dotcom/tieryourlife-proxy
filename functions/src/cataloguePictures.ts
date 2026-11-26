@@ -68,6 +68,30 @@ export function commonsFilesOf(cards: readonly CardPicture[]): string[] {
 }
 
 /**
+ * What Commons said about the files the list's last snapshot already showed with their licence:
+ * an Update asks Commons only about the others (26.11.2026: every Commons card was asked again on
+ * each Update, a second or more of a big list's). A card whose attribution was dropped for weight,
+ * or that has no licence, is asked as before.
+ */
+export function commonsKnownBefore(cards: readonly CardPicture[]): Map<string, CommonsDetails> {
+  const known = new Map<string, CommonsDetails>();
+  for (const card of cards) {
+    const before = card.previous;
+    if (before?.source !== "wikimedia" || !before.license || !before.link) continue;
+    const original = originalOf(card);
+    const file = original === null ? null : commonsFileOf(original);
+    if (file === null || known.has(file)) continue;
+    known.set(file, {
+      ...(before.author ? { author: before.author } : {}),
+      license: before.license,
+      ...(before.licenseUrl ? { licenseUrl: before.licenseUrl } : {}),
+      link: before.link,
+    });
+  }
+  return known;
+}
+
+/**
  * Each card's attribution: the catalogue's, worked out from its original
  * address, or `web` for a picture from another site and our copy of one.
  * A person's own photograph, and a card without art, have none.

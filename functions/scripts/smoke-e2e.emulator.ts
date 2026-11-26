@@ -102,6 +102,27 @@ describe("the proxy under the demo emulators", () => {
     assert.equal((mine.body.lists as { boardUid?: string }[])[0].boardUid, board);
   });
 
+  it("takes an unchanged own photograph's copy again on an Update, and copies a replaced one anew (26.11.2026)", async () => {
+    const author = await newAuthor("reuse");
+    const uid = (JSON.parse(Buffer.from(author.split(".")[1], "base64url").toString("utf8")) as { user_id: string }).user_id;
+    const bucket = getStorage(initializeApp({ projectId: PROJECT }, "smoke-reuse-own")).bucket(`${PROJECT}.appspot.com`);
+    const pictureId = `own-${Date.now().toString(36)}`;
+    const photo = bucket.file(`users/${uid}/pictures/${pictureId}`);
+    await photo.save(blankPng(400, 400), { contentType: "image/png", resumable: false });
+    const body = { title: "Own photograph, kept", category: "film_tv", tiers: [TIER], items: [{ title: "Mine", pictureId, tierIndex: 0 }] };
+    const first = await call(author, "POST", "/lists", body);
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    const shown = async () => String(((await call(author, "GET", `/lists/${first.body.id}`)).body.items as { imageUrl: string }[])[0].imageUrl);
+    const before = await shown();
+    const updated = await call(author, "POST", `/lists/${first.body.id}`, { ...body, title: "Own photograph, kept again" });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.equal(await shown(), before, "the same photograph keeps its copy");
+    await photo.save(blankPng(500, 500), { contentType: "image/png", resumable: false });
+    const replaced = await call(author, "POST", `/lists/${first.body.id}`, { ...body, title: "Own photograph, replaced" });
+    assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+    assert.notEqual(await shown(), before, "a replaced photograph is copied again");
+  });
+
   it("counts a publication and its removal in its section at once, not after the counts' ten minutes", async () => {
     // Books: no other e2e file publishes there, and they run beside this one.
     const author = await newAuthor("counted");
