@@ -16,6 +16,7 @@ describe("the row of new lists from the community (23.11.2026)", () => {
     assert.equal(freshEligible({ ...good, authorUid: "tyl-editorial" }), false);
     assert.equal(freshEligible({ ...good, anonymous: true }), false);
     assert.equal(freshEligible({ ...good, underReview: true }), false);
+    assert.equal(freshEligible({ ...good, awaitingApproval: true }), false);
   });
 
   it("asks for eight cards, four in five with a picture", () => {
