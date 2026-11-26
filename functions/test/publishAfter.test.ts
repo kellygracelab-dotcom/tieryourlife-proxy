@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { install, type Fakes } from "./fakeFirebase";
-import { handlePublishAfter, PUBLISH_AFTER_JOBS, PUBLISH_AFTER_TRIES, publishAfterJobId, queuePublishAfter, readPublishAfterJob, type PublishAfterJob, type PublishAfterWork } from "../src/publishAfter";
+import { Timestamp } from "firebase-admin/firestore";
+import { handlePublishAfter, PUBLISH_AFTER_JOBS, PUBLISH_AFTER_LEFT_MS, PUBLISH_AFTER_TRIES, publishAfterJobId, publishAfterLeftovers, queuePublishAfter, readPublishAfterJob, type PublishAfterJob, type PublishAfterWork } from "../src/publishAfter";
 
 const JOB: PublishAfterJob = {
   listId: "L1",
@@ -30,6 +31,8 @@ const work: PublishAfterWork = {
   },
 };
 const job = () => fakes.db.collection(PUBLISH_AFTER_JOBS).doc(publishAfterJobId("L1", 4));
+/** No pauses between tries in tests. */
+const NO_PAUSES = [0, 0, 0];
 
 beforeEach(() => {
   fakes = install();
@@ -74,29 +77,43 @@ describe("an Update's credits and retiring after its answer (26.11.2026)", () =>
     assert.equal(fakes.db.docs.has(PATH), false);
   });
 
-  it("throws a failure for the retry, and after three writes one ERROR line and stops", async () => {
+  it("tries three times, then writes one ERROR line and stops, without throwing", async () => {
     const errors: unknown[][] = [];
+    const warnings: unknown[][] = [];
     mock.method(console, "error", (...line: unknown[]) => void errors.push(line));
+    mock.method(console, "warn", (...line: unknown[]) => void warnings.push(line));
     await queuePublishAfter(JOB);
     failing = 99;
-    for (let attempt = 1; attempt <= PUBLISH_AFTER_TRIES; attempt++) {
-      await assert.rejects(handlePublishAfter(job() as never, work), /Firestore said no/);
-      assert.equal(fakes.db.docs.get(PATH)?.attempts, attempt);
-    }
-    assert.equal(await handlePublishAfter(job() as never, work), "gave up");
+    assert.equal(await handlePublishAfter(job() as never, work, NO_PAUSES), "gave up");
+    assert.equal(warnings.length, PUBLISH_AFTER_TRIES, "one warning per failed try");
+    assert.equal(fakes.db.docs.get(PATH)?.attempts, PUBLISH_AFTER_TRIES + 1);
     assert.equal(errors.length, 1);
     assert.equal(errors[0]![0], "Publish after failed");
     assert.match(String(errors[0]![1]), /"tries":3/);
     assert.notEqual(fakes.db.docs.get(PATH)?.gaveUpAt, undefined);
-    assert.equal(await handlePublishAfter(job() as never, work), "missing", "no retries after giving up");
+    assert.equal(await handlePublishAfter(job() as never, work, NO_PAUSES), "missing", "no tries after giving up");
     assert.equal(errors.length, 1);
   });
 
-  it("succeeds on a retry after a failure", async () => {
+  it("succeeds on the next try after a failure, in the same run", async () => {
+    mock.method(console, "warn", () => undefined);
     await queuePublishAfter(JOB);
     failing = 1;
-    await assert.rejects(handlePublishAfter(job() as never, work));
-    assert.equal(await handlePublishAfter(job() as never, work), "done");
+    assert.equal(await handlePublishAfter(job() as never, work, NO_PAUSES), "done");
+    assert.ok(done.includes("credits L1 false author Ann"));
+    assert.equal(fakes.db.docs.has(PATH), false);
+  });
+
+  it("takes up a job left by a run that stopped, but not a fresh one or one given up", async () => {
+    const now = Date.now();
+    const old = Timestamp.fromMillis(now - PUBLISH_AFTER_LEFT_MS - 1000);
+    await fakes.db.doc(PATH).set({ ...JOB, attempts: 1, queuedAt: old });
+    await fakes.db.doc(`${PUBLISH_AFTER_JOBS}/${publishAfterJobId("L1", 5)}`).set({ ...JOB, revision: 5, attempts: 0, queuedAt: Timestamp.fromMillis(now) });
+    await fakes.db.doc(`${PUBLISH_AFTER_JOBS}/${publishAfterJobId("L1", 3)}`).set({ ...JOB, revision: 3, attempts: 4, queuedAt: old, gaveUpAt: old });
+    assert.equal(await publishAfterLeftovers(work, now), 1);
+    assert.equal(fakes.db.docs.has(PATH), false);
+    assert.equal(fakes.db.docs.has(`${PUBLISH_AFTER_JOBS}/${publishAfterJobId("L1", 5)}`), true, "the fresh one is its trigger's");
+    assert.equal(fakes.db.docs.has(`${PUBLISH_AFTER_JOBS}/${publishAfterJobId("L1", 3)}`), true);
     assert.ok(done.includes("credits L1 false author Ann"));
   });
 

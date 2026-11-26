@@ -116,6 +116,12 @@ export class FakeQuery {
 function matches(actual: unknown, filter: Filter): boolean {
   if (filter.op === "==") return actual === filter.value;
   if (filter.op === "<=") return typeof actual === "number" && actual <= (filter.value as number);
+  if (filter.op === "<") {
+    const millis = (value: unknown) => (typeof value === "number" ? value : (value as { toMillis?: () => number } | undefined)?.toMillis?.());
+    const left = millis(actual);
+    const right = millis(filter.value);
+    return left !== undefined && right !== undefined && left < right;
+  }
   if (filter.op === "array-contains") return Array.isArray(actual) && actual.includes(filter.value);
   if (filter.op === "in") return (filter.value as unknown[]).includes(actual);
   throw new Error(`The fake does not know ${filter.op}`);

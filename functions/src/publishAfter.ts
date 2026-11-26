@@ -4,16 +4,24 @@
  * retired. One job per revision, done by the `publishAfter` trigger (src/publishAfterJobs.ts): the
  * answer no longer waits the second or four these took on a big list.
  *
- * A job that fails is tried again by the trigger's retry; after [PUBLISH_AFTER_TRIES] failures an
- * ERROR line "Publish after failed" is written and the job is left as it is, with `gaveUpAt`. Nothing is
- * lost for good: the next Update of the list does both again, and a copy left unretired only takes room.
+ * A job that fails is tried again in the same run after a pause ([PUBLISH_AFTER_PAUSES_MS]); after
+ * [PUBLISH_AFTER_TRIES] failures an ERROR line "Publish after failed" is written and the job is left as
+ * it is, with `gaveUpAt`. A job whose run stopped halfway is taken up again within a quarter of an hour
+ * ([publishAfterLeftovers]). No retry policy on the trigger: Firebase deploys one only with --force, the
+ * owner's word. Nothing is lost for good: the next Update of the list does both again, and a copy left
+ * unretired only takes room.
  * A change of the author's name or of anonymity is credited in the request itself, as before.
  */
 
-import { FieldValue, getFirestore, type DocumentReference } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp, type DocumentReference } from "firebase-admin/firestore";
 
 export const PUBLISH_AFTER_JOBS = "publishAfterJobs";
 export const PUBLISH_AFTER_TRIES = 3;
+/** The pause after each failed try, before the next. */
+export const PUBLISH_AFTER_PAUSES_MS: readonly number[] = [5_000, 20_000, 0];
+/** A job still there this long after it was queued, and not given up, was left by a run that stopped. */
+export const PUBLISH_AFTER_LEFT_MS = 10 * 60 * 1000;
+const LEFTOVERS_PER_RUN = 20;
 
 export interface PublishAfterJob {
   listId: string;
@@ -85,10 +93,20 @@ export async function doPublishAfter(job: PublishAfterJob, work: PublishAfterWor
 }
 
 /**
- * One delivery of the job at [ref]: counted, done, and removed once done. A failure is thrown for the
- * trigger to be retried, until the tries are used up: then the ERROR line, and no more retries.
+ * The job at [ref], tried until done or until its tries are used up: each try counted on the job, a pause
+ * after each failure, the job removed once done; then the ERROR line, and nothing more.
  */
-export async function handlePublishAfter(ref: DocumentReference, work: PublishAfterWork): Promise<"done" | "gone" | "gave up" | "missing"> {
+export async function handlePublishAfter(ref: DocumentReference, work: PublishAfterWork, pausesMs: readonly number[] = PUBLISH_AFTER_PAUSES_MS): Promise<"done" | "gone" | "gave up" | "missing"> {
+  for (;;) {
+    const outcome = await tryOnce(ref, work);
+    if (typeof outcome === "string") return outcome;
+    console.warn("Publish after try failed", JSON.stringify({ job: ref.id, try: outcome.attempt }), outcome.error instanceof Error ? outcome.error.message : outcome.error);
+    const pause = pausesMs[outcome.attempt - 1] ?? 0;
+    if (pause > 0) await new Promise((resolve) => setTimeout(resolve, pause));
+  }
+}
+
+async function tryOnce(ref: DocumentReference, work: PublishAfterWork): Promise<"done" | "gone" | "gave up" | "missing" | { attempt: number; error: unknown }> {
   const counted = await getFirestore().runTransaction(async (transaction) => {
     const doc = await transaction.get(ref);
     if (!doc.exists || doc.get("gaveUpAt") !== undefined) return null;
@@ -102,7 +120,27 @@ export async function handlePublishAfter(ref: DocumentReference, work: PublishAf
     await ref.update({ gaveUpAt: FieldValue.serverTimestamp() }).catch(() => undefined);
     return "gave up";
   }
-  const outcome = await doPublishAfter(counted.job, work);
-  await ref.delete();
-  return outcome;
+  try {
+    const outcome = await doPublishAfter(counted.job, work);
+    await ref.delete();
+    return outcome;
+  } catch (error) {
+    return { attempt: counted.attempts, error };
+  }
+}
+
+/** Jobs whose run stopped halfway (an instance gone), taken up again; a few per run. */
+export async function publishAfterLeftovers(work: PublishAfterWork, nowMs: number = Date.now()): Promise<number> {
+  const left = await getFirestore()
+    .collection(PUBLISH_AFTER_JOBS)
+    .where("queuedAt", "<", Timestamp.fromMillis(nowMs - PUBLISH_AFTER_LEFT_MS))
+    .limit(LEFTOVERS_PER_RUN)
+    .get();
+  let taken = 0;
+  for (const doc of left.docs) {
+    if (doc.get("gaveUpAt") !== undefined) continue;
+    taken++;
+    await handlePublishAfter(doc.ref, work);
+  }
+  return taken;
 }
