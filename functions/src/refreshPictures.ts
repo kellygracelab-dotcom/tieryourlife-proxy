@@ -44,6 +44,8 @@ import {
   restingUntil,
 } from "./pictureSearch";
 import { USER_AGENT, type PictureSource } from "./pictureSources";
+import { publishAfterLeftovers } from "./publishAfter";
+import { publishAfterWork } from "./publishAfterJobs";
 
 const LISTS = "publishedLists";
 const RANKINGS = "rankings";
@@ -69,6 +71,9 @@ export const copyPicturesSoon = onSchedule(
     if (isDemoEmulator()) return;
     const summary = await copyQueuedPictures(Date.now() + 240_000);
     if (summary.queued > 0) console.log(`Queued picture copies: ${JSON.stringify(summary)}`);
+    // An Update's credits and retiring whose run stopped halfway (src/publishAfter.ts).
+    const left = await publishAfterLeftovers(publishAfterWork).catch(() => 0);
+    if (left > 0) console.log(`Publish after leftovers: ${left}`);
   },
 );
 
