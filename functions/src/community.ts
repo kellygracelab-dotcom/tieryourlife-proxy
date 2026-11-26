@@ -7,6 +7,7 @@ import { FieldPath, FieldValue, getFirestore, Timestamp } from "firebase-admin/f
 import { getAuth } from "firebase-admin/auth";
 import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { awaitsApproval, feedApprovalOn, inFeeds, noteCommunityReview, waitsOnPublish } from "./feedApproval";
 import { doPublishAfter, queuePublishAfter, type PublishAfterJob } from "./publishAfter";
 import { requireAppCheck } from "./appCheck";
 import { publicMediaResponses, storageMediaUrl } from "./publicMedia";
@@ -331,7 +332,7 @@ const SECTIONS_CONFIG = "sections";
 const AUDIT_LOG = "auditLog";
 /** One document per lower-cased topic name, so two claims to one name meet in one place. */
 const TOPIC_NAMES = "topicNames";
-const VERBS = ["report", "takedown", "dismiss", "taken", "move"];
+const VERBS = ["report", "takedown", "dismiss", "taken", "move", "approve"];
 
 /** Paths that are not about one list: topics and the people who may decide them. */
 const TOPICS_PATH = "topics";
@@ -508,6 +509,8 @@ interface StoredList {
    * before any of this existed, which reads as false and is correct.
    */
   underReview?: boolean;
+  /** Waiting for approval before any feed (src/feedApproval.ts); removed once approved. */
+  awaitingApproval?: boolean;
   picturesFrom?: string[];
   /**
    * Somebody looked at this snapshot and left it up, so complaints about it no
@@ -913,6 +916,9 @@ export const lists = onRequest(
             if (verb === "taken") {
               return await recordTake(response, identity, id);
             }
+            if (verb === "approve") {
+              return await approveList(response, identity, id);
+            }
             if (verb === "move") {
               return await moveList(response, identity, id, request.body);
             }
@@ -1117,7 +1123,7 @@ async function readFeed(response: Response, identity: Identity, filters: FeedFil
   // would be its author's; everywhere else it goes out by nobody.
   const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
     const data = doc.data() as StoredList;
-    return data.underReview !== true && !(filters.author !== null && isAnonymous(data)) && (search === null || matchesSearch(doc.get("searchKeys"), search));
+    return inFeeds(data) && !(filters.author !== null && isAnonymous(data)) && (search === null || matchesSearch(doc.get("searchKeys"), search));
   };
   const page = await fillVisible(
     async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
@@ -1241,7 +1247,7 @@ async function followedRun(
   const shown = (doc: FirebaseFirestore.QueryDocumentSnapshot) => {
     const data = doc.data() as StoredList;
     const inCategory = filters.category === null || field !== "topicId" || data.category === filters.category;
-    return data.underReview !== true && inCategory && !(field === "authorUid" && isAnonymous(data));
+    return inFeeds(data) && inCategory && !(field === "authorUid" && isAnonymous(data));
   };
   const page = await fillVisible(
     async (last) => (await (last ? ordered.startAfter(last) : ordered).limit(FEED_PAGE_SIZE).get()).docs,
@@ -1803,7 +1809,8 @@ async function readCollage(id: string): Promise<string[]> {
     return {
       id: doc.id,
       rankingCount: data.rankingCount ?? 0,
-      underReview: data.underReview === true,
+      // Out of the feed is out of the collage: hidden after reports, or waiting for approval.
+      underReview: !inFeeds(data),
       coverImageUrl: data.coverImageUrl ?? null,
       previewImages: data.previewImages ?? [],
     };
@@ -2818,7 +2825,7 @@ async function readSuggestedAuthors(response: Response, identity: Identity): Pro
   const authors = new Map<string, { uid: string; name: string; photoUrl: string | null; takeCount: number }>();
   for (const doc of popular.docs) {
     const data = doc.data() as StoredList;
-    if (data.underReview === true || isAnonymous(data) || skip.has(data.authorUid) || authors.has(data.authorUid)) {
+    if (!inFeeds(data) || isAnonymous(data) || skip.has(data.authorUid) || authors.has(data.authorUid)) {
       continue;
     }
     authors.set(data.authorUid, {
@@ -2944,6 +2951,7 @@ async function readMine(response: Response, identity: Identity): Promise<void> {
         ...waitingFor(data.proposedSection, proposals),
         ...(typeof data.boardUid === "string" ? { boardUid: data.boardUid } : {}),
         underReview: data.underReview === true,
+        ...(awaitsApproval(data) ? { awaitingApproval: true } : {}),
       };
     }),
   });
@@ -3131,6 +3139,7 @@ async function readOne(response: Response, identity: Identity, id: string): Prom
     translations: data.translations ?? {},
     picturesFrom: Array.isArray(data.picturesFrom) ? data.picturesFrom : [],
     underReview: data.underReview === true,
+    ...(awaitsApproval(data) ? { awaitingApproval: true } : {}),
     revision: revisionOf(data),
     ...(data.coverAttribution ? { coverAttribution: data.coverAttribution } : {}),
   });
@@ -3275,6 +3284,8 @@ async function publish(
   // Default OFF preserves the 50-current-list rule without reading or writing quota events.
   // A configured rolling quota replaces that rule; fifty older lists do not block a new week.
   const newPersonalList = existingId === null && byline.speaker === null;
+  // A new list of an ordinary account waits for the owner or a moderator before any feed (26.11.2026).
+  const waits = newPersonalList && waitsOnPublish(await feedApprovalOn(), true, (await roleOf(identity)) !== null);
   const weeklyLimit = newPersonalList ? readPublicListQuotaLimit(process.env.PUBLIC_LISTS_PER_SEVEN_DAYS) : null;
   const fastQuota = weeklyLimit === null ? null : decidePublicListQuota(
     publicListEvents((await db.collection(PUBLISH_LOCKS).doc(byline.uid).get()).get("publicListEvents")), weeklyLimit, Date.now(),
@@ -3633,7 +3644,7 @@ async function publish(
         : null;
       revision = revisionOf(current) + 1;
       const fields = { ...(keptTranslations === null ? document : { ...document, translations: keptTranslations }), revision, sentKey };
-      const write = existingId ? fields : { ...fields, publishedAt: FieldValue.serverTimestamp(), takeCount: 0, rankingCount: 0 };
+      const write = existingId ? fields : { ...fields, publishedAt: FieldValue.serverTimestamp(), takeCount: 0, rankingCount: 0, ...(waits ? { awaitingApproval: true } : {}) };
       if (!snapshotFits({ ...current, ...write })) return PUBLISHED_TOO_HEAVY;
       const reserve = topicRef !== null && attachment.kind === "create"
         ? (await topicNameTaken(transaction, attachment.nameLower, null)) === null
@@ -3790,10 +3801,11 @@ async function publish(
   // One line per publication, no names: where its time went.
   console.log(`Publish timing ${JSON.stringify({ kind: existingId ? "update" : "new", own: picturesWanted(decision.draft).length, outside: outsideUrls.length, catalogue: catalogueUrls.length, ...clock.stages() })}`);
   if (existingId) {
-    response.status(200).json({ id: existingId, topicId, underReview: document.underReview, revision, ...dropped });
+    response.status(200).json({ id: existingId, topicId, underReview: document.underReview, revision, ...dropped, ...(previous !== null && awaitsApproval(previous) ? { awaitingApproval: true } : {}) });
     return;
   }
-  response.status(201).json({ id: target, topicId, underReview: document.underReview, revision, ...dropped });
+  if (waits) noteCommunityReview("approval", target);
+  response.status(201).json({ id: target, topicId, underReview: document.underReview, revision, ...dropped, ...(waits ? { awaitingApproval: true } : {}) });
 }
 
 /**
@@ -3818,7 +3830,7 @@ function sameUpdateAgain(stored: { revision?: unknown; sentKey?: unknown }, base
 
 /** The answer the Update already written gave: sent again after a lost answer, it is not refused as stale. */
 function updatedAlready(response: Response, id: string, stored: StoredList): void {
-  response.status(200).json({ id, topicId: stored.topicId ?? null, underReview: stored.underReview === true, revision: revisionOf(stored) });
+  response.status(200).json({ id, topicId: stored.topicId ?? null, underReview: stored.underReview === true, revision: revisionOf(stored), ...(awaitsApproval(stored) ? { awaitingApproval: true } : {}) });
 }
 
 /** A replacement read at an older revision than the list now has: nothing was written. */
@@ -3842,7 +3854,7 @@ function refusePublicListQuota(response: Response, quota: Extract<PublicListQuot
 }
 
 function answerRepeat(response: Response, earlier: FirebaseFirestore.QueryDocumentSnapshot): void {
-  response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true, revision: revisionOf(earlier.data()) });
+  response.status(200).json({ id: earlier.id, topicId: (earlier.data() as StoredList).topicId ?? null, existing: true, revision: revisionOf(earlier.data()), ...(awaitsApproval(earlier.data()) ? { awaitingApproval: true } : {}) });
 }
 
 /**
@@ -4592,6 +4604,7 @@ async function report(
     note: typeof source.note === "string" ? source.note.trim().slice(0, MAX_NOTE_LENGTH) : null,
     createdAt: FieldValue.serverTimestamp(),
   });
+  noteCommunityReview("report", listId);
 
   // Read back rather than counted up: reports are one per person, and a second
   // one from the same person replaced the first rather than adding to it.
@@ -4690,6 +4703,7 @@ async function noteWordingConcern(
     note: null,
     createdAt: FieldValue.serverTimestamp(),
   });
+  noteCommunityReview("wording", listId);
 
   if (concern === "hide") {
     await db.collection(PUBLISHED).doc(listId).set({ underReview: true }, { merge: true });
@@ -6012,6 +6026,9 @@ async function routeAdmin(
   if (method === "GET" && rest.length === 1 && rest[0] === "lists") {
     return await readAdminLists(response, identity, query);
   }
+  if (method === "GET" && rest.length === 1 && rest[0] === APPROVALS_PATH) {
+    return await readApprovals(response, identity);
+  }
   // Usage statistics: the owner's, not the moderators' -- the searches people typed are in it.
   if (method === "GET" && rest.length === 1 && rest[0] === STATS_PATH) {
     return await routeAdminStats(query, response, (await roleOf(identity)) === "owner");
@@ -6029,12 +6046,69 @@ async function readAdminCounts(response: Response, identity: Identity): Promise<
     return;
   }
   const db = getFirestore();
-  const [reports, proposals] = await Promise.all([
+  const [reports, proposals, approvals] = await Promise.all([
     db.collection(REPORTS).count().get(),
     db.collection(SECTIONS).where("status", "==", "pending").count().get(),
+    db.collection(PUBLISHED).where("awaitingApproval", "==", true).count().get(),
   ]);
   response.setHeader("Cache-Control", "no-store");
-  response.status(200).json({ reports: reports.data().count, proposals: proposals.data().count });
+  response.status(200).json({ reports: reports.data().count, proposals: proposals.data().count, awaitingApproval: approvals.data().count });
+}
+
+/** The queue of lists waiting for approval (26.11.2026): staff, the longest waiting first. */
+const APPROVALS_PATH = "approvals";
+/** Read at once: a queue longer than this is shown by its oldest. */
+const APPROVALS_READ = 300;
+
+async function readApprovals(response: Response, identity: Identity): Promise<void> {
+  const role = await roleOf(identity);
+  if (role === null) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  // One field, so no composite index: ordered here.
+  const waiting = await getFirestore().collection(PUBLISHED).where("awaitingApproval", "==", true).limit(APPROVALS_READ).get();
+  const publishedAtMs = (doc: FirebaseFirestore.QueryDocumentSnapshot) => (doc.get("publishedAt") as Timestamp | undefined)?.toMillis?.() ?? 0;
+  const docs = [...waiting.docs].sort((left, right) => publishedAtMs(left) - publishedAtMs(right) || left.id.localeCompare(right.id));
+  response.setHeader("Cache-Control", "no-store");
+  response.status(200).json({
+    lists: docs.map((doc) => {
+      const data = doc.data() as StoredList;
+      return {
+        ...toSummary(doc.id, data, identity),
+        publishedAt: publishedAtMs(doc),
+        underReview: data.underReview === true,
+        publishedBy: publishedByFor(data, role === "owner"),
+      };
+    }),
+  });
+}
+
+/**
+ * Lets a list waiting for approval into the feed. Staff; a list that waits no more is answered the same
+ * way, so a second click does nothing. Taking one down instead is `POST /lists/{id}/takedown`.
+ */
+async function approveList(response: Response, identity: Identity, listId: string): Promise<void> {
+  const role = await roleOf(identity);
+  if (role === null) {
+    response.status(403).json({ error: "Not yours", code: "NOT_YOURS" });
+    return;
+  }
+  const db = getFirestore();
+  const ref = db.collection(PUBLISHED).doc(listId);
+  const found = await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(ref);
+    if (!doc.exists) return false;
+    if (!awaitsApproval(doc.data() as StoredList)) return true;
+    transaction.update(ref, { awaitingApproval: FieldValue.delete(), approvedAt: FieldValue.serverTimestamp(), approvedBy: identity.uid });
+    auditInTransaction(transaction, auditEntry(identity.uid, role, "list.approve", `${PUBLISHED}/${listId}`, { awaitingApproval: true }, { awaitingApproval: false }));
+    return true;
+  });
+  if (!found) {
+    response.status(404).json({ error: "No such list", code: "NOT_FOUND" });
+    return;
+  }
+  response.status(204).send();
 }
 
 /**

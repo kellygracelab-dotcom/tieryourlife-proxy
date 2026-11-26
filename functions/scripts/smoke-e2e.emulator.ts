@@ -35,6 +35,55 @@ describe("the proxy under the demo emulators", () => {
     token = (await passwordAccount(accountGuest, `e2e-${suffix}@e2e.test`)).idToken;
   });
 
+  it("keeps a person's new list out of the feed until staff approve it, its link open meanwhile (26.11.2026)", async () => {
+    const config = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-approval")).doc("config/feedApproval");
+    await config.set({ on: true });
+    try {
+      const author = await newAuthor("waiting");
+      const body = { title: "Waiting smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
+      const published = await call(author, "POST", "/lists", body);
+      assert.equal(published.status, 201, JSON.stringify(published.body));
+      assert.equal(published.body.awaitingApproval, true);
+      const id = String(published.body.id);
+      const mine = await call(author, "GET", "/lists/mine");
+      const own = (mine.body.lists as { id: string; authorUid: string; awaitingApproval?: boolean }[]).find((one) => one.id === id);
+      assert.equal(own?.awaitingApproval, true);
+      const uid = String(own?.authorUid);
+      const inFeed = async () => ((await call(guest, "GET", `/lists?author=${uid}`)).body.lists as { id: string }[]).some((one) => one.id === id);
+
+      assert.equal(await inFeed(), false, "a waiting list is in no feed");
+      const opened = await call(guest, "GET", `/lists/${id}`);
+      assert.equal(opened.status, 200, "its link opens for anybody");
+      assert.equal(opened.body.awaitingApproval, true);
+      const again = await call(author, "POST", `/lists/${id}`, { ...body, baseRevision: 1, title: "Waiting smoke list, again" });
+      assert.equal(again.status, 200, JSON.stringify(again.body));
+      assert.equal(again.body.awaitingApproval, true, "an Update of a waiting list still waits");
+
+      const owner = await ownerToken();
+      assert.equal((await call(author, "GET", "/lists/admin/approvals")).status, 403);
+      assert.equal((await call(author, "POST", `/lists/${id}/approve`, {})).status, 403);
+      const queue = await call(owner, "GET", "/lists/admin/approvals");
+      assert.equal(queue.status, 200);
+      assert.ok((queue.body.lists as { id: string }[]).some((one) => one.id === id));
+      const counts = await call(owner, "GET", "/lists/admin/counts");
+      assert.ok(Number(counts.body.awaitingApproval) >= 1, JSON.stringify(counts.body));
+      const ownList = await call(owner, "POST", "/lists", { ...body, title: "Owner's smoke list" });
+      assert.equal(ownList.status, 201, JSON.stringify(ownList.body));
+      assert.equal(ownList.body.awaitingApproval, undefined, "staff publish at once");
+
+      assert.equal((await call(owner, "POST", `/lists/${id}/approve`, {})).status, 204);
+      assert.equal((await call(owner, "POST", `/lists/${id}/approve`, {})).status, 204, "a second click does nothing");
+      assert.equal(await inFeed(), true, "approved, it is in the feed");
+      const after = ((await call(author, "GET", "/lists/mine")).body.lists as { id: string; awaitingApproval?: boolean }[]).find((one) => one.id === id);
+      assert.equal(after?.awaitingApproval, undefined);
+      assert.ok(!((await call(owner, "GET", "/lists/admin/approvals")).body.lists as { id: string }[]).some((one) => one.id === id));
+      assert.equal((await call(owner, "POST", "/lists/no-such-list/approve", {})).status, 404);
+      assert.equal((await call(owner, "DELETE", `/lists/${ownList.body.id}`)).status, 204);
+    } finally {
+      await config.delete();
+    }
+  });
+
   it("lets no cache keep an answer, a missing board and a refusal included (22.11.2026)", async () => {
     const guest = (await identity("signUp", {})).idToken;
     const asks: [string, string, string | null][] = [

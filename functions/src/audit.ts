@@ -35,6 +35,8 @@ export const AUDIT_ACTIONS = [
   "list.editorial_translate",
   /** Not staff: an author withdrawing a list while it was out of the feed. */
   "list.withdrawn_hidden",
+  /** A list waiting for approval let into the feed (src/feedApproval.ts). */
+  "list.approve",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

@@ -30,6 +30,8 @@ export interface FreshCandidate {
   authorUid: string;
   anonymous?: boolean;
   underReview?: boolean;
+  /** Waiting for approval (src/feedApproval.ts): in no feed yet. */
+  awaitingApproval?: boolean;
   items?: unknown[];
   coverImageUrl?: string | null;
   previewImages?: string[];
@@ -39,7 +41,7 @@ const isWebPicture = (value: unknown): boolean => typeof value === "string" && v
 
 /** Whether a list may be in the row, its author's ban aside: a person's, named, in the feed, and looking like something. */
 export function freshEligible(list: FreshCandidate): boolean {
-  if (list.authorUid === EDITORIAL_UID || list.anonymous === true || list.underReview === true) return false;
+  if (list.authorUid === EDITORIAL_UID || list.anonymous === true || list.underReview === true || list.awaitingApproval === true) return false;
   const items = Array.isArray(list.items) ? list.items : [];
   if (items.length < FRESH_MIN_CARDS) return false;
   const pictured = items.filter((item) => isWebPicture((item as { imageUrl?: unknown } | null)?.imageUrl)).length;
