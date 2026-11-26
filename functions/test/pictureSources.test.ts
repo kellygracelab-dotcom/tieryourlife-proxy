@@ -6,10 +6,13 @@ import {
   commonsFitting,
   commonsName,
   decideWeb,
+  exactBooksFirst,
   deezerArtistHits,
   fitsTile,
   hasSlowSources,
   igdbHits,
+  namesakesByPopularity,
+  tmdbPopularity,
   inaturalistHits,
   inaturalistObservationPhotos,
   inaturalistPhotos,
@@ -64,10 +67,10 @@ describe("pictureScopeOf", () => {
     assert.ok(sourcesFor("games").includes("wikidata"));
   });
 
-  it("leaves Open Library out of a quick search, and only scopes that ask it have more to wait for", () => {
+  it("leaves Open Library out of a quick search but in Books, and only All has more to wait for (26.11.2026)", () => {
     assert.deepEqual(quickSourcesFor("all"), ["tmdb", "anilist", "igdb", "steam", "inaturalist", "wikidata"]);
-    assert.deepEqual(quickSourcesFor("books"), ["wikidata"]);
-    assert.equal(hasSlowSources("books"), true);
+    assert.deepEqual(quickSourcesFor("books"), ["openlibrary", "wikidata"]);
+    assert.equal(hasSlowSources("books"), false);
     assert.equal(hasSlowSources("all"), true);
     assert.equal(hasSlowSources("film_tv"), false);
   });
@@ -478,5 +481,27 @@ describe("isPrivateAddress", () => {
     }
     assert.equal(isPrivateAddress("142.250.74.14"), false);
     assert.equal(isPrivateAddress("2a00:1450:4001::200e"), false);
+  });
+});
+
+describe("Books and TMDB namesakes (26.11.2026)", () => {
+  const of = (id: string, title: string, kind: PictureHit["kind"], source: PictureHit["source"] = "openlibrary"): PictureHit => ({ ...hit(id, title), kind, source });
+
+  it("puts a book called exactly what was typed before people and things in Books, and leaves other scopes alone", () => {
+    const found = [of("wikidata:Q1", "Circe", "thing", "wikidata"), of("wikidata:Q2", "Circe", "person", "wikidata"), of("openlibrary:a", "Circe: A Novel", "book"), of("openlibrary:b", "Circe", "book")];
+    assert.deepEqual(exactBooksFirst(found, "Circe", "books").map((one) => one.id), ["openlibrary:b", "wikidata:Q1", "wikidata:Q2", "openlibrary:a"]);
+    assert.deepEqual(exactBooksFirst(found, "circe", "all").map((one) => one.id), found.map((one) => one.id));
+  });
+
+  it("takes TMDB's films of the typed name most popular first, in the places they held", () => {
+    const body = { results: [
+      { id: 627150, media_type: "movie", title: "Dune", original_title: "Бархан", popularity: 1.2, poster_path: "/b.jpg" },
+      { id: 841, media_type: "movie", title: "Dune", popularity: 30, poster_path: "/d84.jpg" },
+      { id: 999, media_type: "movie", title: "Dune Drifter", popularity: 99, poster_path: "/x.jpg" },
+      { id: 438631, media_type: "movie", title: "Dune", popularity: 120, poster_path: "/d21.jpg" },
+    ] };
+    const hits = tmdbHits(body);
+    assert.deepEqual(namesakesByPopularity(hits, "Dune", tmdbPopularity(body)).map((one) => one.id), ["tmdb:438631", "tmdb:841", "tmdb:999", "tmdb:627150"]);
+    assert.deepEqual(namesakesByPopularity(hits, "Dune", new Map()).map((one) => one.id), hits.map((one) => one.id), "without popularity, TMDB's order");
   });
 });

@@ -828,3 +828,83 @@ describe("stage 1b: the web's first pictures when nothing is found", () => {
     assert.equal(web(), 1);
   });
 });
+
+describe("a quick search's deadline (26.11.2026)", () => {
+  const items = (reply: Reply) => reply.body.items as { source: string }[];
+
+  it("leaves a catalogue slower than a second and a half for the whole search, which takes its answer without asking or counting again", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let searched = 0;
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "www.wikidata.org") {
+        if (url.searchParams.get("action") === "wbsearchentities") searched++;
+        await held;
+      }
+      return plain(input);
+    });
+    const quick = await get({ q: "Lion", scope: "all", section: "other", part: "quick" });
+    assert.equal(quick.status, 200);
+    assert.equal(quick.body.rest, true);
+    assert.equal("late" in quick.body, false, "never sent");
+    assert.equal(items(quick).some((hit) => hit.source === "wikidata"), false);
+    assert.ok(items(quick).length > 0, "the others are shown at once");
+    release();
+    const full = await get({ q: "Lion", scope: "all", section: "other" });
+    assert.equal(full.status, 200);
+    assert.ok(items(full).some((hit) => hit.source === "wikidata"), "the late answer is in the whole search");
+    assert.equal(searched, 1, "asked once");
+    assert.equal(counted(), 1, "one search");
+  });
+
+  it("says the whole search is to come in a scope with nothing slow when a catalogue was late, and caches its answer for the next time", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "api.themoviedb.org") await held;
+      return plain(input);
+    });
+    const quick = await get({ q: "Lion", scope: "film_tv", part: "quick" });
+    assert.equal(quick.body.rest, true);
+    release();
+    const full = await get({ q: "Lion", scope: "film_tv" });
+    assert.ok(items(full).some((hit) => hit.source === "tmdb"));
+    const tmdbAsked = asked.filter((url) => url.host === "api.themoviedb.org").length;
+    const again = await get({ q: "Lion", scope: "film_tv", part: "quick" });
+    assert.equal(again.body.rest, false, "the whole answer, kept");
+    assert.ok(items(again).some((hit) => hit.source === "tmdb"));
+    assert.equal(asked.filter((url) => url.host === "api.themoviedb.org").length, tmdbAsked, "from the cache");
+  });
+
+  it("asks a catalogue once more in the whole search when the quick search's request to it failed after the quick answer", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const plain = globalThis.fetch;
+    mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === "openlibrary.org" && ++calls === 1) {
+        await held;
+        throw new TypeError("fetch failed");
+      }
+      return plain(input);
+    });
+    const quick = await get({ q: "Lion", scope: "books", part: "quick" });
+    assert.equal(quick.body.rest, true);
+    const whole = get({ q: "Lion", scope: "books" });
+    release();
+    const reply = await whole;
+    assert.equal(calls, 2, "asked once more, once");
+    assert.ok(items(reply).some((hit) => hit.source === "openlibrary"));
+  });
+});

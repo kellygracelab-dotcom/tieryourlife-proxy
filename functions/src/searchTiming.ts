@@ -18,6 +18,8 @@ export interface SearchTrace {
   failed: string[];
   /** Not asked: resting after a refusal. */
   resting: string[];
+  /** A quick search's catalogues that took longer than it waits: left for the whole search (26.11.2026). */
+  late: string[];
   /** Milliseconds per step around the catalogues, summed: store (cache and rests read), charge, spelling, web. */
   steps: Record<string, number>;
 }
@@ -25,7 +27,7 @@ export interface SearchTrace {
 const store = new AsyncLocalStorage<SearchTrace>();
 
 export function newTrace(part: "quick" | "full", nowMs = Date.now()): SearchTrace {
-  return { part, startMs: nowMs, cache: [], sources: {}, failed: [], resting: [], steps: {} };
+  return { part, startMs: nowMs, cache: [], sources: {}, failed: [], resting: [], late: [], steps: {} };
 }
 
 /** Runs [work] with [trace] collecting what it does. */
@@ -56,12 +58,18 @@ export async function timedSource<T>(source: string, work: () => Promise<T | nul
     return answer;
   } finally {
     (trace.sources[source] ??= []).push(Date.now() - start);
-    if (answer === null) trace.failed.push(source);
+    if (answer === null && !trace.late.includes(source)) trace.failed.push(source);
   }
 }
 
 export function noteCache(outcome: string): void {
   store.getStore()?.cache.push(outcome);
+}
+
+/** [source] took longer than a quick search waits: not a failure, the whole search asks it. */
+export function noteLate(source: string): void {
+  const trace = store.getStore();
+  if (trace && !trace.late.includes(source)) trace.late.push(source);
 }
 
 export function noteResting(sources: readonly string[]): void {
@@ -87,6 +95,7 @@ export function traceFields(
     sources: trace.sources,
     ...(trace.failed.length > 0 ? { failed: trace.failed } : {}),
     ...(trace.resting.length > 0 ? { resting: trace.resting } : {}),
+    ...(trace.late.length > 0 ? { late: trace.late } : {}),
     steps: trace.steps,
   };
 }
