@@ -63,15 +63,22 @@ describe("the proxy under the demo emulators", () => {
     assert.equal(sections.body.role, null);
     const first = (sections.body.sections as { id: string }[])[0]?.id;
     if (first) assert.equal((await bare("GET", `/lists/sections/${first}`)).status, 200);
+    const rankings = await bare("GET", `/lists/${id}/rankings`);
+    assert.equal(rankings.status, 200, JSON.stringify(rankings.body));
+    assert.deepEqual(rankings.body, (await call(guest, "GET", `/lists/${id}/rankings`)).body);
+    const author = String(((await call(token, "GET", "/lists/mine")).body.lists as { id: string; authorUid: string }[]).find((list) => list.id === id)?.authorUid);
+    const followers = await bare("GET", `/lists/follow/${author}`);
+    assert.equal(followers.status, 200, JSON.stringify(followers.body));
+    assert.deepEqual(followers.body, { following: false, followers: 0 });
     const topics = await bare("GET", "/lists/topics?limit=5");
     assert.equal(topics.status, 200, JSON.stringify(topics.body));
     const topic = (topics.body.topics as { id: string }[])[0]?.id;
     if (topic) assert.equal((await bare("GET", `/lists/topics/${topic}`)).status, 200);
 
     for (const [method, path] of [
-      ["GET", "/lists/mine"], ["GET", "/lists?following=1"], ["GET", "/lists/follow"], ["GET", "/lists/reports"],
+      ["GET", "/lists/mine"], ["GET", "/lists?following=1"], ["GET", "/lists/reports"],
       ["GET", "/lists/topics/mine"], ["GET", "/lists/sections/proposals"], ["GET", "/lists/pictures?q=cat"],
-      ["GET", `/lists/${id}/rankings`], ["POST", "/lists"], ["POST", `/lists/${id}/taken`], ["DELETE", `/lists/${id}`],
+      ["PUT", `/lists/${id}/rankings/mine`], ["POST", `/lists/follow/${author}`], ["GET", "/lists/follow"], ["POST", "/lists"], ["POST", `/lists/${id}/taken`], ["DELETE", `/lists/${id}`],
     ] as const) {
       const refused = await bare(method, path);
       assert.equal(refused.status, 401, `${method} ${path}: ${JSON.stringify(refused.body)}`);

@@ -10,7 +10,7 @@ const read = (path: string, query: Record<string, unknown> = {}, method = "GET")
 describe("public reads with App Check alone (28.11.2026)", () => {
   it("lets the feed, a list, the sections and the topics through", () => {
     // The function's own path ("/", "/{id}") and the Hosting-style one with its name first ("/lists/{id}").
-    for (const path of ["/", "/lists", `/${LIST}`, `/lists/${LIST}`, "/sections", "/lists/sections", "/lists/sections/street-food", "/topics", "/lists/topics", `/lists/topics/${LIST}`, "/lists/topics/t_1-x"]) {
+    for (const path of ["/", "/lists", `/${LIST}`, `/lists/${LIST}`, "/sections", "/lists/sections", "/lists/sections/street-food", "/topics", "/lists/topics", `/lists/topics/${LIST}`, "/lists/topics/t_1-x", `/lists/${LIST}/rankings`, "/lists/follow/AbCdEfGh12345678"]) {
       assert.equal(read(path), true, path);
     }
     for (const query of [{ sort: "popular" }, { fresh: "1" }, { author: "u1" }, { topic: "t1", category: "games" }, { q: "cats", after: LIST }, { following: "0" }]) {
@@ -21,15 +21,17 @@ describe("public reads with App Check alone (28.11.2026)", () => {
 
   it("keeps everything personal, staff's and every write behind the token", () => {
     for (const path of [
-      "/lists/mine", "/lists/following", "/lists/reports", "/lists/follow", "/lists/follow/u1", "/lists/face", "/lists/pictures",
+      "/lists/mine", "/lists/following", "/lists/reports", "/lists/follow", "/lists/follow/u1", "/lists/follow/~x", "/lists/face", "/lists/pictures",
       "/lists/pictures/link", "/lists/editorial", "/lists/search-misses", "/lists/admin/stats", "/lists/stats", "/lists/moderators",
       "/lists/bans", "/lists/sections/queue", "/lists/sections/proposals", "/lists/sections/order", "/lists/sections/name-check",
       "/lists/sections/a/follow", "/lists/topics/mine", "/lists/topics/pending", `/lists/topics/${LIST}/follow`,
-      `/lists/${LIST}/rankings`, `/lists/${LIST}/taken`, "/lists/short-id", "/lists/AbCdEfGhIjKlMnOpQrS_",
+      `/lists/${LIST}/rankings/mine`, `/lists/${LIST}/rankings/r1/like`, "/lists/short/rankings", `/lists/${LIST}/taken`, "/lists/short-id", "/lists/AbCdEfGhIjKlMnOpQrS_",
     ]) {
       assert.equal(read(path), false, path);
     }
     assert.equal(read("/lists", { following: "1" }), false, "the feed of whom one follows");
+    assert.equal(read("/lists/follow/AbCdEfGh12345678", {}, "POST"), false, "following somebody");
+    assert.equal(read("/lists/follow/AbCdEfGh12345678", {}, "DELETE"), false);
     for (const method of ["POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"]) {
       assert.equal(read(`/lists/${LIST}`, {}, method), false, method);
       assert.equal(read("/lists", {}, method), false, method);

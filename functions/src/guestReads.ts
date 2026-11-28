@@ -1,4 +1,5 @@
 import type { Identity } from "./auth";
+import { isUid } from "./follows";
 import { isSectionId, RESERVED_SECTION_IDS } from "./sections";
 import { isTopicId } from "./topics";
 
@@ -39,6 +40,9 @@ export function guestReadable(method: string, segments: readonly string[], query
   if (segments.length === 1) return first === "sections" || first === "topics" || LIST_ID.test(first);
   if (segments.length === 2 && first === "sections") return isSectionId(second) && !RESERVED_SECTION_IDS.includes(second);
   if (segments.length === 2 && first === "topics") return isTopicId(second) && !TOPIC_WORDS.has(second);
+  // A list's rankings, and an author's follower count on their page (Web, 28.11.2026).
+  if (segments.length === 2 && second === "rankings") return LIST_ID.test(first);
+  if (segments.length === 2 && first === "follow") return isUid(second);
   return false;
 }
 
