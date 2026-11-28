@@ -14,4 +14,5 @@ export { copyPicturesSoon, refreshPictures } from "./refreshPictures";
 export { sweepSearch } from "./sweepSearch";
 export { houseFill } from "./houseFillJobs";
 export { publishAfter } from "./publishAfterJobs";
+export { warmPictures } from "./pictureWarmJobs";
 export { checkUpload } from "./checkUpload";
