@@ -27,6 +27,7 @@ import {
   type CommonsDetails,
   type ManualAttribution,
   type PictureAttribution,
+  COMMONS_COPY_WIDTH,
 } from "./pictureAttribution";
 import { commonsDetails } from "./pictureCredit";
 import { DEFAULT_COPY_SWITCHES, wantsCopy, type CopySwitches } from "./pictureCopies";
@@ -279,12 +280,12 @@ function pause(ms: number, stop: AbortSignal): Promise<boolean> {
 
 export type Download = (url: URL, stop: AbortSignal) => Promise<FetchedPicture & { retryAtMs?: number }>;
 
-/** Where a catalogue picture is copied from: Commons at its 500 px thumbnail directly, then through `Special:FilePath`. */
+/** Where a catalogue picture is copied from: Commons at its 960 px thumbnail directly, then through `Special:FilePath` (an original narrower than that). */
 export function copySourcesOf(original: string): string[] {
   const from = copySourceOf(original);
   if (from === null) return [];
   const file = commonsFileOf(original);
-  const direct = file === null ? null : commonsDirectThumb(file, 500);
+  const direct = file === null ? null : commonsDirectThumb(file, COMMONS_COPY_WIDTH);
   return direct === null ? [from] : [direct, from];
 }
 

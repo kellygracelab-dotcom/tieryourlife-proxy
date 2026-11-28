@@ -23,6 +23,7 @@ import {
   commonsFileOf,
   copyNameOf,
   copySourceOf,
+  samePictureOtherSize,
   HOST_SOURCES,
   inaturalistLicence,
   isCopyOf,
@@ -186,12 +187,15 @@ describe("what may be copied", () => {
     assert.equal(mayCopy(unknownFile, of(unknownFile)), false);
   });
 
-  it("is copied from the catalogue's own picture of about 500 px", () => {
-    assert.equal(copySourceOf(PHOTO), "https://inaturalist-open-data.s3.amazonaws.com/photos/82354387/medium.jpeg");
-    assert.equal(copySourceOf(COMMONS), "https://commons.wikimedia.org/wiki/Special:FilePath/Felis_catus-cat_on_snow.jpg?width=500");
-    // The other catalogues' card sizes are copied as they are; a TMDB original at 500 px.
-    assert.equal(copySourceOf(POSTER), POSTER);
-    assert.equal(copySourceOf("https://image.tmdb.org/t/p/original/abc.jpg"), "https://image.tmdb.org/t/p/w500/abc.jpg");
+  it("is copied from the catalogue's own picture of about 1000 px, sharp on a phone (28.11.2026)", () => {
+    assert.equal(copySourceOf(PHOTO), "https://inaturalist-open-data.s3.amazonaws.com/photos/82354387/large.jpeg");
+    assert.equal(copySourceOf(COMMONS), "https://commons.wikimedia.org/wiki/Special:FilePath/Felis_catus-cat_on_snow.jpg?width=960");
+    // TMDB at w780 from any size, IGDB at 1080p; the others' largest are copied as they are.
+    assert.equal(copySourceOf(POSTER), "https://image.tmdb.org/t/p/w780/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg");
+    assert.equal(copySourceOf("https://image.tmdb.org/t/p/original/abc.jpg"), "https://image.tmdb.org/t/p/w780/abc.jpg");
+    assert.equal(copySourceOf("https://image.tmdb.org/t/p/h632/abc.jpg"), "https://image.tmdb.org/t/p/w780/abc.jpg");
+    assert.equal(copySourceOf(COVER), "https://images.igdb.com/igdb/image/upload/t_1080p/co3p2d.jpg");
+    assert.equal(copySourceOf("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1/library_600x900_2x.jpg"), "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1/library_600x900_2x.jpg");
     assert.equal(copySourceOf("https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1-x.png"), "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1-x.png");
     assert.equal(copySourceOf("https://example.com/found.jpg"), null);
   });
@@ -435,5 +439,16 @@ describe("an attribution kept on a private board", () => {
     assert.equal(readAttribution({ source: "unknown" }), null);
     assert.equal(readAttribution("tmdb"), null);
     assert.equal(readAttribution(null), null);
+  });
+});
+
+describe("one picture at two sizes (28.11.2026)", () => {
+  it("is not a catalogue's move", () => {
+    assert.equal(samePictureOtherSize("https://image.tmdb.org/t/p/w500/a.jpg", "https://image.tmdb.org/t/p/w780/a.jpg"), true);
+    assert.equal(samePictureOtherSize("https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co1.jpg", "https://images.igdb.com/igdb/image/upload/t_1080p/co1.jpg"), true);
+    assert.equal(samePictureOtherSize("https://image.tmdb.org/t/p/w500/a.jpg", "https://image.tmdb.org/t/p/w780/b.jpg"), false, "another picture");
+    assert.equal(samePictureOtherSize("https://image.tmdb.org/t/p/w500/a.jpg", "https://image.tmdb.org/t/p/w500/a.jpg"), false, "the same address");
+    assert.equal(samePictureOtherSize("https://example.com/a.jpg", "https://example.com/b.jpg"), false);
+    assert.equal(samePictureOtherSize("https://images.igdb.com/igdb/image/upload/t_1080p/co1.jpg", "https://images.igdb.com/igdb/image/upload/t_1080p/co2.jpg"), false);
   });
 });

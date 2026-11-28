@@ -127,7 +127,7 @@ describe("the catalogues' answers", () => {
       ],
     });
     assert.deepEqual(hits.map((one) => [one.id, one.kind, one.subtitle]), [["tmdb:11", "movie", "1977"], ["tmdb:12", "person", "Acting"]]);
-    assert.equal(hits[0]?.imageUrl, "https://image.tmdb.org/t/p/w500/a.jpg");
+    assert.equal(hits[0]?.imageUrl, "https://image.tmdb.org/t/p/w780/a.jpg");
     assert.equal(hits[0]?.thumbUrl, "https://image.tmdb.org/t/p/w342/a.jpg");
   });
 
@@ -208,7 +208,7 @@ describe("the catalogues' answers", () => {
     assert.equal(fitsTile(299, 600, false), false);
   });
 
-  it("IGDB: the tall cover at twice the size, the year it came out, nothing without a cover", () => {
+  it("IGDB: the tall cover at 1080p, the year it came out, nothing without a cover", () => {
     const hits = igdbHits([
       { id: 1025, name: "The Legend of Zelda: Breath of the Wild", first_release_date: 1488499200, cover: { image_id: "co3p2d", width: 1080, height: 1440 } },
       { id: 7, name: "No cover" },
@@ -216,7 +216,7 @@ describe("the catalogues' answers", () => {
       { id: 9, name: "Wide cover", cover: { image_id: "co1", width: 1920, height: 1080 } },
     ]);
     assert.deepEqual(hits.map((one) => [one.title, one.subtitle, one.imageUrl, one.kind]), [
-      ["The Legend of Zelda: Breath of the Wild", "2017", "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co3p2d.jpg", "game"],
+      ["The Legend of Zelda: Breath of the Wild", "2017", "https://images.igdb.com/igdb/image/upload/t_1080p/co3p2d.jpg", "game"],
     ]);
     // The tile shows the cover at half the size.
     assert.equal(hits[0]?.thumbUrl, "https://images.igdb.com/igdb/image/upload/t_cover_big/co3p2d.jpg");

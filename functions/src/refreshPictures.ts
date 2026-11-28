@@ -30,6 +30,7 @@ import {
   type CataloguePicture,
   type PictureCheck,
 } from "./catalogueRefresh";
+import { samePictureOtherSize } from "./pictureAttribution";
 import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
 import { noteDenied } from "./pictureAlarms";
 import type { AttributionSource } from "./pictureAttribution";
@@ -143,7 +144,8 @@ export async function refreshCataloguePictures(nowMs: number): Promise<Record<st
     if (found === undefined) return;
     const stamp = { checkedAt: nowMs, ...(asked.refreshed ? { refreshedAt: nowMs } : {}) };
     if (found === null) note(picture.url, { ...stamp, status: "gone" });
-    else if (found !== picture.url) {
+    // Only another size of the same picture (w500 then, w780 now, 28.11.2026) is not a move.
+    else if (found !== picture.url && !samePictureOtherSize(found, picture.url)) {
       moves.set(picture.url, found);
       note(picture.url, { ...stamp, status: "moved", movedTo: found });
     } else note(picture.url, { ...stamp, status: "ok" });

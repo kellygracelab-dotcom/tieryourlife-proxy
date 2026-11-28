@@ -18,6 +18,7 @@ import {
   catalogueSourceOf,
   idFromAddress,
   MAX_FORMER_URLS,
+  TMDB_COPY_SIZE,
   type AttributionSource,
 } from "./pictureAttribution";
 import { IGDB_COVERS, steamHits, TMDB_IMAGES } from "./pictureSources";
@@ -113,7 +114,7 @@ export function probeVerdict(status: number | null): "ok" | "dead" | "unsure" {
 export function tmdbPictureOf(id: string, body: unknown): string | null {
   const kind = id.split(":")[1];
   const path = ((body ?? {}) as Json)[kind === "person" ? "profile_path" : "poster_path"];
-  return typeof path === "string" && /^\/[A-Za-z0-9._-]+$/.test(path) ? `${TMDB_IMAGES}w500${path}` : null;
+  return typeof path === "string" && /^\/[A-Za-z0-9._-]+$/.test(path) ? `${TMDB_IMAGES}${TMDB_COPY_SIZE}${path}` : null;
 }
 
 /** `fields cover.image_id; where id = (…)`: each game's cover, by `igdb:{id}`. */

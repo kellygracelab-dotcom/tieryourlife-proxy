@@ -5,7 +5,7 @@
  */
 import { fold, wordsOf } from "./search";
 import { commonsCredit, commonsDetails } from "./pictureCredit";
-import { COMMONS_CARD_WIDTH, commonsFileOf, commonsPictureOf, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
+import { COMMONS_CARD_WIDTH, commonsFileOf, IGDB_COPY_SIZE, TMDB_COPY_SIZE, commonsPictureOf, commonsThumb, inaturalistLicence, inaturalistLicenceOfCode, linkFromAddress, mayCopy, pageLink, type PictureAttribution } from "./pictureAttribution";
 
 export const PICTURE_SCOPES = ["all", "film_tv", "anime", "games", "music", "books", "people", "animals"] as const;
 export type PictureScope = (typeof PICTURE_SCOPES)[number];
@@ -360,7 +360,7 @@ export function tmdbHits(body: unknown): PictureHit[] {
     if (!kind || !path || !title || typeof row.id !== "number") return [];
     const date = text(row.release_date) ?? text(row.first_air_date);
     const subtitle = kind === "person" ? text(row.known_for_department) : date?.slice(0, 4) ?? null;
-    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}w500${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}`, id: `tmdb:${kind}:${row.id}` }, ...(original && original !== title ? { alias: original } : {}) }];
+    return [{ id: `tmdb:${row.id}`, title, subtitle, imageUrl: `${TMDB_IMAGES}${TMDB_COPY_SIZE}${path}`, thumbUrl: `${TMDB_IMAGES}w342${path}`, source: "tmdb", kind, attribution: { source: "tmdb", link: `https://www.themoviedb.org/${kind}/${row.id}`, id: `tmdb:${kind}:${row.id}` }, ...(original && original !== title ? { alias: original } : {}) }];
   });
 }
 
@@ -399,7 +399,7 @@ export const ANILIST_QUERY = `query ($q: String, $page: Int) {
     id name { full } image { large } media(perPage: 1) { nodes { title { english romaji } } } } }
 }`;
 
-export const IGDB_COVERS = "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/";
+export const IGDB_COVERS = `https://images.igdb.com/igdb/image/upload/${IGDB_COPY_SIZE}/`;
 /** The same cover at half the size (264 px), for a tile. */
 const IGDB_TILES = "https://images.igdb.com/igdb/image/upload/t_cover_big/";
 
