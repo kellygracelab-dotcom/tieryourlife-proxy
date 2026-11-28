@@ -35,6 +35,52 @@ describe("the proxy under the demo emulators", () => {
     token = (await passwordAccount(accountGuest, `e2e-${suffix}@e2e.test`)).idToken;
   });
 
+  it("answers the public reads without a token as it answers a guest's, and nothing else (28.11.2026)", async () => {
+    const bare = async (method: string, path: string, headers: Record<string, string> = {}) => {
+      const reply = await fetch(`${FUNCTIONS}${path}`, { method, headers });
+      const text = await reply.text();
+      return { status: reply.status, body: text.length === 0 ? {} : (JSON.parse(text) as Record<string, unknown>) };
+    };
+    const body = { title: "Guest read smoke list", category: "film_tv", tiers: [TIER], items: [{ title: "Card", tierIndex: 0 }] };
+    const published = await call(token, "POST", "/lists", body);
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    const id = String(published.body.id);
+
+    const one = await bare("GET", `/lists/${id}`);
+    assert.equal(one.status, 200, JSON.stringify(one.body));
+    assert.deepEqual(one.body, (await call(guest, "GET", `/lists/${id}`)).body, "the same list a guest's token reads");
+    assert.equal(one.body.mine, undefined);
+    assert.equal((await bare("GET", `/lists/lists/${id}`)).status, 200, "by the Hosting-style path too");
+
+    const feed = await bare("GET", "/lists?sort=popular");
+    assert.equal(feed.status, 200, JSON.stringify(feed.body));
+    // Not compared with a guest's page: the other smoke files publish meanwhile.
+    assert.ok(Array.isArray(feed.body.lists) && (feed.body.lists as { mine?: true }[]).every((list) => list.mine === undefined));
+    assert.equal((await bare("GET", "/lists?fresh=1")).status, 200);
+    const sections = await bare("GET", "/lists/sections");
+    assert.equal(sections.status, 200, JSON.stringify(sections.body));
+    assert.deepEqual(sections.body.sections, (await call(guest, "GET", "/lists/sections")).body.sections);
+    assert.equal(sections.body.role, null);
+    const first = (sections.body.sections as { id: string }[])[0]?.id;
+    if (first) assert.equal((await bare("GET", `/lists/sections/${first}`)).status, 200);
+    const topics = await bare("GET", "/lists/topics?limit=5");
+    assert.equal(topics.status, 200, JSON.stringify(topics.body));
+    const topic = (topics.body.topics as { id: string }[])[0]?.id;
+    if (topic) assert.equal((await bare("GET", `/lists/topics/${topic}`)).status, 200);
+
+    for (const [method, path] of [
+      ["GET", "/lists/mine"], ["GET", "/lists?following=1"], ["GET", "/lists/follow"], ["GET", "/lists/reports"],
+      ["GET", "/lists/topics/mine"], ["GET", "/lists/sections/proposals"], ["GET", "/lists/pictures?q=cat"],
+      ["GET", `/lists/${id}/rankings`], ["POST", "/lists"], ["POST", `/lists/${id}/taken`], ["DELETE", `/lists/${id}`],
+    ] as const) {
+      const refused = await bare(method, path);
+      assert.equal(refused.status, 401, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+      assert.equal(refused.body.code, "UNAUTHENTICATED");
+    }
+    const badToken = await bare("GET", `/lists/${id}`, { Authorization: "Bearer not-a-token" });
+    assert.equal(badToken.status, 401, "a token sent is checked, a bad one refused");
+  });
+
   it("keeps a person's new list out of the feed until staff approve it, its link open meanwhile (26.11.2026)", async () => {
     const config = getFirestore(initializeApp({ projectId: PROJECT }, "smoke-approval")).doc("config/feedApproval");
     await config.set({ on: true });

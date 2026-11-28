@@ -27,7 +27,8 @@ The one description of what the proxy answers, read by the website and by the An
 | Word | Means |
 |---|---|
 | App Check | `X-Firebase-AppCheck: <token>`. Missing or invalid: `401 APP_UNVERIFIED`. Checked first on every function, except that `generate` says `GENERATION_OFF` before it. |
-| user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it. A write (any method but `GET`, `HEAD`, `OPTIONS`) with a token whose uid was erased since (`DELETE /boards/account`), a guest's token from before it linked a provider included, gets **`401 ACCOUNT_ERASED`**, on every function, before anything is read or written; `503 UNAVAILABLE` when that cannot be checked. Reads go on and find nothing. |
+| user | `Authorization: Bearer <Firebase ID token>`, a guest's (anonymous sign-in) included. Missing or invalid: `401 UNAUTHENTICATED`. Every route of `lists`, `boards`, `credits`, `adoptGuestCredits`, `generate` needs it, except the guest reads of `lists`. A write (any method but `GET`, `HEAD`, `OPTIONS`) with a token whose uid was erased since (`DELETE /boards/account`), a guest's token from before it linked a provider included, gets **`401 ACCOUNT_ERASED`**, on every function, before anything is read or written; `503 UNAVAILABLE` when that cannot be checked. Reads go on and find nothing. |
+| guest read | App Check, and a user or no `Authorization` header at all (since 28.11.2026). Without the header the answer is exactly a guest's: nothing `mine`, no `viewerFollowsAuthor`, `role: null`, nothing under review. A header that is sent is checked as for user: missing token, bad or expired, `401 UNAUTHENTICATED`. Only these routes: `GET /lists` (every filter but `following=1`), `GET /lists?fresh=1`, `GET /lists/{id}` (a twenty-character id), `GET /lists/sections`, `GET /lists/sections/{id}`, `GET /lists/topics`, `GET /lists/topics/{id}` (`src/guestReads.ts`). Without a token every other route still answers `401 UNAUTHENTICATED`. Nothing on them is limited by uid; a site's new visitor reads without waiting for an anonymous sign-in. |
 | account | A user whose sign-in provider is not `anonymous`. A guest gets `403 NOT_SIGNED_IN` unless the route says otherwise. |
 | not banned | An account without a live ban, its own (`bans/{uid}`) or one kept from an account the same person erased (`bannedIdentities`, see `DELETE /boards/account`): else `403 {error, code: "BANNED", until}` (`until` is epoch ms, or `null` for forever; of two bans, the one that lifts last). |
 | staff | The owner or a moderator. Else `403 NOT_YOURS`. |
@@ -122,7 +123,7 @@ canonical Storage addresses, their shared catalogue copies included
 
 ## `lists`
 
-All routes: App Check and user. `lists` keeps one instance warm.
+All routes: App Check and user, except the guest reads (Access, above): the feed, one list, the sections and the topics. `lists` keeps one instance warm.
 
 ### Feed and reading
 
