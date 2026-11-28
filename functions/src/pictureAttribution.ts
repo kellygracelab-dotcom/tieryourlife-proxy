@@ -461,21 +461,44 @@ export function mayCopy(original: string, attribution: PictureAttribution | null
 }
 
 /**
- * The catalogue's own picture that the copy is made from: about 500 px on its
- * long side for Commons and iNaturalist, a TMDB original at 500 px, the
- * address as it is for the other catalogues (their card sizes already).
+ * The width a copy asks Commons for: Wikimedia makes thumbnails only at its
+ * standard widths, and 960 is the one that keeps a card sharp on a phone
+ * (a duel card wants about 520 by 730 real pixels; 500 was blurred, 28.11.2026).
+ */
+export const COMMONS_COPY_WIDTH = 960;
+/** TMDB's size a copy is made from: posters 780 by 1170. */
+export const TMDB_COPY_SIZE = "w780";
+/** IGDB's size a copy is made from: a cover fitted in 1920 by 1080, about 810 by 1080. */
+export const IGDB_COPY_SIZE = "t_1080p";
+
+/**
+ * The catalogue's own picture that the copy is made from: about 1000 px on its
+ * long side where the catalogue has it (Commons 960 px wide, iNaturalist's large,
+ * TMDB w780, IGDB 1080p), the address as it is for the other catalogues (their
+ * largest already). A search hit may stay small; the copy is made sharp.
  */
 export function copySourceOf(original: string): string | null {
   const one = parsed(original);
   if (one === null) return null;
   const source = catalogueSourceOf(one.href);
-  if (source === "tmdb") return one.href.replace(/\/t\/p\/original\//, "/t/p/w500/");
-  if (source === "anilist" || source === "igdb" || source === "steam" || source === "openlibrary") return one.href;
+  if (source === "tmdb") return one.href.replace(/\/t\/p\/(?:original|w\d{2,4}|h\d{2,4})\//, `/t/p/${TMDB_COPY_SIZE}/`);
+  if (source === "igdb") return one.href.replace(/\/t_[a-z0-9_]+\//, `/${IGDB_COPY_SIZE}/`);
+  if (source === "anilist" || source === "steam" || source === "openlibrary") return one.href;
   if (one.hostname === "inaturalist-open-data.s3.amazonaws.com") {
-    return INATURALIST_PHOTO.test(one.pathname) ? one.href.split("?")[0].replace(/\/(?:original|large|medium|small|square|thumb)\.(\w+)$/i, "/medium.$1") : null;
+    return INATURALIST_PHOTO.test(one.pathname) ? one.href.split("?")[0].replace(/\/(?:original|large|medium|small|square|thumb)\.(\w+)$/i, "/large.$1") : null;
   }
   const file = commonsFileOf(original);
-  return file === null ? null : `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=500`;
+  return file === null ? null : `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file.replace(/ /g, "_"))}?width=${COMMONS_COPY_WIDTH}`;
+}
+
+/**
+ * Whether two catalogue addresses are one picture at two sizes (TMDB's
+ * `/t/p/{size}/`, IGDB's `/t_{size}/`): a catalogue that answers another size
+ * than the one a card keeps has not moved it.
+ */
+export function samePictureOtherSize(a: string, b: string): boolean {
+  const sizeless = (url: string) => url.replace(/\/t\/p\/(?:original|w\d{2,4}|h\d{2,4})\//, "/t/p/*/").replace(/(images\.igdb\.com\/igdb\/image\/upload)\/t_[a-z0-9_]+\//, "$1/*/");
+  return a !== b && sizeless(a) === sizeless(b) && sizeless(a) !== a;
 }
 
 /** A copy's name in our bucket, `w-{32 hex}`, whatever list it was copied into and by whichever attempt. */

@@ -153,10 +153,10 @@ describe("a refresh run", () => {
   });
 
   it("reads each catalogue's answer about its ids", () => {
-    assert.equal(tmdbPictureOf("tmdb:movie:603", { poster_path: "/xyz.jpg" }), NEW_POSTER);
-    assert.equal(tmdbPictureOf("tmdb:person:287", { profile_path: "/p.jpg", poster_path: "/x.jpg" }), "https://image.tmdb.org/t/p/w500/p.jpg");
+    assert.equal(tmdbPictureOf("tmdb:movie:603", { poster_path: "/xyz.jpg" }), "https://image.tmdb.org/t/p/w780/xyz.jpg");
+    assert.equal(tmdbPictureOf("tmdb:person:287", { profile_path: "/p.jpg", poster_path: "/x.jpg" }), "https://image.tmdb.org/t/p/w780/p.jpg");
     assert.equal(tmdbPictureOf("tmdb:movie:603", { poster_path: null }), null);
-    assert.deepEqual([...igdbCovers([{ id: 1942, cover: { image_id: "co2" } }, { id: 7 }])], [["igdb:1942", "https://images.igdb.com/igdb/image/upload/t_cover_big_2x/co2.jpg"], ["igdb:7", null]]);
+    assert.deepEqual([...igdbCovers([{ id: 1942, cover: { image_id: "co2" } }, { id: 7 }])], [["igdb:1942", "https://images.igdb.com/igdb/image/upload/t_1080p/co2.jpg"], ["igdb:7", null]]);
     assert.equal(anilistQuery(["anilist:21", "anilist:c17"]), "query { a0: Media(id: 21) { isAdult coverImage { extraLarge large } } a1: Character(id: 17) { image { large } } }");
     const answer = { data: { a0: { isAdult: false, coverImage: { extraLarge: "https://s4.anilist.co/file/new.jpg" } }, a1: null, a2: { image: { large: "https://example.com/x.jpg" } } } };
     assert.deepEqual([...anilistPictures(["anilist:21", "anilist:c17", "anilist:c3"], answer)], [["anilist:21", "https://s4.anilist.co/file/new.jpg"], ["anilist:c17", null], ["anilist:c3", null]]);

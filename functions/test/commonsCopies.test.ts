@@ -15,8 +15,8 @@ import { outsideName, type OutsideTools } from "../src/outsidePictures";
 import { commonsDirectThumb } from "../src/pictureAttribution";
 
 const ACADIA = "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e9/Acadia_National_Park_02.JPG/500px-Acadia_National_Park_02.JPG";
-const ACADIA_DIRECT = "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e9/Acadia_National_Park_02.JPG/500px-Acadia_National_Park_02.JPG";
-const ACADIA_FILEPATH = "https://commons.wikimedia.org/wiki/Special:FilePath/Acadia_National_Park_02.JPG?width=500";
+const ACADIA_DIRECT = "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e9/Acadia_National_Park_02.JPG/960px-Acadia_National_Park_02.JPG";
+const ACADIA_FILEPATH = "https://commons.wikimedia.org/wiki/Special:FilePath/Acadia_National_Park_02.JPG?width=960";
 const POSTER = "https://image.tmdb.org/t/p/w500/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg";
 const PICTURE = { bytes: STUB_PICTURE, type: "image/png" };
 const commons = (n: number) => `https://commons.wikimedia.org/wiki/Special:FilePath/Park_${n}.jpg?width=600`;
@@ -56,15 +56,15 @@ function memoryShared(bucket: { files: Map<string, Buffer> }): SharedCopies & { 
 }
 
 describe("a Commons picture copied", () => {
-  it("is asked for at its 500 px thumbnail where Wikimedia keeps it, then through Special:FilePath", () => {
-    assert.equal(commonsDirectThumb("Acadia National Park 02.JPG", 500), ACADIA_DIRECT);
+  it("is asked for at its 960 px thumbnail where Wikimedia keeps it, then through Special:FilePath (28.11.2026)", () => {
+    assert.equal(commonsDirectThumb("Acadia National Park 02.JPG", 960), ACADIA_DIRECT);
     assert.equal(commonsDirectThumb("Example.svg", 500), "https://thumb.wikimedia.org/wikipedia/commons/thumb/8/84/Example.svg/500px-Example.svg.png");
     // MediaWiki's own addresses keep parentheses as they are, and so does encodeURIComponent.
     assert.match(commonsDirectThumb("Café (1).jpg", 500)!, /\/thumb\/[0-9a-f]\/[0-9a-f]{2}\/Caf%C3%A9_\(1\)\.jpg\/500px-Caf%C3%A9_\(1\)\.jpg$/);
     assert.equal(commonsDirectThumb("Scan.tif", 500), null);
     assert.equal(commonsDirectThumb("Talk.pdf", 500), null);
     assert.deepEqual(copySourcesOf(ACADIA), [ACADIA_DIRECT, ACADIA_FILEPATH]);
-    assert.deepEqual(copySourcesOf(POSTER), [POSTER]);
+    assert.deepEqual(copySourcesOf(POSTER), [POSTER.replace("/w500/", "/w780/")]);
     assert.deepEqual(copySourcesOf("https://example.com/a.jpg"), []);
   });
 
@@ -124,7 +124,7 @@ describe("a Commons picture copied", () => {
     const download: Download = async (url) => (asked.push(url.href), PICTURE);
     const tools = catalogueCopyTools(bucket, { shared: memoryShared(bucket), download });
     assert.deepEqual(await tools.fetch(POSTER, AbortSignal.timeout(1000)), PICTURE);
-    assert.deepEqual(asked, [POSTER]);
+    assert.deepEqual(asked, [POSTER.replace("/w500/", "/w780/")], "at the size a copy is made from");
   });
 });
 
