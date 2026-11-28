@@ -798,6 +798,10 @@ These are not the proxy. They live in the website's repository (`functions/src/w
 Hosting serves them at the site's own paths: `/api/**`, `/l/**`, `/r/**`, `/og/**`, `/img/**`. They read the proxy's `publishedLists/{id}` documents and write only their own:
 - `rankings/{code}`;
 - share cards under `share/r/{code}/` and `share/l/{id}/` in Storage, and cover collages under `share/c/{id}/` (a cache: redrawn when missing). When a list is withdrawn or taken down the proxy deletes its `share/l/{id}/` and `share/c/{id}/` with its `published/{id}/`.
+- smaller copies of a published picture beside it, `published/{id}/w200/{name}` and `published/{id}/w400/{name}` (since 28.11.2026). The proxy treats such a file as its picture `{name}`: deleted with its folder, with a copy's copies when the original is taken down or erased (`discardCopiesIn`), and retired and removed with it after a republish (**Copies a list stops showing**). A name with `/` never matches a picture id, so publishing does not take one for a copy already there.
+
+The proxy writes one document for them:
+- `webCdnPurges/{auto}`: `{at: serverTimestamp, listId, reason: "takedown", paths: string[]}`, written after a takedown (`POST /lists/{id}/takedown`, also the Remove of a list waiting for approval) has deleted the list's folder and the copies others held of its pictures. `paths` are the full bucket paths of every file deleted under `published/`, the site's smaller copies among them. Web's trigger `cdnPurge` clears Hosting's CDN and removes what it kept of those paths. A list its author withdraws, an erased account and a copy no list names any more write none. A document that cannot be written is logged (`Web CDN purge for {id} not asked`) and leaves the takedown done. Clients cannot read or write the collection.
 
 Of the proxy's data they also read, and never write:
 - `publishedLists/{id}.underReview`; `publishedLists/{id}.awaitingApproval` (since 26.11.2026) may be read too: a waiting list opens by its link but belongs in no list of lists;

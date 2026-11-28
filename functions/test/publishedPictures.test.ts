@@ -90,6 +90,23 @@ describe("taking down a list others made copies of", () => {
     assert.deepEqual(asked.sort(), ["M/L-p1", "N/M-L-p1"]);
   });
 
+  it("takes the site's smaller copies of those copies with them, and says what it deleted (Web, 28.11.2026)", async () => {
+    const asked: string[] = [];
+    const deleted = await discardCopiesIn(["M"], "L", {
+      getFiles: async () => [
+        ["L-p1", "w200/L-p1", "w400/L-p1", "w200/own", "gone"].map((name) => ({
+          name: `published/M/${name}`,
+          delete: async () => {
+            if (name === "gone") throw new Error("not there");
+            asked.push(name);
+          },
+        })),
+      ],
+    });
+    assert.deepEqual(asked.sort(), ["L-p1", "w200/L-p1", "w400/L-p1"]);
+    assert.deepEqual(deleted.sort(), ["published/M/L-p1", "published/M/w200/L-p1", "published/M/w400/L-p1"]);
+  });
+
   it("reads where a copy's own files came from off their names", () => {
     const L = "AbCdEfGhIjKlMnOpQrSt";
     const K = "ZyXwVuTsRqPoNmLkJiHg";

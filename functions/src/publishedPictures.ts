@@ -410,23 +410,35 @@ export interface FolderLister {
   getFiles(options: { prefix: string }): Promise<[{ name: string; delete(): Promise<unknown> }[], ...unknown[]]>;
 }
 
+/**
+ * A file's own name in its list's folder, whatever folder inside it holds it: the site keeps its smaller
+ * copies of a picture as `w200/{name}` and `w400/{name}` beside it (Web, 28.11.2026), and they go
+ * wherever the picture goes.
+ */
+export function pictureNameOf(nameInFolder: string): string {
+  return nameInFolder.slice(nameInFolder.lastIndexOf("/") + 1);
+}
+
+/** The copies of [originalListId]'s pictures in each of [copyListIds], deleted; the paths of those deleted. */
 export async function discardCopiesIn(
   copyListIds: string[],
   originalListId: string,
   bucket: FolderLister = getStorage().bucket(),
   copied: (fileName: string, originalListId: string) => boolean = isCopiedFrom,
-): Promise<void> {
-  await Promise.all(
+): Promise<string[]> {
+  const deleted = await Promise.all(
     copyListIds.map(async (id) => {
       const prefix = `published/${id}/`;
       const [files] = await bucket.getFiles({ prefix });
-      await Promise.all(
+      const gone = await Promise.all(
         files
-          .filter((file) => copied(file.name.slice(prefix.length), originalListId))
-          .map((file) => file.delete().catch(() => undefined)),
+          .filter((file) => copied(pictureNameOf(file.name.slice(prefix.length)), originalListId))
+          .map((file) => file.delete().then(() => file.name, () => null)),
       );
+      return gone.filter((name): name is string => name !== null);
     }),
   );
+  return deleted.flat();
 }
 
 /**
@@ -545,7 +557,8 @@ export async function retireUnusedPublished(listId: string, keeping: string[], c
       .catch(() => undefined);
   await Promise.all(
     files.map((file) => {
-      const name = file.name.slice(`published/${listId}/`.length);
+      // The site's smaller copy of a picture is kept and retired with that picture.
+      const name = pictureNameOf(file.name.slice(`published/${listId}/`.length));
       const retired = retiredAtOf((file.metadata?.metadata ?? null) as Record<string, unknown> | null);
       if (kept.has(name)) return retired === null ? undefined : mark(file, null);
       if (retired !== null || (eligible !== null && !eligible.has(name))) return undefined;
