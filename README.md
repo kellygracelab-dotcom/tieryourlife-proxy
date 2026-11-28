@@ -40,3 +40,9 @@ Cloud Functions on Node 22 in TypeScript, Firestore, Storage and App Check, in `
 | **Server** | this one | behind both apps |
 | **Android app** | [TierYourLife](https://github.com/kellygracelab-dotcom/TierYourLife): Kotlin, Jetpack Compose | Google Play, in closed testing |
 | **Website** | [tieryourlife-web](https://github.com/kellygracelab-dotcom/tieryourlife-web): React, TypeScript | [tieryourlife.com](https://tieryourlife.com) |
+
+## License
+
+The code is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). © 2026 Artiuillab.
+
+The license covers the code only. The TierYourLife name, the logo and the pictures are not covered by it.
