@@ -71,6 +71,24 @@ describe("retiring a republished list's copies", () => {
     ]);
   });
 
+  it("retires the site's smaller copies of a picture with it, and keeps them while it is kept (Web, 28.11.2026)", async () => {
+    const marks = bucketWith([
+      { name: `published/${LIST}/kept_p_1` },
+      { name: `published/${LIST}/w200/kept_p_1`, metadata: { metadata: { [RETIRED_AT]: String(NOW - DAY) } } },
+      { name: `published/${LIST}/dropped_p_1` },
+      { name: `published/${LIST}/w200/dropped_p_1` },
+      { name: `published/${LIST}/w400/dropped_p_1` },
+      { name: `published/${LIST}/w200/another-attempt_p_2` },
+    ]);
+    await retireUnusedPublished(LIST, ["kept_p_1"], ["kept_p_1", "dropped_p_1"], NOW);
+    assert.deepEqual(marks.sort(), [
+      [`published/${LIST}/dropped_p_1`, String(NOW)],
+      [`published/${LIST}/w200/dropped_p_1`, String(NOW)],
+      [`published/${LIST}/w200/kept_p_1`, null],
+      [`published/${LIST}/w400/dropped_p_1`, String(NOW)],
+    ]);
+  });
+
   it("leaves a copy it could not mark as it is, kept", async () => {
     const marks = bucketWith([{ name: `published/${LIST}/dropped_p_1` }, { name: `published/${LIST}/other_p_1` }], new Set([`published/${LIST}/dropped_p_1`]));
     await retireUnusedPublished(LIST, [], undefined, NOW);

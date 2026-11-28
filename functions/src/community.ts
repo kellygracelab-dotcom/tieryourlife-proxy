@@ -10,6 +10,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { awaitsApproval, feedApprovalOn, inFeeds, noteCommunityReview, waitsOnPublish } from "./feedApproval";
 import { doPublishAfter, queuePublishAfter, type PublishAfterJob } from "./publishAfter";
 import { requireAppCheck } from "./appCheck";
+import { realTakedownPictureTools, takeDownPictures } from "./webCdnPurge";
 import { publicMediaResponses, storageMediaUrl } from "./publicMedia";
 import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
@@ -3103,10 +3104,7 @@ async function settleReports(
   }
   await batch.commit();
   if (banned !== null) await replaceKeptBans(banned.uid, banned.ban);
-  if (takeDown) {
-    await discardPublished(listId);
-    await discardCopiesOf(listId);
-  }
+  if (takeDown) await takeDownPictures(listId, realTakedownPictureTools(discardCopiesOf));
 
   response.status(204).send();
 }
@@ -4628,9 +4626,9 @@ async function withTheirSources(listIds: string[]): Promise<string[]> {
   return [...new Set([...listIds, ...inherited])];
 }
 
-async function discardCopiesOf(listId: string): Promise<void> {
+async function discardCopiesOf(listId: string): Promise<string[]> {
   const copies = await getFirestore().collection(PUBLISHED).where("picturesFrom", "array-contains", listId).get();
-  await discardCopiesIn(copies.docs.map((copy) => copy.id), listId);
+  return discardCopiesIn(copies.docs.map((copy) => copy.id), listId);
 }
 
 async function unpublish(response: Response, identity: Identity, id: string, byline: Byline = bylineOf(identity)): Promise<void> {
