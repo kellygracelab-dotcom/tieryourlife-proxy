@@ -24,6 +24,8 @@ const SITE_IMG = "https://tieryourlife.com/img/";
 /** A card's tile copy, and a collage cell's. */
 export const CARD_WIDTH = 200;
 export const PREVIEW_WIDTH = 400;
+/** The duel's card, sharp on a phone (Web #300, 28.11.2026). */
+export const DUEL_WIDTH = 800;
 /** At most this many asked at once: the site's function draws them on one vCPU. */
 export const WARM_AT_ONCE = 3;
 /** Under Hosting's 60 s. */
@@ -74,10 +76,13 @@ export async function queuePictureWarm(job: PictureWarmJob, demo: boolean = isDe
 
 /** The site's addresses to ask for: the collage first (the feed's heaviest), then cells, then cards. */
 export function warmAddresses(cards: readonly string[], previews: readonly string[], collageUrl: string | null): string[] {
+  const shown = cards.slice(0, WARM_MOST);
   return [
-    ...(collageUrl === null ? [] : [collageUrl]),
+    // The collage, and its double size (960 by 600) that screens of two pixels to a point ask for.
+    ...(collageUrl === null ? [] : [collageUrl, `${collageUrl}${collageUrl.includes("?") ? "&" : "?"}s=2`]),
     ...previews.slice(0, WARM_MOST).map((path) => `${SITE_IMG}${PREVIEW_WIDTH}/${path}`),
-    ...cards.slice(0, WARM_MOST).map((path) => `${SITE_IMG}${CARD_WIDTH}/${path}`),
+    ...shown.map((path) => `${SITE_IMG}${CARD_WIDTH}/${path}`),
+    ...shown.map((path) => `${SITE_IMG}${DUEL_WIDTH}/${path}`),
   ];
 }
 
