@@ -72,7 +72,13 @@ describe("a takedown asks the site to clear its CDN (Web, 28.11.2026)", () => {
     const hanging = ((_url: unknown, init?: RequestInit) => new Promise((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
     })) as typeof fetch;
-    await assert.rejects(callWebCdnPurge(hanging, 20));
+    // AbortSignal.timeout does not hold the event loop open by itself; a real call's socket does.
+    const open = setTimeout(() => undefined, 5_000);
+    try {
+      await assert.rejects(callWebCdnPurge(hanging, 20));
+    } finally {
+      clearTimeout(open);
+    }
   });
 
   it("asks nothing when the pictures could not be deleted, so the takedown fails as before", async () => {
