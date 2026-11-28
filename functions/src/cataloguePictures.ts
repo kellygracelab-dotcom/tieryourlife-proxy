@@ -29,6 +29,7 @@ import {
   type PictureAttribution,
   COMMONS_COPY_WIDTH,
 } from "./pictureAttribution";
+import { fitPicture, type Picture } from "./pictureFit";
 import { commonsDetails } from "./pictureCredit";
 import { DEFAULT_COPY_SWITCHES, wantsCopy, type CopySwitches } from "./pictureCopies";
 import { CatalogueRefusal, downloadPicture, getJson } from "./pictureSearch";
@@ -280,10 +281,16 @@ function pause(ms: number, stop: AbortSignal): Promise<boolean> {
 
 export type Download = (url: URL, stop: AbortSignal) => Promise<FetchedPicture & { retryAtMs?: number }>;
 
-/** Where a catalogue picture is copied from: Commons at its 960 px thumbnail directly, then through `Special:FilePath` (an original narrower than that). */
+/**
+ * Where a catalogue picture is copied from: Commons at its 960 px thumbnail directly, then through
+ * `Special:FilePath` (an original narrower than that); an Open Library cover from its uploaded original,
+ * made smaller (`pictureFit.ts`), then its 500 px `-L` cover (an original over 4 MB, 28.11.2026).
+ */
 export function copySourcesOf(original: string): string[] {
   const from = copySourceOf(original);
   if (from === null) return [];
+  const cover = /^(https:\/\/covers\.openlibrary\.org\/b\/id\/\d+)-[SML]\.jpg$/.exec(from);
+  if (cover) return [`${cover[1]}.jpg`, from];
   const file = commonsFileOf(original);
   const direct = file === null ? null : commonsDirectThumb(file, COMMONS_COPY_WIDTH);
   return direct === null ? [from] : [direct, from];
@@ -300,7 +307,7 @@ export function copySourcesOf(original: string): string[] {
  */
 export function catalogueCopyTools(
   base: OutsideTools,
-  { shared = storageShared(), download = downloadPicture as Download }: { shared?: SharedCopies; download?: Download } = {},
+  { shared = storageShared(), download = downloadPicture as Download, fit = fitPicture }: { shared?: SharedCopies; download?: Download; fit?: (picture: Picture) => Promise<Picture> } = {},
 ): OutsideTools {
   const wikimedia = oneAtATime(WIKIMEDIA_AT_ONCE);
   const politely = (source: string, stop: AbortSignal) => wikimedia(async () => {
@@ -323,8 +330,10 @@ export function catalogueCopyTools(
       let got: FetchedPicture = { error: "UNREACHABLE" };
       for (const source of sources) {
         got = WIKIMEDIA_HOSTS.has(new URL(source).hostname) ? await politely(source, stop) : await download(new URL(source), stop);
+        // At most 1200 px on its long side, as every copy is kept (`pictureFit.ts`).
+        if (!("error" in got)) return await fit(got);
         // A busy Wikimedia is busy by either way in; only a picture not found one way is looked for the other.
-        if (!("error" in got) || got.error === "SOURCE_BUSY" || stop.aborted) return got;
+        if (got.error === "SOURCE_BUSY" || stop.aborted) return got;
       }
       return got;
     },
