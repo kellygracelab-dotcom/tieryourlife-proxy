@@ -15,6 +15,7 @@ import { realTakedownPictureTools, takeDownPictures } from "./webCdnPurge";
 import { publicMediaResponses, storageMediaUrl } from "./publicMedia";
 import { isDemoEmulator, secretsOutsideDemo } from "./emulator";
 import { requireUser, type Identity } from "./auth";
+import { guestReadable, guestReader, sendsNoToken } from "./guestReads";
 import { type Ban, type BanLength, banFrom, isBanLength, isBanned, noticeFor } from "./bans";
 import { claimListSlot } from "./publishLimit";
 import { claimPublicListQuota, decidePublicListQuota, readPublicListQuotaLimit, type PublicListQuota } from "./publicListQuota";
@@ -796,7 +797,10 @@ export const lists = onRequest(
     if (!(await requireAppCheck(request, response))) {
       return;
     }
-    const identity = await requireUser(request, response);
+    // A public read with App Check and no token at all is a guest's (src/guestReads.ts, 28.11.2026).
+    const identity = sendsNoToken(request.header("Authorization")) && guestReadable(request.method, segmentsOf(request.path), request.query as Record<string, unknown>)
+      ? guestReader()
+      : await requireUser(request, response);
     if (!identity) {
       return;
     }
