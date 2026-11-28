@@ -24,6 +24,12 @@ const SITE_IMG = "https://tieryourlife.com/img/";
 /** A card's tile copy, and a collage cell's. */
 export const CARD_WIDTH = 200;
 export const PREVIEW_WIDTH = 400;
+/**
+ * The version the site's pages put on a published picture's address (Web `PICTURES_VERSION` in
+ * src/lib/pictureSize.ts): the CDN keeps a picture under its whole address, so the warm-up asks exactly
+ * what a browser asks. Raised with the site when pictures are replaced in place (?v=2 since 28.11.2026).
+ */
+export const PICTURES_VERSION = "?v=2";
 /** The duel's card, sharp on a phone (Web #300, 28.11.2026). */
 export const DUEL_WIDTH = 800;
 /** At most this many asked at once: the site's function draws them on one vCPU. */
@@ -80,9 +86,9 @@ export function warmAddresses(cards: readonly string[], previews: readonly strin
   return [
     // The collage, and its double size (960 by 600) that screens of two pixels to a point ask for.
     ...(collageUrl === null ? [] : [collageUrl, `${collageUrl}${collageUrl.includes("?") ? "&" : "?"}s=2`]),
-    ...previews.slice(0, WARM_MOST).map((path) => `${SITE_IMG}${PREVIEW_WIDTH}/${path}`),
-    ...shown.map((path) => `${SITE_IMG}${CARD_WIDTH}/${path}`),
-    ...shown.map((path) => `${SITE_IMG}${DUEL_WIDTH}/${path}`),
+    ...previews.slice(0, WARM_MOST).map((path) => `${SITE_IMG}${PREVIEW_WIDTH}/${path}${PICTURES_VERSION}`),
+    ...shown.map((path) => `${SITE_IMG}${CARD_WIDTH}/${path}${PICTURES_VERSION}`),
+    ...shown.map((path) => `${SITE_IMG}${DUEL_WIDTH}/${path}${PICTURES_VERSION}`),
   ];
 }
 
