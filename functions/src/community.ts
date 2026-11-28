@@ -3763,13 +3763,16 @@ async function publish(
     concernLater.then((concern) => noteWordingConcern(target, document.title, identity, concern, document.anonymous)),
     held ? noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined) : Promise.resolve(),
   ];
-  // The site's small copies of the pictures this revision shows and the one before did not, made before
-  // anybody opens it (src/pictureWarm.ts, 28.11.2026). Only queued here; never fails the publication.
-  const shownBefore = new Set(existingId ? warmPathsOf([...previousImages, previous?.coverImageUrl, ...(previous?.previewImages ?? [])]) : []);
+  // The site's small copies of the pictures this revision shows and the one before did not, and its new
+  // collage, made before anybody opens it (src/pictureWarm.ts, 28.11.2026). Only queued here; never
+  // fails the publication.
+  const cardsBefore = new Set(warmPathsOf(previousImages));
+  const previewsBefore = new Set(warmPathsOf(previous?.previewImages ?? []));
   after.push(queuePictureWarm({
     listId: target,
     revision,
-    paths: warmPathsOf([...document.items.map((item) => item.imageUrl), document.coverImageUrl, ...document.previewImages]).filter((path) => !shownBefore.has(path)),
+    cards: warmPathsOf(document.items.map((item) => item.imageUrl)).filter((path) => !cardsBefore.has(path)),
+    previews: warmPathsOf(document.previewImages).filter((path) => !previewsBefore.has(path)),
   }));
   if (existingId) {
     // The board was edited for a month; the copies it no longer names are retired, not removed:

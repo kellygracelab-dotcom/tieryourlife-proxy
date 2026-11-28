@@ -1,5 +1,7 @@
+import { getFirestore } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
-import { handlePictureWarm, PICTURE_WARM_JOBS } from "./pictureWarm";
+import { collageUrlOf, webPicture } from "./community";
+import { handlePictureWarm, PICTURE_WARM_JOBS, warmPictures as askSite, type PictureWarmWork } from "./pictureWarm";
 
 /**
  * A list's small copies asked of the site after its publication or Update (src/pictureWarm.ts). Written
@@ -12,13 +14,25 @@ export const warmPictures = onDocumentCreated(
     region: "europe-west1",
     timeoutSeconds: 540,
     memory: "256MiB",
-    // Two lists at once at most, three pictures each: six asks of the site's function together.
+    // Two lists at once at most, three asks each: six asks of the site's function together.
     maxInstances: 2,
     concurrency: 1,
   },
   async (event) => {
     const snapshot = event.data;
     if (!snapshot) return;
-    await handlePictureWarm(snapshot.ref);
+    await handlePictureWarm(snapshot.ref, pictureWarmWork);
   },
 );
+
+/** The collage as the feed card names it (community.ts `collageOf`), read when the job runs. */
+export const pictureWarmWork: PictureWarmWork = {
+  async collageOf(listId) {
+    const list = await getFirestore().collection("publishedLists").doc(listId).get();
+    if (!list.exists) return null;
+    const previews = ((list.get("previewImages") as unknown[] | undefined) ?? []).filter((one) => webPicture(one) !== null) as string[];
+    const updatedAt = list.get("updatedAt") as { toMillis(): number } | undefined;
+    return collageUrlOf(listId, webPicture(list.get("coverImageUrl")), previews, updatedAt?.toMillis() ?? 0);
+  },
+  warm: (addresses) => askSite(addresses),
+};
