@@ -26,9 +26,9 @@ describe("warming a list's small copies (Web, Coordinator, 28.11.2026)", () => {
     assert.deepEqual(warmAddresses(["published/L/a"], ["published/L/b"], COLLAGE), [
       COLLAGE,
       `${COLLAGE}${COLLAGE.includes("?") ? "&" : "?"}s=2`,
-      "https://tieryourlife.com/img/400/published/L/b",
-      "https://tieryourlife.com/img/200/published/L/a",
-      "https://tieryourlife.com/img/800/published/L/a",
+      "https://tieryourlife.com/img/400/published/L/b?v=2",
+      "https://tieryourlife.com/img/200/published/L/a?v=2",
+      "https://tieryourlife.com/img/800/published/L/a?v=2",
     ]);
     assert.deepEqual(warmAddresses([], [], "https://tieryourlife.com/img/collage/L.webp?v=5").slice(0, 2), ["https://tieryourlife.com/img/collage/L.webp?v=5", "https://tieryourlife.com/img/collage/L.webp?v=5&s=2"]);
     assert.deepEqual(warmAddresses([], [], null), []);
@@ -121,7 +121,7 @@ describe("warming a list's small copies (Web, Coordinator, 28.11.2026)", () => {
       collageOf: async (listId) => (listId === "L" ? COLLAGE : null),
       warm: async (addresses): Promise<WarmOutcome> => (warmed.push([...addresses]), { asked: 3, ok: 3, failed: 0, failures: [] }),
     }));
-    assert.deepEqual(warmed, [[COLLAGE, `${COLLAGE}&s=2`, "https://tieryourlife.com/img/400/published/L/b", "https://tieryourlife.com/img/200/published/L/a", "https://tieryourlife.com/img/800/published/L/a"]]);
+    assert.deepEqual(warmed, [[COLLAGE, `${COLLAGE}&s=2`, "https://tieryourlife.com/img/400/published/L/b?v=2", "https://tieryourlife.com/img/200/published/L/a?v=2", "https://tieryourlife.com/img/800/published/L/a?v=2"]]);
     assert.ok(state.deleted);
     assert.equal(lines.length, 1);
     assert.match(lines[0], /^Picture warm-up \{"listId":"L","revision":2,"collage":true,"asked":3,"ok":3,"failed":0,"failures":\[\],"ms":\d+\}$/);
