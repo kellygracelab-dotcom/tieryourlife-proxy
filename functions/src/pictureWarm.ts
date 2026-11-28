@@ -27,9 +27,9 @@ export const PREVIEW_WIDTH = 400;
 /**
  * The version the site's pages put on a published picture's address (Web `PICTURES_VERSION` in
  * src/lib/pictureSize.ts): the CDN keeps a picture under its whole address, so the warm-up asks exactly
- * what a browser asks. Raised with the site when pictures are replaced in place (?v=2 since 28.11.2026).
+ * what a browser asks. Raised with the site when pictures are replaced in place (?v=2, then ?v=3 after the 1200 px catch-up, both 28.11.2026).
  */
-export const PICTURES_VERSION = "?v=2";
+export const PICTURES_VERSION = "?v=3";
 /** The duel's card, sharp on a phone (Web #300, 28.11.2026). */
 export const DUEL_WIDTH = 800;
 /** At most this many asked at once: the site's function draws them on one vCPU. */
