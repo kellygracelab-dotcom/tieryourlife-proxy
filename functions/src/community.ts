@@ -9,6 +9,7 @@ import type { Response } from "express";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { awaitsApproval, feedApprovalOn, inFeeds, noteCommunityReview, waitsOnPublish } from "./feedApproval";
 import { doPublishAfter, queuePublishAfter, type PublishAfterJob } from "./publishAfter";
+import { queuePictureWarm, warmPathsOf } from "./pictureWarm";
 import { requireAppCheck } from "./appCheck";
 import { realTakedownPictureTools, takeDownPictures } from "./webCdnPurge";
 import { publicMediaResponses, storageMediaUrl } from "./publicMedia";
@@ -3762,6 +3763,14 @@ async function publish(
     concernLater.then((concern) => noteWordingConcern(target, document.title, identity, concern, document.anonymous)),
     held ? noteHeld(target, document.title, identity, document.anonymous, hold.get("listTitle") as string | undefined) : Promise.resolve(),
   ];
+  // The site's small copies of the pictures this revision shows and the one before did not, made before
+  // anybody opens it (src/pictureWarm.ts, 28.11.2026). Only queued here; never fails the publication.
+  const shownBefore = new Set(existingId ? warmPathsOf([...previousImages, previous?.coverImageUrl, ...(previous?.previewImages ?? [])]) : []);
+  after.push(queuePictureWarm({
+    listId: target,
+    revision,
+    paths: warmPathsOf([...document.items.map((item) => item.imageUrl), document.coverImageUrl, ...document.previewImages]).filter((path) => !shownBefore.has(path)),
+  }));
   if (existingId) {
     // The board was edited for a month; the copies it no longer names are retired, not removed:
     // other people's boards, rankings and Continue entries may still show them (20.11.2026).

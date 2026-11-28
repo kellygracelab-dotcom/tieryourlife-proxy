@@ -35,6 +35,11 @@ function pathOf(url: string): string | null {
   return publicPath(url.slice(STORAGE.length, query).split(/%2f/i));
 }
 
+/** The bucket path a public picture's address names, in any of its forms; null for any other address. */
+export function bucketPathOf(url: string): string | null {
+  return pathOf(url);
+}
+
 /** Public display bytes do not require the old client's image loader to know about App Check. */
 export function publicMediaUrl(url: string): string {
   const path = pathOf(url);
